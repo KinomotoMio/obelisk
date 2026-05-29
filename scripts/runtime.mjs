@@ -135,7 +135,15 @@ function indexJsonl(db, fi) {
     idx: db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)'),
   };
 
-  const sm = { started_at: null, ended_at: null, git_branch: null, version: null, title: null, n: 0 };
+  const existing = !fi.isSubagent ? db.prepare('SELECT * FROM sessions WHERE id = ?').get(fi.sessionId) : null;
+  const sm = {
+    started_at: existing?.started_at || null,
+    ended_at: existing?.ended_at || null,
+    git_branch: existing?.git_branch || null,
+    version: existing?.version || null,
+    title: existing?.title || null,
+    n: existing?.message_count || 0,
+  };
 
   for (let i = skip; i < lines.length; i++) {
     let obj;
