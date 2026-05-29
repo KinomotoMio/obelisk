@@ -1,0 +1,137 @@
+---
+name: obelisk
+description: >
+  Search and query past Claude Code session history.
+  Reactive: when the user asks "how did I fix X", "what did we do last time", "find the session where", "上次怎么修的", "之前的session", "历史记录".
+  Proactive: when the user references past work you lack context for, when you're about to modify a file with complex edit history, when the user says "继续之前的" or "continue where we left off", or when understanding prior decisions would improve your current response.
+allowed-tools:
+  - Read
+  - Bash(node:*)
+  - Write
+---
+
+# obelisk
+
+Searches and queries your Claude Code session history stored in `~/.claude/`.
+A SQLite index with FTS5 full-text search covers all sessions, subagent conversations, and workflow agent runs.
+You write JS query snippets that run in a sandboxed VM against the indexed data, then parse the JSON output.
+
+## Quick Start
+
+The base directory for this skill is provided as `$SKILL_DIR` at invocation time (shown as "Base directory for this skill: ...").
+
+**Fast keyword search** (no script needed):
+
+```bash
+node $SKILL_DIR/scripts/runtime.mjs --search "keyword"
+```
+
+**Custom query** (write a JS snippet, run it):
+
+1. Write a query to a temp file (e.g. `/tmp/q.mjs`)
+2. Run: `node $SKILL_DIR/scripts/runtime.mjs --query /tmp/q.mjs`
+3. Parse the JSON stdout and answer the user
+
+The query file body is executed inside `(async () => { ... })()` with the API below available as globals. The last expression is returned as JSON. Use `return` to emit results.
+
+## API
+
+### search(text, opts?)
+
+Full-text search across all messages (user, assistant, subagent, workflow agent).
+
+Returns: `[{ message: {uuid, text, role, timestamp, model}, session: {id, title, project, started_at}, context: [...surrounding messages] }]`
+
+opts: `{ limit, sessionId, project, after, before }`
+
+### context(uuid)
+
+Full story around a message: the message itself, parent chain, session info, subagent/workflow metadata.
+
+Returns: `{ message, parentChain, session, subagent, workflow }`
+
+### recent(n?)
+
+Latest n sessions (default 10). Returns session rows with title, project, started_at, ended_at.
+
+### sql(query, ...params)
+
+Raw SQL. Use `?` placeholders. Returns array of row objects.
+
+Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `subagents`, `workflows`, `workflow_agents`, `messages_fts`
+
+### Other APIs
+
+- `trace(uuid)` -- full parent chain from root to message
+- `thread(sessionId)` -- all messages in a session, ordered by time
+- `subagents(sessionId)` -- subagent metadata + message counts
+- `workflows(sessionId?)` -- workflow runs (all if no sessionId)
+- `workflowTree(runId)` -- workflow + its agents + all their messages
+- `fileHistory(filePath)` -- every Edit/Write/Read on a file across sessions
+- `failures(sessionId?)` -- tool calls that returned errors, with surrounding context
+
+## Examples
+
+### "上次怎么修 auth 的"
+
+```js
+const hits = search('auth fix')
+return hits.slice(0, 5).map(h => ({
+  session: h.session.title,
+  date: h.session.started_at,
+  message: h.message.text?.slice(0, 200)
+}))
+```
+
+### "最近在做什么"
+
+```js
+return recent(10).map(s => ({ title: s.title, project: s.project, date: s.started_at }))
+```
+
+### "哪些文件被反复修改"
+
+```js
+return sql(`
+  SELECT file_path, COUNT(*) as n FROM tool_calls
+  WHERE name IN ('Edit','Write') AND file_path IS NOT NULL
+  GROUP BY file_path HAVING n > 3 ORDER BY n DESC LIMIT 20
+`)
+```
+
+### "那个 review workflow 的结果是什么"
+
+```js
+const wfs = workflows()
+const review = wfs.find(w =>
+  w.run_id.includes('review') ||
+  JSON.parse(w.result_json || '{}').synthesis
+)
+return review ? JSON.parse(review.result_json) : 'No review workflow found'
+```
+
+### "上次跑 experiment 用了多少 token"
+
+```js
+const hits = search('experiment')
+if (!hits.length) return 'No experiment sessions found'
+const sid = hits[0].session.id
+return sql('SELECT SUM(input_tokens) as input, SUM(output_tokens) as output FROM messages WHERE session_id = ?', sid)
+```
+
+### "追踪一下那个决策是怎么做的"
+
+```js
+const hits = search('the decision query here')
+if (!hits.length) return 'Nothing found'
+return context(hits[0].message.uuid)
+```
+
+## Notes
+
+- First run builds the index (~5s for ~100 sessions). Subsequent runs are incremental.
+- DB location: `~/.claude/obelisk.sqlite`
+- Subagent and workflow agent conversations are fully indexed and searchable.
+- Query scripts run in a sandboxed VM context -- no file system or network access from inside scripts.
+- Text is truncated to 10k chars per message during indexing.
+- FTS5 search supports standard SQLite FTS syntax: `"exact phrase"`, `term1 AND term2`, `term1 OR term2`, `term1 NOT term2`.
