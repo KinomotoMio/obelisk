@@ -64,6 +64,21 @@ function trunc(s) {
   return typeof s === 'string' && s.length > TEXT_LIMIT ? s.slice(0, TEXT_LIMIT) : s;
 }
 
+function truncJson(obj, limit = TEXT_LIMIT) {
+  if (obj === null || obj === undefined) return null;
+  const walk = (v) => {
+    if (typeof v === 'string') return v.length > limit ? v.slice(0, limit) + '...[truncated]' : v;
+    if (Array.isArray(v)) return v.map(walk);
+    if (typeof v === 'object' && v !== null) {
+      const out = {};
+      for (const [k, val] of Object.entries(v)) out[k] = walk(val);
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(walk(obj));
+}
+
 function extractText(content) {
   if (typeof content === 'string') return trunc(content);
   if (!Array.isArray(content)) return null;
@@ -174,7 +189,7 @@ function indexJsonl(db, fi) {
     if (obj.type === 'assistant' && Array.isArray(msg.content)) {
       for (const b of msg.content) {
         if (b.type === 'tool_use' && b.id)
-          ins.tc.run(b.id, obj.uuid, sid, b.name, trunc(JSON.stringify(b.input || {})), filePath(b.name, b.input));
+          ins.tc.run(b.id, obj.uuid, sid, b.name, truncJson(b.input || {}), filePath(b.name, b.input));
       }
     }
 
@@ -227,8 +242,8 @@ function indexWorkflows(db) {
           if (!wf.runId) continue;
           const ac = db.prepare('SELECT COUNT(*) as c FROM workflow_agents WHERE run_id=?').get(wf.runId);
           db.prepare('INSERT OR REPLACE INTO workflows VALUES(?,?,?,?,?,?,?)').run(
-            wf.runId, sd, wf.taskId||null, trunc(wf.script||null),
-            wf.result ? trunc(JSON.stringify(wf.result)) : null, wf.timestamp||null, ac?.c||0);
+            wf.runId, sd, wf.taskId||null, wf.script||null,
+            wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0);
         } catch {}
       }
     }
@@ -365,7 +380,51 @@ function createQueryApi(db) {
 
   const recent = (n = 10) => db.prepare('SELECT * FROM sessions ORDER BY ended_at DESC LIMIT ?').all(n);
 
-  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, recent };
+  const resolveJsonlPath = (messageUuid) => {
+    const msg = db.prepare('SELECT session_id, agent_id FROM messages WHERE uuid=?').get(messageUuid);
+    if (!msg) return null;
+    if (msg.agent_id) {
+      const wa = db.prepare('SELECT agent_id, run_id, session_id FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
+      if (wa) {
+        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(wa.session_id);
+        if (ses) return path.join(path.dirname(ses.jsonl_path), wa.session_id, 'subagents', 'workflows', wa.run_id, wa.agent_id + '.jsonl');
+      }
+      const sa = db.prepare('SELECT agent_id, session_id FROM subagents WHERE agent_id=?').get(msg.agent_id);
+      if (sa) {
+        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(sa.session_id);
+        if (ses) return path.join(path.dirname(ses.jsonl_path), sa.session_id, 'subagents', sa.agent_id + '.jsonl');
+      }
+    } else {
+      const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id);
+      if (ses) return ses.jsonl_path;
+    }
+    return null;
+  };
+
+  const findRawLine = (jsonlPath, uuid) => {
+    if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
+    for (const line of fs.readFileSync(jsonlPath, 'utf8').split('\n')) {
+      if (!line || !line.includes(uuid)) continue;
+      try { const obj = JSON.parse(line); if (obj.uuid === uuid) return line; } catch {}
+    }
+    return null;
+  };
+
+  const raw = (messageUuid, opts = {}) => {
+    const { offset = 0, limit = 10000 } = opts;
+    const jsonlPath = resolveJsonlPath(messageUuid);
+    const line = findRawLine(jsonlPath, messageUuid);
+    if (!line) return null;
+    return {
+      text: line.slice(offset, offset + limit),
+      totalLength: line.length,
+      offset,
+      limit,
+      hasMore: offset + limit < line.length,
+    };
+  };
+
+  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, recent, raw };
 }
 
 // --- Script executor ---
