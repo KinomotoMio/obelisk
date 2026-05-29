@@ -58,6 +58,8 @@ Latest n sessions (default 10). Returns session rows with title, project, starte
 
 Raw SQL. Use `?` placeholders. Returns array of row objects.
 
+**Before writing your first SQL query, read `references/schema.md` for the full table schema, column names, and relationships.** Don't guess column names — the schema is your source of truth.
+
 Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `subagents`, `workflows`, `workflow_agents`, `messages_fts`
 
 ### Other APIs
@@ -69,6 +71,26 @@ Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `subagents`, `work
 - `workflowTree(runId)` -- workflow + its agents + all their messages
 - `fileHistory(filePath)` -- every Edit/Write/Read on a file across sessions
 - `failures(sessionId?)` -- tool calls that returned errors, with surrounding context
+- `raw(uuid, opts?)` -- windowed access to the original JSONL line (bypasses index truncation)
+
+### raw(uuid, opts?)
+
+Some indexed fields (tool call inputs, tool results) are truncated to 10k chars. `raw()` reads the original JSONL line to recover the full content.
+
+Returns: `{ text, totalLength, offset, limit, hasMore }`
+
+opts: `{ offset: 0, limit: 10000 }` — character window into the raw JSONL line.
+
+```js
+// First window
+const r = raw(messageUuid)
+// r.text = first 10k chars of the original JSONL line
+// r.totalLength = full line length
+// r.hasMore = true if more content remains
+
+// Scroll forward
+const r2 = raw(messageUuid, { offset: 10000, limit: 10000 })
+```
 
 ## Examples
 
