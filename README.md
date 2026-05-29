@@ -6,10 +6,14 @@
 </picture>
 
 Every past session, subagent, and workflow — searchable in natural language.
-
 </picture>
 
 </div>
+
+[![stars](https://img.shields.io/github/stars/tommy0103/obelisk?style=flat-square)](https://github.com/tommy0103/obelisk/stargazers)
+[![version](https://img.shields.io/github/v/tag/tommy0103/obelisk?label=version&style=flat-square)](https://github.com/tommy0103/obelisk/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+
 
 <br />
 
