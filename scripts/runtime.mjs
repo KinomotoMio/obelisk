@@ -97,29 +97,60 @@ function filePath(name, input) {
 
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
 
+function readLines(filePath, callback) {
+  const fd = fs.openSync(filePath, 'r');
+  const bufSize = 64 * 1024;
+  const buf = Buffer.alloc(bufSize);
+  let remainder = '';
+  let bytesRead;
+  try {
+    while ((bytesRead = fs.readSync(fd, buf, 0, bufSize)) > 0) {
+      const chunk = remainder + buf.toString('utf8', 0, bytesRead);
+      const lines = chunk.split('\n');
+      remainder = lines.pop();
+      for (const line of lines) {
+        if (line && callback(line) === false) return;
+      }
+    }
+    if (remainder) callback(remainder);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function discoverJsonlFiles() {
   const files = [];
   if (!fs.existsSync(PROJECTS_DIR)) return files;
-  for (const proj of fs.readdirSync(PROJECTS_DIR)) {
+  let projects;
+  try { projects = fs.readdirSync(PROJECTS_DIR); } catch (e) { process.stderr.write(`Warning: cannot read projects dir: ${e.message}\n`); return files; }
+  for (const proj of projects) {
     const projPath = path.join(PROJECTS_DIR, proj);
     if (!isDir(projPath)) continue;
-    for (const f of fs.readdirSync(projPath)) {
+    let entries;
+    try { entries = fs.readdirSync(projPath); } catch { continue; }
+    for (const f of entries) {
       if (f.endsWith('.jsonl'))
         files.push({ path: path.join(projPath, f), sessionId: f.slice(0, -6), project: proj, isSubagent: false });
     }
-    for (const sd of fs.readdirSync(projPath)) {
+    for (const sd of entries) {
       const saDir = path.join(projPath, sd, 'subagents');
       if (!isDir(saDir)) continue;
-      for (const sf of fs.readdirSync(saDir)) {
+      let saEntries;
+      try { saEntries = fs.readdirSync(saDir); } catch { continue; }
+      for (const sf of saEntries) {
         if (sf.endsWith('.jsonl'))
           files.push({ path: path.join(saDir, sf), sessionId: sd, project: proj, isSubagent: true, agentId: sf.slice(0, -6) });
       }
       const wfRoot = path.join(saDir, 'workflows');
       if (!isDir(wfRoot)) continue;
-      for (const wfDir of fs.readdirSync(wfRoot)) {
+      let wfDirs;
+      try { wfDirs = fs.readdirSync(wfRoot); } catch { continue; }
+      for (const wfDir of wfDirs) {
         const wfPath = path.join(wfRoot, wfDir);
         if (!isDir(wfPath)) continue;
-        for (const wf of fs.readdirSync(wfPath)) {
+        let wfEntries;
+        try { wfEntries = fs.readdirSync(wfPath); } catch { continue; }
+        for (const wf of wfEntries) {
           if (wf.endsWith('.jsonl'))
             files.push({ path: path.join(wfPath, wf), sessionId: sd, project: proj, isSubagent: true, agentId: wf.slice(0, -6), workflowRunId: wfDir });
         }
@@ -139,7 +170,6 @@ function needsReindex(db, fp) {
 function indexJsonl(db, fi) {
   const { needed, skip } = needsReindex(db, fi.path);
   if (!needed) return;
-  const lines = fs.readFileSync(fi.path, 'utf8').split('\n').filter(Boolean);
   const mt = fs.statSync(fi.path).mtimeMs;
 
   const ins = {
@@ -160,14 +190,17 @@ function indexJsonl(db, fi) {
     n: existing?.message_count || 0,
   };
 
-  for (let i = skip; i < lines.length; i++) {
+  let lineNum = 0;
+  readLines(fi.path, (line) => {
+    lineNum++;
+    if (lineNum <= skip) return;
     let obj;
-    try { obj = JSON.parse(lines[i]); } catch { continue; }
+    try { obj = JSON.parse(line); } catch { return; }
     const sid = fi.sessionId;
     const ts = obj.timestamp || null;
 
-    if (obj.type === 'ai-title' && obj.aiTitle) { sm.title = obj.aiTitle; continue; }
-    if (obj.type !== 'user' && obj.type !== 'assistant') continue;
+    if (obj.type === 'ai-title' && obj.aiTitle) { sm.title = obj.aiTitle; return; }
+    if (obj.type !== 'user' && obj.type !== 'assistant') return;
 
     if (ts && (!sm.started_at || ts < sm.started_at)) sm.started_at = ts;
     if (ts && (!sm.ended_at || ts > sm.ended_at)) sm.ended_at = ts;
@@ -201,13 +234,13 @@ function indexJsonl(db, fi) {
         ins.tr.run(b.tool_use_id, obj.uuid, sid, trunc(rt), obj.toolUseResult?.filePath || null);
       }
     }
-  }
+  });
 
   if (!fi.isSubagent) {
     const pp = '/' + fi.project.replace(/-/g, '/').replace(/^\//, '');
     ins.ses.run(fi.sessionId, sm.title, fi.project, pp, sm.started_at, sm.ended_at, sm.git_branch, sm.version, sm.n, fi.path);
   }
-  ins.idx.run(fi.path, mt, lines.length);
+  ins.idx.run(fi.path, mt, lineNum);
 }
 
 function indexSubagentMeta(db, fi) {
@@ -224,18 +257,24 @@ function indexSubagentMeta(db, fi) {
     } else {
       db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
     }
-  } catch {}
+  } catch (e) { process.stderr.write(`Warning: failed to read subagent meta ${mp}: ${e.message}\n`); }
 }
 
 function indexWorkflows(db) {
   if (!fs.existsSync(PROJECTS_DIR)) return;
-  for (const proj of fs.readdirSync(PROJECTS_DIR)) {
+  let projects;
+  try { projects = fs.readdirSync(PROJECTS_DIR); } catch { return; }
+  for (const proj of projects) {
     const pp = path.join(PROJECTS_DIR, proj);
     if (!isDir(pp)) continue;
-    for (const sd of fs.readdirSync(pp)) {
+    let entries;
+    try { entries = fs.readdirSync(pp); } catch { continue; }
+    for (const sd of entries) {
       const wd = path.join(pp, sd, 'workflows');
       if (!isDir(wd)) continue;
-      for (const f of fs.readdirSync(wd)) {
+      let wfFiles;
+      try { wfFiles = fs.readdirSync(wd); } catch { continue; }
+      for (const f of wfFiles) {
         if (!f.endsWith('.json')) continue;
         try {
           const wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
@@ -244,7 +283,7 @@ function indexWorkflows(db) {
           db.prepare('INSERT OR REPLACE INTO workflows VALUES(?,?,?,?,?,?,?)').run(
             wf.runId, sd, wf.taskId||null, wf.script||null,
             wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0);
-        } catch {}
+        } catch (e) { process.stderr.write(`Warning: failed to index workflow ${f}: ${e.message}\n`); }
       }
     }
   }
@@ -252,25 +291,38 @@ function indexWorkflows(db) {
 
 function indexHistory(db) {
   if (!fs.existsSync(HISTORY_PATH)) return;
-  for (const line of fs.readFileSync(HISTORY_PATH, 'utf8').split('\n').filter(Boolean)) {
+  readLines(HISTORY_PATH, (line) => {
     try {
       const o = JSON.parse(line);
       if (o.sessionId && o.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(o.title, o.sessionId);
-    } catch {}
-  }
+    } catch (e) { process.stderr.write(`Warning: malformed history line: ${e.message}\n`); }
+  });
 }
 
 function buildIndex() {
   const db = openDb();
   const files = discoverJsonlFiles();
+  for (const f of files) {
+    db.exec('BEGIN');
+    try {
+      indexJsonl(db, f);
+      indexSubagentMeta(db, f);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      process.stderr.write(`Warning: failed to index ${f.path}: ${e.message}\n`);
+    }
+  }
   db.exec('BEGIN');
   try {
-    for (const f of files) { indexJsonl(db, f); indexSubagentMeta(db, f); }
     indexWorkflows(db);
     indexHistory(db);
     db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
     db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  } catch (e) {
+    db.exec('ROLLBACK');
+    process.stderr.write(`Warning: failed to finalize index: ${e.message}\n`);
+  }
   db.close();
 }
 
@@ -363,19 +415,19 @@ function createQueryApi(db) {
   };
 
   const failures = (sid) => {
-    const rows = sid
-      ? db.prepare('SELECT * FROM tool_results WHERE session_id=?').all(sid)
-      : db.prepare('SELECT * FROM tool_results').all();
-    const out = [];
-    for (const r of rows) {
-      if (!r.content || !ERROR_PATS.some(p => r.content.includes(p))) continue;
+    const likeClauses = ERROR_PATS.map(() => 'content LIKE ?').join(' OR ');
+    const likeParams = ERROR_PATS.map(p => `%${p}%`);
+    let query = `SELECT * FROM tool_results WHERE (${likeClauses})`;
+    const params = [...likeParams];
+    if (sid) { query += ' AND session_id=?'; params.push(sid); }
+    const rows = db.prepare(query).all(...params);
+    return rows.map(r => {
       const tc = db.prepare('SELECT * FROM tool_calls WHERE id=?').get(r.tool_use_id);
       const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(r.session_id);
       const rm = db.prepare('SELECT * FROM messages WHERE uuid=?').get(r.message_uuid);
       const next = rm?.timestamp ? db.prepare('SELECT * FROM messages WHERE session_id=? AND timestamp>? ORDER BY timestamp LIMIT 3').all(r.session_id, rm.timestamp) : [];
-      out.push({ toolCall: tc, result: r, session, nextMessages: next });
-    }
-    return out;
+      return { toolCall: tc, result: r, session, nextMessages: next };
+    });
   };
 
   const recent = (n = 10) => db.prepare('SELECT * FROM sessions ORDER BY ended_at DESC LIMIT ?').all(n);
@@ -403,11 +455,12 @@ function createQueryApi(db) {
 
   const findRawLine = (jsonlPath, uuid) => {
     if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
-    for (const line of fs.readFileSync(jsonlPath, 'utf8').split('\n')) {
-      if (!line || !line.includes(uuid)) continue;
-      try { const obj = JSON.parse(line); if (obj.uuid === uuid) return line; } catch {}
-    }
-    return null;
+    let found = null;
+    readLines(jsonlPath, (line) => {
+      if (!line.includes(uuid)) return;
+      try { const obj = JSON.parse(line); if (obj.uuid === uuid) { found = line; return false; } } catch {}
+    });
+    return found;
   };
 
   const raw = (messageUuid, opts = {}) => {
