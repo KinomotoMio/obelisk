@@ -262,26 +262,40 @@ const msgs = thread('session-uuid');
 return { count: msgs.length, first: msgs[0]?.text?.slice(0, 100) };
 ```
 
-#### `subagents(sessionId)`
+#### `subagents(opts?)`
 
-All subagent spawns for a session, with message counts.
+All subagent spawns, with message counts. For backward compatibility, passing a string is treated as `sessionId`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.sessionId` | `string` | Restrict to one session |
+| `opts.project` | `string` | Filter by project slug (LIKE) |
+| `opts.limit` | `number` | Max results (default 100) |
 
 **Returns:** `Array<{ ...subagent_row, messageCount }>`.
 
 ```js
-const subs = subagents('session-uuid');
+const subs = subagents({ project: '%quiet-zero%' });
 return subs.map(s => ({ type: s.agent_type, desc: s.description, msgs: s.messageCount, tokens: s.total_tokens }));
 ```
 
-#### `workflows(sessionId?)`
+#### `workflows(opts?)`
 
-Workflow executions. Pass a session ID to filter, or omit for all workflows (newest first).
+Workflow executions. For backward compatibility, passing a string is treated as `sessionId`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.sessionId` | `string` | Restrict to one session |
+| `opts.project` | `string` | Filter by project slug (LIKE) |
+| `opts.after` | `string` | ISO 8601 lower bound on timestamp |
+| `opts.before` | `string` | ISO 8601 upper bound on timestamp |
+| `opts.limit` | `number` | Max results (default 100) |
 
 **Returns:** `Array<workflow_row>`.
 
 ```js
-const wfs = workflows();
-return wfs.slice(0, 5).map(w => ({ run: w.run_id, agents: w.agent_count, time: w.timestamp }));
+const wfs = workflows({ project: '%quiet-zero%' });
+return wfs.map(w => ({ run: w.run_id, agents: w.agent_count, time: w.timestamp }));
 ```
 
 #### `workflowTree(runId)`
@@ -295,37 +309,73 @@ const tree = workflowTree('run-uuid');
 return tree?.agents.map(a => ({ type: a.agent_type, msgs: a.messages.length }));
 ```
 
-#### `fileHistory(filePath)`
+#### `fileHistory(filePath, opts?)`
 
 All tool calls that touched a specific file, across every session.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `filePath` | `string` | Absolute file path (required) |
+| `opts.after` | `string` | ISO 8601 lower bound |
+| `opts.before` | `string` | ISO 8601 upper bound |
+| `opts.limit` | `number` | Max results (default 200) |
 
 **Returns:** `Array<{ toolCall, session, timestamp }>`.
 
 ```js
-const edits = fileHistory('/Users/tomiya/Code/quiet-zero/src/mcts.ts');
+const edits = fileHistory('/Users/tomiya/Code/quiet-zero/src/mcts.ts', { after: '2026-05-28' });
 return edits.map(e => ({ tool: e.toolCall.name, session: e.session.title, time: e.timestamp }));
 ```
 
-#### `failures(sessionId?)`
+#### `failures(opts?)`
 
-Tool calls whose results contain error patterns (`Error`, `ENOENT`, `failed`, `permission denied`, etc.). Includes the 3 messages immediately after each failure for retry context.
+Tool calls whose results contain error patterns (`Error`, `ENOENT`, `failed`, `permission denied`, etc.). Includes the 3 messages immediately after each failure for retry context. For backward compatibility, passing a string is treated as `sessionId`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.sessionId` | `string` | Restrict to one session |
+| `opts.project` | `string` | Filter by project slug (LIKE) |
+| `opts.after` | `string` | ISO 8601 lower bound |
+| `opts.before` | `string` | ISO 8601 upper bound |
+| `opts.limit` | `number` | Max results (default 50) |
 
 **Returns:** `Array<{ toolCall, result, session, nextMessages }>`.
 
 ```js
-const fails = failures('session-uuid');
+const fails = failures({ project: '%quiet-zero%', limit: 10 });
 return fails.map(f => ({ tool: f.toolCall?.name, error: f.result.content?.slice(0, 200) }));
 ```
 
 #### `recent(n?)`
 
-Last `n` sessions (default 10), ordered by `ended_at` descending.
+Shorthand for `sessions({ limit: n })`. Last `n` sessions (default 10), ordered by `ended_at` descending.
 
 **Returns:** `Array<session_row>`.
 
 ```js
 const last5 = recent(5);
 return last5.map(s => ({ title: s.title, project: s.project_path, ended: s.ended_at }));
+```
+
+#### `sessions(opts?)`
+
+Query sessions with filters. For backward compatibility, passing a number is treated as `limit`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.project` | `string` | Filter by project slug (supports LIKE, e.g. `'%quiet-zero%'`) |
+| `opts.after` | `string` | ISO 8601 lower bound on `started_at` |
+| `opts.before` | `string` | ISO 8601 upper bound on `started_at` |
+| `opts.limit` | `number` | Max results (default 50) |
+| `opts.branch` | `string` | Filter by git branch (exact match) |
+| `opts.sessionId` | `string` | Restrict to one session |
+| `opts.sessions` | `string[]` | Restrict to a set of session IDs |
+
+**Returns:** `Array<session_row>` ordered by `ended_at` descending.
+
+```js
+const qz = sessions({ project: '%quiet-zero%', limit: 5 });
+return qz.map(s => ({ title: s.title, branch: s.git_branch, ended: s.ended_at }));
 ```
 
 ---
@@ -436,13 +486,9 @@ return rows;
 ### Find sessions by time range
 
 ```js
-const rows = sql(`
-  SELECT id, title, project_path, started_at, ended_at, message_count
-  FROM sessions
-  WHERE started_at >= ? AND started_at < ?
-  ORDER BY started_at DESC
-`, '2026-05-28T00:00:00Z', '2026-05-30T00:00:00Z');
-return rows;
+return sessions({ after: '2026-05-28T00:00:00Z', before: '2026-05-30T00:00:00Z' }).map(s => ({
+  title: s.title, project: s.project_path, started: s.started_at, messages: s.message_count,
+}));
 ```
 
 ### Cross-reference subagent findings
@@ -460,13 +506,10 @@ return details;
 ### Find all sessions for a project
 
 ```js
-const rows = sql(`
-  SELECT id, title, started_at, ended_at, message_count, git_branch
-  FROM sessions
-  WHERE project_path = ?
-  ORDER BY started_at DESC
-`, '/Users/tomiya/Code/quiet-zero');
-return rows;
+return sessions({ project: '%quiet-zero%' }).map(s => ({
+  title: s.title, started: s.started_at, ended: s.ended_at,
+  messages: s.message_count, branch: s.git_branch,
+}));
 ```
 
 ### Reconstruct what happened in a session

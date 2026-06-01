@@ -44,6 +44,17 @@ Returns: `[{ message: {uuid, text, role, timestamp, model}, session: {id, title,
 
 opts: `{ limit, sessionId, project, after, before }`
 
+### sessions(opts?)
+
+Query sessions with filters. Returns session rows ordered by `ended_at` descending.
+
+opts: `{ project, after, before, limit, branch, sessionId, sessions }`
+
+```js
+sessions({ project: '%quiet-zero%' })
+sessions({ after: '2026-06-01', branch: 'main', limit: 5 })
+```
+
 ### context(uuid)
 
 Full story around a message: the message itself, parent chain, session info, subagent/workflow metadata.
@@ -52,7 +63,7 @@ Returns: `{ message, parentChain, session, subagent, workflow }`
 
 ### recent(n?)
 
-Latest n sessions (default 10). Returns session rows with title, project, started_at, ended_at.
+Shorthand for `sessions({ limit: n })`. Latest n sessions (default 10).
 
 ### sql(query, ...params)
 
@@ -64,22 +75,25 @@ Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `subagents`, `work
 
 ### Other APIs
 
+All list-returning functions accept a common filter opts object: `{ project, after, before, limit, sessionId, sessions }`. For backward compatibility, passing a string is treated as `sessionId`, a number as `limit`.
+
 - `trace(uuid)` -- full parent chain from root to message
 - `thread(sessionId)` -- all messages in a session, ordered by time
-- `subagents(sessionId)` -- subagent metadata + message counts
-- `workflows(sessionId?)` -- workflow runs (all if no sessionId)
+- `subagents(opts?)` -- subagent metadata + message counts. opts: `{ sessionId, project, limit }`
+- `workflows(opts?)` -- workflow runs. opts: `{ sessionId, project, after, before, limit }`
 - `workflowTree(runId)` -- workflow + its agents + all their messages
-- `fileHistory(filePath)` -- every Edit/Write/Read on a file across sessions
-- `failures(sessionId?)` -- tool calls that returned errors, with surrounding context
-- `summaries(sessionId?)` -- session summaries (away recaps, compaction summaries when available)
+- `fileHistory(filePath, opts?)` -- every Edit/Write/Read on a file. opts: `{ after, before, limit }`
+- `failures(opts?)` -- tool calls that returned errors, with surrounding context. opts: `{ sessionId, project, after, before, limit }`
+- `summaries(opts?)` -- session summaries (away recaps, compaction summaries). opts: `{ sessionId, project, after, before, limit, sessions }`
 - `raw(uuid, opts?)` -- windowed access to the original JSONL line (bypasses index truncation)
 
 ### Retrieval strategy
 
 **Never pull an entire session.** Navigate incrementally:
 
-1. `summaries()` — read session summaries to judge relevance (cheapest)
-2. `search()` — find specific messages matching a query
+1. `sessions({ project: '...' })` or `recent()` — find relevant sessions
+2. `summaries({ project: '...' })` — read session summaries to judge relevance (cheapest)
+3. `search()` — find specific messages matching a query
 3. When you find a relevant message and want more context, expand from that point:
    - **Horizontally**: use `sql()` to fetch neighboring messages by timestamp
      ```js
@@ -124,7 +138,7 @@ return hits.slice(0, 5).map(h => ({
 ### "最近在做什么"
 
 ```js
-return recent(10).map(s => ({ title: s.title, project: s.project, date: s.started_at }))
+return sessions({ limit: 10 }).map(s => ({ title: s.title, project: s.project, date: s.started_at }))
 ```
 
 ### "哪些文件被反复修改"
@@ -137,15 +151,12 @@ return sql(`
 `)
 ```
 
-### "那个 review workflow 的结果是什么"
+### "这个项目的 workflow 跑过几次"
 
 ```js
-const wfs = workflows()
-const review = wfs.find(w =>
-  w.run_id.includes('review') ||
-  JSON.parse(w.result_json || '{}').synthesis
-)
-return review ? JSON.parse(review.result_json) : 'No review workflow found'
+return workflows({ project: '%quiet-zero%' }).map(w => ({
+  run: w.run_id, agents: w.agent_count, time: w.timestamp
+}))
 ```
 
 ### "上次跑 experiment 用了多少 token"
