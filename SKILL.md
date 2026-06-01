@@ -71,7 +71,23 @@ Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `subagents`, `work
 - `workflowTree(runId)` -- workflow + its agents + all their messages
 - `fileHistory(filePath)` -- every Edit/Write/Read on a file across sessions
 - `failures(sessionId?)` -- tool calls that returned errors, with surrounding context
+- `summaries(sessionId?)` -- session summaries (away recaps, compaction summaries when available)
 - `raw(uuid, opts?)` -- windowed access to the original JSONL line (bypasses index truncation)
+
+### Retrieval strategy
+
+**Never pull an entire session.** Navigate incrementally:
+
+1. `summaries()` — read session summaries to judge relevance (cheapest)
+2. `search()` — find specific messages matching a query
+3. When you find a relevant message and want more context, expand from that point:
+   - **Horizontally**: use `sql()` to fetch neighboring messages by timestamp
+     ```js
+     sql('SELECT uuid,role,text FROM messages WHERE session_id=? AND timestamp>? ORDER BY timestamp LIMIT 5', sid, msg.timestamp)
+     ```
+   - **Vertically**: use `trace(uuid)` to walk up the parent chain, or `context(uuid)` to see subagent/workflow relationships
+4. `raw(uuid, opts?)` — recover truncated content from a specific message
+5. `thread(sessionId)` — full session dump, **last resort only**
 
 ### raw(uuid, opts?)
 

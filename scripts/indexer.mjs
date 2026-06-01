@@ -62,6 +62,7 @@ function indexJsonl(db, fi) {
     msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,model,is_sidechain,agent_id,input_tokens,output_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'),
     tc:  db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
     tr:  db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path) VALUES (?,?,?,?,?)'),
+    sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
     idx: db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)'),
   };
 
@@ -85,6 +86,10 @@ function indexJsonl(db, fi) {
     const ts = obj.timestamp || null;
 
     if (obj.type === 'ai-title' && obj.aiTitle) { sm.title = obj.aiTitle; return; }
+    if (obj.type === 'system' && obj.subtype === 'away_summary' && obj.content) {
+      ins.sum.run(obj.uuid || `${sid}-away-${ts}`, sid, ts, 'away_summary', obj.content);
+      return;
+    }
     if (obj.type !== 'user' && obj.type !== 'assistant') return;
 
     if (ts && (!sm.started_at || ts < sm.started_at)) sm.started_at = ts;

@@ -104,6 +104,10 @@ function createQueryApi(db) {
 
   const recent = (n = 10) => db.prepare('SELECT * FROM sessions ORDER BY ended_at DESC LIMIT ?').all(n);
 
+  const summaries = (sessionId) => sessionId
+    ? db.prepare('SELECT * FROM summaries WHERE session_id=? ORDER BY timestamp').all(sessionId)
+    : db.prepare('SELECT su.*, s.title as session_title, s.project FROM summaries su LEFT JOIN sessions s ON s.id=su.session_id ORDER BY su.timestamp DESC').all();
+
   const resolveJsonlPath = (messageUuid) => {
     const msg = db.prepare('SELECT session_id, agent_id FROM messages WHERE uuid=?').get(messageUuid);
     if (!msg) return null;
@@ -149,7 +153,7 @@ function createQueryApi(db) {
     };
   };
 
-  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, recent, raw };
+  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, recent, summaries, raw };
 }
 
 export { createQueryApi };

@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS workflow_agents (
   agent_type TEXT, description TEXT);
 CREATE TABLE IF NOT EXISTS index_state (
   jsonl_path TEXT PRIMARY KEY, mtime REAL, lines_processed INTEGER);
+CREATE TABLE IF NOT EXISTS summaries (
+  id TEXT PRIMARY KEY, session_id TEXT, timestamp TEXT,
+  source TEXT, content TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   uuid UNINDEXED, session_id UNINDEXED, text, content=messages, content_rowid=rowid);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
@@ -46,6 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_tc_file ON tool_calls(file_path);
 CREATE INDEX IF NOT EXISTS idx_sa_session ON subagents(session_id);
 CREATE INDEX IF NOT EXISTS idx_wf_session ON workflows(session_id);
 CREATE INDEX IF NOT EXISTS idx_wa_run ON workflow_agents(run_id);
+CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
 `;
 
 function openDb() {
