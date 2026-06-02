@@ -84,7 +84,7 @@ All list-returning functions accept a common filter opts object: `{ project, aft
 - `workflowTree(runId)` -- workflow + its agents + all their messages
 - `fileHistory(filePath, opts?)` -- every Edit/Write/Read on a file. opts: `{ after, before, limit }`
 - `failures(opts?)` -- tool calls that returned errors, with surrounding context. opts: `{ sessionId, project, after, before, limit }`
-- `summaries(opts?)` -- session summaries (away recaps, compaction summaries). opts: `{ sessionId, project, after, before, limit, sessions }`
+- `summaries(opts?)` -- session summaries (away recaps, compaction summaries). opts: `{ sessionId, project, after, before, limit, sessions }`. Returns: `[{ id, session_id, timestamp, source, content, session_title, project }]`. Use `source` for values like `away_summary`; use `content` for the summary text.
 - `raw(uuid, opts?)` -- windowed access to the original JSONL line (bypasses index truncation)
 
 ### Retrieval strategy

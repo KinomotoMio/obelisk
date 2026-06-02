@@ -1,7 +1,5 @@
 import { openDb, readLines, fs, path } from './db.mjs';
 
-const ERROR_PATS = ['error','Error','ENOENT','failed','Failed','FAILED','permission denied','Permission denied','EPERM','EACCES','command not found','No such file','Exit code'];
-
 function normalizeOpts(optsOrScalar, scalarKey = 'sessionId') {
   if (optsOrScalar == null) return {};
   if (typeof optsOrScalar === 'string') return { [scalarKey]: optsOrScalar };
@@ -23,6 +21,8 @@ function buildWhere(opts, aliases) {
   if (opts.branch) { clauses.push(`${aliases.branch} = ?`); params.push(opts.branch); }
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
+
+const BASH_EXIT_PAT = 'Exit code [1-9]%';
 
 function createQueryApi(db) {
   const q = (sql, ...p) => db.prepare(sql).all(...p);
@@ -129,13 +129,12 @@ function createQueryApi(db) {
   const failures = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 50 } = opts;
-    const likeClauses = ERROR_PATS.map(() => 'tr.content LIKE ?').join(' OR ');
-    const likeParams = ERROR_PATS.map(p => `%${p}%`);
     const needsJoin = opts.project || opts.branch;
     const { where, params: filterParams } = buildWhere(opts, { sessionId: 'tr.session_id', project: 's.project', timestamp: 'rm.timestamp', branch: 's.git_branch' });
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=tr.session_id' : '';
-    const allParams = [...likeParams, ...filterParams, limit];
-    const rows = db.prepare(`SELECT tr.* FROM tool_results tr ${join} LEFT JOIN messages rm ON rm.uuid=tr.message_uuid WHERE (${likeClauses}) AND ${where} LIMIT ?`).all(...allParams);
+    const errorCond = `(tr.is_error = 1 OR tr.content LIKE '${BASH_EXIT_PAT}')`;
+    const allParams = [...filterParams, limit];
+    const rows = db.prepare(`SELECT tr.* FROM tool_results tr ${join} LEFT JOIN messages rm ON rm.uuid=tr.message_uuid WHERE ${errorCond} AND ${where} LIMIT ?`).all(...allParams);
     return rows.map(r => {
       const tc = db.prepare('SELECT * FROM tool_calls WHERE id=?').get(r.tool_use_id);
       const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(r.session_id);

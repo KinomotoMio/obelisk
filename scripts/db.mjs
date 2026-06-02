@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   name TEXT, input_json TEXT, file_path TEXT);
 CREATE TABLE IF NOT EXISTS tool_results (
   tool_use_id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
-  content TEXT, file_path TEXT);
+  content TEXT, file_path TEXT, is_error INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS subagents (
   agent_id TEXT PRIMARY KEY, session_id TEXT, parent_tool_use_id TEXT,
   agent_type TEXT, description TEXT, duration_ms INTEGER, total_tokens INTEGER);
