@@ -45,7 +45,10 @@ CREATE TABLE messages (
   is_sidechain  INTEGER DEFAULT 0,  -- 1 if this message is on a sidechain (retry/branch)
   agent_id      TEXT,               -- subagent or workflow agent UUID (NULL for main conversation)
   input_tokens  INTEGER,            -- token usage (assistant messages only)
-  output_tokens INTEGER             -- token usage (assistant messages only)
+  output_tokens INTEGER,            -- token usage (assistant messages only)
+  cwd           TEXT,               -- working directory at message time (may differ from session project_path)
+  skill         TEXT,               -- skill that generated this response (e.g. "obelisk"), NULL if none
+  turn_duration_ms INTEGER          -- wall-clock duration of the turn ending at this message (from system turn_duration event)
 );
 ```
 
@@ -94,7 +97,8 @@ CREATE TABLE tool_results (
   message_uuid  TEXT,               -- FK -> messages.uuid (the user message carrying this result)
   session_id    TEXT,               -- FK -> sessions.id (denormalized)
   content       TEXT,               -- result text (truncated to 10k chars)
-  file_path     TEXT                -- file path from toolUseResult metadata (if any)
+  file_path     TEXT,               -- file path from toolUseResult metadata (if any)
+  is_error      INTEGER DEFAULT 0   -- 1 if the tool call returned an error (from API is_error field)
 );
 ```
 
@@ -199,8 +203,9 @@ Full-text search across all message text using FTS5.
 | `opts.project` | `string` | Restrict to a project slug |
 | `opts.after` | `string` | ISO 8601 lower bound on timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on timestamp |
+| `opts.cwd` | `string` | Filter by working directory (supports LIKE) |
 
-**Returns:** `Array<{ message, session, context }>` where `context` is the 6 nearest messages by timestamp.
+**Returns:** `Array<{ message, session, rank, context }>` where `context` is the 6 nearest messages by timestamp. `rank` is the FTS5 relevance score (negative; closer to 0 = more relevant).
 
 ```js
 const hits = search('MCTS exploration');

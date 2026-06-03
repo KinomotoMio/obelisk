@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS messages (
   uuid TEXT PRIMARY KEY, session_id TEXT, type TEXT, parent_uuid TEXT,
   timestamp TEXT, role TEXT, text TEXT, model TEXT,
   is_sidechain INTEGER DEFAULT 0, agent_id TEXT,
-  input_tokens INTEGER, output_tokens INTEGER);
+  input_tokens INTEGER, output_tokens INTEGER,
+  cwd TEXT, skill TEXT, turn_duration_ms INTEGER);
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
   name TEXT, input_json TEXT, file_path TEXT);

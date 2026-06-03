@@ -59,7 +59,7 @@ function indexJsonl(db, fi) {
 
   const ins = {
     ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path) VALUES (?,?,?,?,?,?,?,?,?,?)'),
-    msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,model,is_sidechain,agent_id,input_tokens,output_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'),
+    msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),
     tc:  db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
     tr:  db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
     sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
@@ -90,6 +90,10 @@ function indexJsonl(db, fi) {
       ins.sum.run(obj.uuid || `${sid}-away-${ts}`, sid, ts, 'away_summary', obj.content);
       return;
     }
+    if (obj.type === 'system' && obj.subtype === 'turn_duration' && obj.parentUuid && obj.durationMs) {
+      db.prepare('UPDATE messages SET turn_duration_ms=? WHERE uuid=?').run(obj.durationMs, obj.parentUuid);
+      return;
+    }
     if (obj.type !== 'user' && obj.type !== 'assistant') return;
 
     if (ts && (!sm.started_at || ts < sm.started_at)) sm.started_at = ts;
@@ -106,7 +110,8 @@ function indexJsonl(db, fi) {
     if (obj.uuid) {
       ins.msg.run(obj.uuid, sid, obj.type, obj.parentUuid || null, ts,
         msg.role || obj.type, text, msg.model || null,
-        obj.isSidechain ? 1 : 0, aid, usage.input_tokens || null, usage.output_tokens || null);
+        obj.isSidechain ? 1 : 0, aid, usage.input_tokens || null, usage.output_tokens || null,
+        obj.cwd || null, obj.attributionSkill || null);
     }
 
     if (obj.type === 'assistant' && Array.isArray(msg.content)) {

@@ -40,9 +40,11 @@ The query file body is executed inside `(async () => { ... })()` with the API be
 
 Full-text search across all messages (user, assistant, subagent, workflow agent).
 
-Returns: `[{ message: {uuid, text, role, timestamp, model}, session: {id, title, project, started_at}, context: [...surrounding messages] }]`
+Returns: `[{ message: {uuid, text, role, timestamp, model, cwd}, session: {id, title, project, started_at}, rank, context: [...surrounding messages] }]`
 
-opts: `{ limit, sessionId, project, after, before }`
+opts: `{ limit, sessionId, project, after, before, cwd }`
+
+`rank` is the FTS5 relevance score (negative; closer to 0 = more relevant). Use it to judge result quality and stop early when results become irrelevant.
 
 ### sessions(opts?)
 
@@ -71,6 +73,8 @@ Raw SQL. Use `?` placeholders. Returns array of row objects.
 
 **Before writing your first SQL query, read `references/schema.md` for the full table schema, column names, and relationships.** Don't guess column names — the schema is your source of truth.
 
+**Schema-safe SQL pattern:** when aggregating event tables, join to the table that actually owns the metadata instead of inventing columns. For example, `tool_calls` does **not** own timestamps; join `messages m ON m.uuid = tc.message_uuid` for `m.timestamp`, and join `sessions s ON s.id = tc.session_id` for project/session filters. Prefer SQL-side `GROUP BY`/`COUNT`/`MAX` with `LIMIT`, and return compact evidence rows with stable IDs rather than raw event records.
+
 Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `subagents`, `workflows`, `workflow_agents`, `messages_fts`
 
 ### Other APIs
@@ -89,6 +93,10 @@ All list-returning functions accept a common filter opts object: `{ project, aft
 
 ### Retrieval strategy
 
+**For helper field/schema confirmation questions:** use the relevant helper under the user's explicit scope with a small `limit`, then return only `Object.keys(row)` or a projection of the fields being verified plus short snippets. Do not invent alias fields when helper docs/rows use different names (for summaries, use `source`, `content`, `session_id`, `project`; not `text` or `summary_type`). Include stable evidence IDs such as `id`, `session_id`, or `uuid` in the final answer.
+
+**Respect explicit scopes and empty results.** If the user asks for a specific project/session/file/time range, keep every query inside that scope. When a scoped helper call such as `summaries({ project, limit })` returns `[]`, report no results; do not broaden to all projects or all summaries unless the user asks for fallback.
+
 **Never pull an entire session.** Navigate incrementally:
 
 1. `sessions({ project: '...' })` or `recent()` — find relevant sessions
@@ -102,6 +110,8 @@ All list-returning functions accept a common filter opts object: `{ project, aft
    - **Vertically**: use `trace(uuid)` to walk up the parent chain, or `context(uuid)` to see subagent/workflow relationships
 4. `raw(uuid, opts?)` — recover truncated content from a specific message
 5. `thread(sessionId)` — full session dump, **last resort only**
+
+**File history queries:** `fileHistory()` can include many `Read` rows and large tool inputs. For questions about how a file changed, filter to `Edit`/`Write` before returning, cap the filtered list to the requested evidence count, and return compact evidence records only.
 
 ### raw(uuid, opts?)
 

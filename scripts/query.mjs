@@ -28,17 +28,19 @@ function createQueryApi(db) {
   const q = (sql, ...p) => db.prepare(sql).all(...p);
 
   const search = (text, opts = {}) => {
-    const { limit = 20, sessionId, project, after, before } = opts;
+    const { limit = 20, sessionId, project, after, before, cwd } = opts;
     let where = 'WHERE mf.text MATCH ?';
     const p = [text];
     if (sessionId) { where += ' AND mf.session_id=?'; p.push(sessionId); }
-    if (project)   { where += ' AND s.project=?';     p.push(project); }
+    if (project)   { where += ' AND s.project LIKE ?'; p.push(project); }
     if (after)     { where += ' AND m.timestamp>?';    p.push(after); }
     if (before)    { where += ' AND m.timestamp<?';    p.push(before); }
+    if (cwd)       { where += ' AND m.cwd LIKE ?';     p.push(cwd); }
     p.push(limit);
     const rows = db.prepare(`
-      SELECT m.uuid,m.session_id,m.text,m.role,m.timestamp,m.model,
-             s.id as s_id,s.title as s_title,s.project as s_project,s.started_at as s_started
+      SELECT m.uuid,m.session_id,m.text,m.role,m.timestamp,m.model,m.cwd,
+             s.id as s_id,s.title as s_title,s.project as s_project,s.started_at as s_started,
+             rank
       FROM messages_fts mf JOIN messages m ON m.uuid=mf.uuid LEFT JOIN sessions s ON s.id=m.session_id
       ${where} ORDER BY rank LIMIT ?`).all(...p);
     return rows.map(r => {
@@ -46,8 +48,9 @@ function createQueryApi(db) {
         'SELECT uuid,text,role,timestamp,model FROM messages WHERE session_id=? AND uuid!=? ORDER BY ABS(JULIANDAY(timestamp)-JULIANDAY(?)) LIMIT 6'
       ).all(r.session_id, r.uuid, r.timestamp).sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
       return {
-        message: { uuid: r.uuid, text: r.text, role: r.role, timestamp: r.timestamp, model: r.model },
+        message: { uuid: r.uuid, text: r.text, role: r.role, timestamp: r.timestamp, model: r.model, cwd: r.cwd },
         session: { id: r.s_id, title: r.s_title, project: r.s_project, started_at: r.s_started },
+        rank: r.rank,
         context: ctx,
       };
     });
