@@ -132,7 +132,11 @@ CREATE TABLE workflows (
   script        TEXT,               -- workflow script content (truncated)
   result_json   TEXT,               -- JSON-serialized workflow result
   timestamp     TEXT,               -- ISO 8601 execution time
-  agent_count   INTEGER DEFAULT 0   -- number of agents in this workflow
+  agent_count   INTEGER DEFAULT 0,  -- number of agents in this workflow
+  duration_ms   INTEGER,            -- wall-clock duration of the workflow run
+  total_tokens  INTEGER,            -- total tokens across all agents
+  status        TEXT,               -- "completed", "failed", etc.
+  workflow_name TEXT                 -- name from the workflow script meta
 );
 ```
 
@@ -144,11 +148,18 @@ Individual agents within a workflow run.
 
 ```sql
 CREATE TABLE workflow_agents (
-  agent_id      TEXT PRIMARY KEY,   -- agent UUID
+  agent_id      TEXT PRIMARY KEY,   -- agent UUID (prefixed with "agent-")
   run_id        TEXT,               -- FK -> workflows.run_id
   session_id    TEXT,               -- FK -> sessions.id
   agent_type    TEXT,               -- agent type label
-  description   TEXT                -- task description
+  description   TEXT,               -- task description
+  phase         TEXT,               -- workflow phase title (e.g. "Review", "Verify")
+  label         TEXT,               -- agent label from workflow script
+  model         TEXT,               -- model used (e.g. "claude-opus-4-6[1m]")
+  state         TEXT,               -- "done", "error", etc.
+  duration_ms   INTEGER,            -- wall-clock duration of this agent
+  tokens        INTEGER,            -- total tokens used by this agent
+  tool_calls    INTEGER             -- number of tool calls made
 );
 ```
 
@@ -305,13 +316,13 @@ return wfs.map(w => ({ run: w.run_id, agents: w.agent_count, time: w.timestamp }
 
 #### `workflowTree(runId)`
 
-Full execution tree for a workflow: the workflow record plus all its agents and their messages.
+Lightweight execution tree for a workflow: metadata, parsed result, and agent summaries with phase/label/performance data. Does not load agent messages — use `sql()` with `agent_id` to drill into a specific agent.
 
-**Returns:** `{ ...workflow_row, agents: Array<{ ...agent_row, messages: Array<message> }> }` or `null`.
+**Returns:** `{ ...workflow_row, result: object, agents: Array<{ ...agent_row, messageCount }> }` or `null`.
 
 ```js
 const tree = workflowTree('run-uuid');
-return tree?.agents.map(a => ({ type: a.agent_type, msgs: a.messages.length }));
+return tree?.agents.map(a => ({ phase: a.phase, label: a.label, tokens: a.tokens, msgs: a.messageCount }));
 ```
 
 #### `fileHistory(filePath, opts?)`

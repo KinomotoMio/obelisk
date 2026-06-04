@@ -22,7 +22,7 @@ function buildWhere(opts, aliases) {
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
 
-const BASH_EXIT_PAT = 'Exit code [1-9]%';
+const BASH_EXIT_PAT = 'Exit code %';
 
 function createQueryApi(db) {
   const q = (sql, ...p) => db.prepare(sql).all(...p);
@@ -107,10 +107,13 @@ function createQueryApi(db) {
   const workflowTree = (runId) => {
     const wf = db.prepare('SELECT * FROM workflows WHERE run_id=?').get(runId);
     if (!wf) return null;
-    const agents = db.prepare('SELECT * FROM workflow_agents WHERE run_id=?').all(runId).map(a => ({
-      ...a, messages: db.prepare('SELECT * FROM messages WHERE agent_id=? ORDER BY timestamp').all(a.agent_id),
-    }));
-    return { ...wf, agents };
+    let result = null;
+    try { result = JSON.parse(wf.result_json); } catch {}
+    const agents = db.prepare('SELECT * FROM workflow_agents WHERE run_id=?').all(runId).map(a => {
+      const mc = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id=?').get(a.agent_id);
+      return { ...a, messageCount: mc?.c || 0 };
+    });
+    return { ...wf, result, agents };
   };
 
   const fileHistory = (fp, opts = {}) => {

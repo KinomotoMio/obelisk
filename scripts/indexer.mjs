@@ -148,7 +148,7 @@ function indexSubagentMeta(db, fi) {
     const ts = db.prepare('SELECT MIN(timestamp) as t0, MAX(timestamp) as t1 FROM messages WHERE agent_id=?').get(fi.agentId);
     const dur = ts?.t0 && ts?.t1 ? new Date(ts.t1).getTime() - new Date(ts.t0).getTime() : null;
     if (fi.workflowRunId) {
-      db.prepare('INSERT OR REPLACE INTO workflow_agents VALUES(?,?,?,?,?)').run(fi.agentId, fi.workflowRunId, fi.sessionId, meta.agentType||null, meta.description||null);
+      db.prepare('INSERT OR REPLACE INTO workflow_agents (agent_id,run_id,session_id,agent_type,description) VALUES(?,?,?,?,?)').run(fi.agentId, fi.workflowRunId, fi.sessionId, meta.agentType||null, meta.description||null);
     } else {
       db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
     }
@@ -175,9 +175,17 @@ function indexWorkflows(db) {
           const wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
           if (!wf.runId) continue;
           const ac = db.prepare('SELECT COUNT(*) as c FROM workflow_agents WHERE run_id=?').get(wf.runId);
-          db.prepare('INSERT OR REPLACE INTO workflows VALUES(?,?,?,?,?,?,?)').run(
+          db.prepare('INSERT OR REPLACE INTO workflows (run_id,session_id,task_id,script,result_json,timestamp,agent_count,duration_ms,total_tokens,status,workflow_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
             wf.runId, sd, wf.taskId||null, wf.script||null,
-            wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0);
+            wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0,
+            wf.durationMs||null, wf.totalTokens||null, wf.status||null, wf.workflowName||null);
+          const progress = wf.workflowProgress || [];
+          for (const item of progress) {
+            if (item.type !== 'workflow_agent' || !item.agentId) continue;
+            db.prepare('UPDATE workflow_agents SET phase=?, label=?, model=?, state=?, duration_ms=?, tokens=?, tool_calls=? WHERE agent_id=?').run(
+              item.phaseTitle||null, item.label||null, item.model||null, item.state||null,
+              item.durationMs||null, item.tokens||null, item.toolCalls||null, 'agent-' + item.agentId);
+          }
         } catch (e) { process.stderr.write(`Warning: failed to index workflow ${f}: ${e.message}\n`); }
       }
     }
@@ -194,8 +202,15 @@ function indexHistory(db) {
   });
 }
 
-function buildIndex() {
+const BUILD_DEBOUNCE_MS = 30000;
+
+function buildIndex({ force = false } = {}) {
   const db = openDb();
+  if (!force) {
+    const last = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__last_build__'").get();
+    if (last && Date.now() - last.mtime < BUILD_DEBOUNCE_MS) { db.close(); return; }
+  }
+
   const files = discoverJsonlFiles();
   for (const f of files) {
     db.exec('BEGIN');
@@ -213,6 +228,7 @@ function buildIndex() {
     indexWorkflows(db);
     indexHistory(db);
     db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
+    db.prepare("INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES ('__last_build__', ?, 0)").run(Date.now());
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

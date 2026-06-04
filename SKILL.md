@@ -84,8 +84,8 @@ All list-returning functions accept a common filter opts object: `{ project, aft
 - `trace(uuid)` -- full parent chain from root to message
 - `thread(sessionId)` -- all messages in a session, ordered by time
 - `subagents(opts?)` -- subagent metadata + message counts. opts: `{ sessionId, project, limit }`
-- `workflows(opts?)` -- workflow runs. opts: `{ sessionId, project, after, before, limit }`
-- `workflowTree(runId)` -- workflow + its agents + all their messages
+- `workflows(opts?)` -- workflow runs with duration, tokens, status. opts: `{ sessionId, project, after, before, limit }`
+- `workflowTree(runId)` -- workflow metadata + parsed result + agents with phase/label/tokens/duration (no messages; use `sql()` with `agent_id` to drill into a specific agent)
 - `fileHistory(filePath, opts?)` -- every Edit/Write/Read on a file. opts: `{ after, before, limit }`
 - `failures(opts?)` -- tool calls that returned errors, with surrounding context. opts: `{ sessionId, project, after, before, limit }`
 - `summaries(opts?)` -- session summaries (away recaps, compaction summaries). opts: `{ sessionId, project, after, before, limit, sessions }`. Returns: `[{ id, session_id, timestamp, source, content, session_title, project }]`. Use `source` for values like `away_summary`; use `content` for the summary text.
@@ -102,7 +102,7 @@ All list-returning functions accept a common filter opts object: `{ project, aft
 1. `sessions({ project: '...' })` or `recent()` — find relevant sessions
 2. `summaries({ project: '...' })` — read session summaries to judge relevance (cheapest)
 3. `search()` — find specific messages matching a query
-3. When you find a relevant message and want more context, expand from that point:
+4. When you find a relevant message and want more context, expand from that point:
    - **Horizontally**: use `sql()` to fetch neighboring messages by timestamp
      ```js
      sql('SELECT uuid,role,text FROM messages WHERE session_id=? AND timestamp>? ORDER BY timestamp LIMIT 5', sid, msg.timestamp)
@@ -194,3 +194,4 @@ return context(hits[0].message.uuid)
 - Query scripts run in a sandboxed VM context -- no file system or network access from inside scripts.
 - Text is truncated to 10k chars per message during indexing.
 - FTS5 search supports standard SQLite FTS syntax: `"exact phrase"`, `term1 AND term2`, `term1 OR term2`, `term1 NOT term2`.
+- FTS5 tokenizes on hyphens. To search for `SkillOpt-outputs`, use `"skillopt outputs"` (replace hyphen with space, wrap in quotes for phrase match). For exact match on hyphenated strings, use `sql()` with LIKE instead.

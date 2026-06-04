@@ -31,10 +31,13 @@ CREATE TABLE IF NOT EXISTS subagents (
   agent_type TEXT, description TEXT, duration_ms INTEGER, total_tokens INTEGER);
 CREATE TABLE IF NOT EXISTS workflows (
   run_id TEXT PRIMARY KEY, session_id TEXT, task_id TEXT,
-  script TEXT, result_json TEXT, timestamp TEXT, agent_count INTEGER DEFAULT 0);
+  script TEXT, result_json TEXT, timestamp TEXT, agent_count INTEGER DEFAULT 0,
+  duration_ms INTEGER, total_tokens INTEGER, status TEXT, workflow_name TEXT);
 CREATE TABLE IF NOT EXISTS workflow_agents (
   agent_id TEXT PRIMARY KEY, run_id TEXT, session_id TEXT,
-  agent_type TEXT, description TEXT);
+  agent_type TEXT, description TEXT,
+  phase TEXT, label TEXT, model TEXT, state TEXT,
+  duration_ms INTEGER, tokens INTEGER, tool_calls INTEGER);
 CREATE TABLE IF NOT EXISTS index_state (
   jsonl_path TEXT PRIMARY KEY, mtime REAL, lines_processed INTEGER);
 CREATE TABLE IF NOT EXISTS summaries (

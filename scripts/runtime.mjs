@@ -22,7 +22,7 @@ function executeQuery(db, scriptContent) {
 function main() {
   const args = process.argv.slice(2);
   if (args[0] === '--build') {
-    buildIndex();
+    buildIndex({ force: true });
     process.stdout.write(JSON.stringify({ ok: true, db: DB_PATH }) + '\n');
     return;
   }
