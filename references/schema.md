@@ -211,12 +211,22 @@ Full-text search across all message text using FTS5.
 | `text` | `string` | FTS5 query (terms, phrases, prefix) |
 | `opts.limit` | `number` | Max results (default 20) |
 | `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | Restrict to a project slug |
+| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.after` | `string` | ISO 8601 lower bound on timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on timestamp |
 | `opts.cwd` | `string` | Filter by working directory (supports LIKE) |
 
-**Returns:** `Array<{ message, session, rank, context }>` where `context` is the 6 nearest messages by timestamp. `rank` is the FTS5 relevance score (negative; closer to 0 = more relevant).
+**Scope note:** `sessions.project` is the stored Claude Code project slug,
+`sessions.project_path` is the reconstructed absolute project path, and
+`messages.cwd` is the working directory at message time. Helper `project`
+filters are fuzzy `LIKE` filters over `sessions.project`. For exact project
+membership, use `sql()` with `s.project = ?` or `s.project_path = ?`.
+
+**Returns:** `Array<{ message, session, rank, context }>` where `context` is the
+6 nearest messages by timestamp in the same session. It is temporal neighbor
+context, not a parent chain. `rank` is the FTS5 relevance score used by
+`ORDER BY rank`; lower values sort earlier, so treat the returned order as the
+relevance order unless you are deliberately using FTS5 ranking details.
 
 ```js
 const hits = search('MCTS exploration');
@@ -285,7 +295,7 @@ All subagent spawns, with message counts. For backward compatibility, passing a 
 | Param | Type | Description |
 |-------|------|-------------|
 | `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | Filter by project slug (LIKE) |
+| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.limit` | `number` | Max results (default 100) |
 
 **Returns:** `Array<{ ...subagent_row, messageCount }>`.
@@ -302,7 +312,7 @@ Workflow executions. For backward compatibility, passing a string is treated as 
 | Param | Type | Description |
 |-------|------|-------------|
 | `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | Filter by project slug (LIKE) |
+| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.after` | `string` | ISO 8601 lower bound on timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on timestamp |
 | `opts.limit` | `number` | Max results (default 100) |
@@ -338,6 +348,9 @@ All tool calls that touched a specific file, across every session.
 
 **Returns:** `Array<{ toolCall, session, timestamp }>`.
 
+Default order is oldest first (`ORDER BY m.timestamp`). For recent file changes,
+use raw SQL with `ORDER BY m.timestamp DESC`.
+
 ```js
 const edits = fileHistory('/Users/tomiya/Code/quiet-zero/src/mcts.ts', { after: '2026-05-28' });
 return edits.map(e => ({ tool: e.toolCall.name, session: e.session.title, time: e.timestamp }));
@@ -350,12 +363,14 @@ Tool calls whose results contain error patterns (`Error`, `ENOENT`, `failed`, `p
 | Param | Type | Description |
 |-------|------|-------------|
 | `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | Filter by project slug (LIKE) |
+| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.after` | `string` | ISO 8601 lower bound |
 | `opts.before` | `string` | ISO 8601 upper bound |
 | `opts.limit` | `number` | Max results (default 50) |
 
 **Returns:** `Array<{ toolCall, result, session, nextMessages }>`.
+
+Default order is newest first by the result message timestamp.
 
 ```js
 const fails = failures({ project: '%quiet-zero%', limit: 10 });
@@ -379,7 +394,7 @@ Query sessions with filters. For backward compatibility, passing a number is tre
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `opts.project` | `string` | Filter by project slug (supports LIKE, e.g. `'%quiet-zero%'`) |
+| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.after` | `string` | ISO 8601 lower bound on `started_at` |
 | `opts.before` | `string` | ISO 8601 upper bound on `started_at` |
 | `opts.limit` | `number` | Max results (default 50) |
@@ -388,6 +403,9 @@ Query sessions with filters. For backward compatibility, passing a number is tre
 | `opts.sessions` | `string[]` | Restrict to a set of session IDs |
 
 **Returns:** `Array<session_row>` ordered by `ended_at` descending.
+
+For exact slug/path membership, use raw SQL with `project = ?` or
+`project_path = ?`.
 
 ```js
 const qz = sessions({ project: '%quiet-zero%', limit: 5 });

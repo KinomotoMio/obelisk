@@ -94,19 +94,27 @@ Don't invent a rigid query DSL either.
 Agents can write code. So Obelisk gives them a small local query runtime over
 your past work.
 
-The agent has a two-tier API. Most questions only need the simple layer:
+The agent starts from a small core API, then uses structured shortcuts and
+references only when the question needs them:
 
-**Simple API** — taught directly in the skill prompt:
+**Core primitives** — the main CodeAct surface:
 
 - `search(text)` — FTS5 full-text search, returns matches with surrounding context
 - `context(uuid)` — full story around a message (parent chain, subagent/workflow metadata)
 - `sql(query, ...params)` — raw SQL for anything else
 
-**Advanced API** — agent reads `references/schema.md` on demand:
+**Structured shortcuts** — session, summary, subagent, workflow, file-history,
+failure, raw-window, and parent-chain helpers over the same SQLite data.
 
-- `trace()` · `thread()` · `subagents()` · `workflows()` · `workflowTree()` · `fileHistory()` · `failures()` · `recent()`
+**References** — agent reads on demand when the task needs deeper structure:
 
-The design is progressive disclosure: the agent doesn't see the full schema until it needs it.
+- `references/schema.md` — full SQLite schema and API reference
+- `references/query-patterns.md` — copyable CodeAct recipes for common retrieval tasks
+- `references/pitfalls.md` — scope, FTS, ordering, compact/raw, and field-name traps
+
+The design is progressive disclosure with guardrails: the main skill keeps the
+core contract and high-risk pitfalls visible, while longer recipes and the full
+schema stay out of the first prompt until the agent needs them.
 
 ## What gets indexed
 
@@ -129,7 +137,9 @@ Full-text search via FTS5 covers message text across every layer, while the SQLi
 ├── scripts/
 │   └── runtime.mjs       # Indexer + query runtime (400 lines, zero deps)
 └── references/
-    └── schema.md          # Full table schema + advanced API + query patterns
+    ├── schema.md          # Full table schema + advanced API reference
+    ├── query-patterns.md  # Copyable retrieval recipes
+    └── pitfalls.md        # Scope, FTS, ordering, and compactness traps
 ```
 
 ## Implementation Notes
@@ -145,4 +155,3 @@ Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire
 ## License
 
 MIT @tommy0103
-

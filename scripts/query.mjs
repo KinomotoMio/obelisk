@@ -140,7 +140,7 @@ function createQueryApi(db) {
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=tr.session_id' : '';
     const errorCond = `(tr.is_error = 1 OR tr.content LIKE '${BASH_EXIT_PAT}')`;
     const allParams = [...filterParams, limit];
-    const rows = db.prepare(`SELECT tr.* FROM tool_results tr ${join} LEFT JOIN messages rm ON rm.uuid=tr.message_uuid WHERE ${errorCond} AND ${where} LIMIT ?`).all(...allParams);
+    const rows = db.prepare(`SELECT tr.* FROM tool_results tr ${join} LEFT JOIN messages rm ON rm.uuid=tr.message_uuid WHERE ${errorCond} AND ${where} ORDER BY rm.timestamp DESC LIMIT ?`).all(...allParams);
     return rows.map(r => {
       const tc = db.prepare('SELECT * FROM tool_calls WHERE id=?').get(r.tool_use_id);
       const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(r.session_id);
