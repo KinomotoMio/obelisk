@@ -125,6 +125,23 @@ the script:
 Do not show every intermediate result to the conversation. Return the final
 compact evidence view, then use the model for the conclusion.
 
+## Session Windows Are Not Evidence Plans
+
+After finding a relevant session, avoid defaulting to `LIMIT 25` or `LIMIT 40`
+message windows. That is transcript browsing in miniature: it often brings back
+thinking, transitions, and repeated context instead of the evidence needed for
+the question.
+
+Preferred detail pass:
+
+1. extract candidate terms, files, tools, or decisions from the first pass;
+2. query by learned facets inside the candidate sessions;
+3. return 2-4 rows per facet, 8-12 rows total, with 160-220 char snippets.
+
+If the vocabulary is still unclear, use a small session window as fallback:
+5-8 rows per session, filtered by timestamp, role, or discovered terms when
+possible, and explain the fallback in `query_plan`.
+
 ## Compact Vs Raw
 
 Default to compact evidence. Raw/full access is a conscious escalation.

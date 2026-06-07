@@ -92,6 +92,72 @@ return {
 };
 ```
 
+## Learned Faceted Detail Pass
+
+Use this after a broad sweep has identified candidate sessions and vocabulary.
+Prefer detail facets learned from the first pass over pulling large session
+windows. Fall back to small filtered windows only when the vocabulary is still
+unclear, and record that reason in `query_plan`.
+
+```js
+const sessionIds = [
+  'first-pass-session-id-a',
+  'first-pass-session-id-b',
+];
+
+const learnedFacets = [
+  { facet: 'architecture comparison', terms: ['ultrawork', 'TaskTree', 'parallel'] },
+  { facet: 'key judgment', terms: ['ridiculous', 'serial', 'parallel'] },
+  { facet: 'merge direction', terms: ['replan', 'merge', 'workflow'] },
+  { facet: 'prompt observation', terms: ['prompt', 'guideline', 'skill'] },
+];
+
+const rows = [];
+for (const { facet, terms } of learnedFacets) {
+  const clauses = terms.map(() => 'm.text LIKE ?').join(' OR ');
+  const params = [
+    ...sessionIds,
+    ...terms.map(t => `%${t}%`),
+  ];
+  rows.push(...sql(`
+    SELECT
+      ? AS facet,
+      m.uuid,
+      m.session_id,
+      s.title AS session_title,
+      m.timestamp,
+      substr(m.text, 1, 220) AS snippet
+    FROM messages m
+    JOIN sessions s ON s.id = m.session_id
+    WHERE m.session_id IN (${sessionIds.map(() => '?').join(',')})
+      AND m.text IS NOT NULL
+      AND (${clauses})
+    ORDER BY m.timestamp
+    LIMIT 3
+  `, facet, ...params));
+}
+
+const seen = new Set();
+const evidence = [];
+for (const row of rows) {
+  if (seen.has(row.uuid)) continue;
+  seen.add(row.uuid);
+  evidence.push(row);
+  if (evidence.length >= 12) break;
+}
+
+return {
+  query_plan: {
+    mode: 'learned_faceted_detail',
+    source: 'terms discovered in first pass',
+    session_count: sessionIds.length,
+    facets: learnedFacets.map(f => f.facet),
+    per_facet_limit: 3,
+  },
+  evidence,
+};
+```
+
 ## Facet Sweep For Broad History
 
 Use this only for broad synthesis questions such as "how did X evolve", "what

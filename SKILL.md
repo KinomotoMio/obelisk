@@ -138,7 +138,7 @@ Keep queries scoped, bounded, and structural.
 - Treat project scope as three distinct semantics: exact `sessions.project` slug, exact `sessions.project_path`, or fuzzy `LIKE` search. Use `sql()` for exact slug/path membership; helper `project` means fuzzy `LIKE`.
 - Start with cheap locators: `sessions()`, `summaries()`, `search()`, or a small SQL query.
 - Expand incrementally with `context()`, `trace()`, neighbor SQL, or `raw()` windows.
-- For conclusion, broad history, failure investigation, or file evolution questions, prefer one bounded query script that locates, expands, dedupes, groups, and returns compact evidence rows. Do not spend multiple conversation turns showing intermediate query results.
+- For conclusion, broad history, failure investigation, or file evolution questions, prefer one bounded query script that locates, expands, dedupes, groups, and returns compact evidence rows. If a second detail pass is needed, derive its filters or facets from the first pass; do not dump whole session windows by default.
 - Return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets.
 - Avoid `thread()` unless the user explicitly asks for a full transcript or all smaller probes are insufficient.
 - Keep runtime JSON small, ideally under 10k-12k chars for synthesis tasks. Do not return all sessions, all summaries, all tool calls, complete workflow trees, full raw messages, or whole tool results.
