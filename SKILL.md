@@ -44,12 +44,13 @@ Custom query:
 
 The query file runs inside `(async () => { ... })()`. Use `return` to emit JSON.
 
-## Reference Triggers
+## Query Routing
 
-Use progressive disclosure, but do not guess.
+Before writing a query, classify the task. Progressive disclosure is useful, but
+skipping the relevant reference usually costs extra query rounds.
 
-- Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here.
-- Read `references/query-patterns.md` for one-shot synthesis retrieval, workflow trees, failed tool counts or failure groups, broad development-history synthesis, file history synthesis, summary neighbors, subagent recall, raw windows, and empty-result handling.
+- Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. Do this before running the SQL, not after a missing-column error.
+- Read `references/query-patterns.md` before broad "how did X evolve / what did we do / what problems happened / what was the conclusion" synthesis, and for one-shot synthesis retrieval, workflow trees, failed tool counts or failure groups, file history synthesis, summary neighbors, subagent recall, raw windows, and empty-result handling.
 - Read `references/pitfalls.md` when a scoped result is empty or tiny, when a query may over-fetch, when a term is hyphenated, when project scope is ambiguous, or when helper row fields are unclear.
 
 If a helper row shape is unclear, first run a tiny scoped query and return
@@ -140,7 +141,7 @@ Keep queries scoped, bounded, and structural.
 - For conclusion, broad history, failure investigation, or file evolution questions, prefer one bounded query script that locates, expands, dedupes, groups, and returns compact evidence rows. Do not spend multiple conversation turns showing intermediate query results.
 - Return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets.
 - Avoid `thread()` unless the user explicitly asks for a full transcript or all smaller probes are insufficient.
-- Keep runtime JSON small. Do not return all sessions, all summaries, all tool calls, complete workflow trees, full raw messages, or whole tool results.
+- Keep runtime JSON small, ideally under 10k-12k chars for synthesis tasks. Do not return all sessions, all summaries, all tool calls, complete workflow trees, full raw messages, or whole tool results.
 - When counting or aggregating, compute counts in SQL or in the query script and return those counts. Do not hand-count from long rows in prose.
 - For recent failures or "which tasks failed" questions, aggregate by session/task and return counts plus sparse examples. Do not return raw failure rows.
 - For broad "how did X evolve / what did we do / what problems happened" history synthesis, use a bounded facet sweep from `references/query-patterns.md`. For concept recall, session lookup, or exact term recall, keep compact `search()` first.

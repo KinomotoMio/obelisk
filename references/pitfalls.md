@@ -139,6 +139,7 @@ Default to compact evidence. Raw/full access is a conscious escalation.
 Common wrong guesses:
 
 - Summaries: use `source` and `content`; do not use `summary_type` or `text`.
+- Tool call name: use `tool_calls.name`. `tool_name` is only a safe alias in `SELECT tc.name AS tool_name`; `tc.tool_name` is not a table column.
 - Tool result timestamps: `tool_results` has no timestamp. Join `messages`.
 - Tool call timestamps: `tool_calls` has no timestamp. Join `messages`.
 - Workflow agent message counts: `workflowTree()` returns `messageCount` for agents.

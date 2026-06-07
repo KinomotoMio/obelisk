@@ -32,7 +32,8 @@ Use this for conclusion, broad history, failure investigation, or file evolution
 questions. The goal is to reduce conversation turns: keep intermediate search
 results inside the query script, then return only a compact task-local evidence
 view. This does not create stored semantic entities; the agent still reads the
-evidence and forms the conclusion.
+evidence and forms the conclusion. Expect 1-2 runtime queries: one broad compact
+evidence pass, and optionally one targeted detail pass by stable IDs.
 
 ```js
 const project = '%quiet-zero%';
