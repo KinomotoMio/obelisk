@@ -1,65 +1,40 @@
 # Obelisk Pitfalls
 
-Use this when a query may over-fetch, when a scoped query returns few or zero
-rows, or when helper fields are unclear.
+Use this after a query error, suspicious empty result, over-large output, or
+unclear helper row shape. For query design, read `retrieval-semantics.md` first.
 
-## Scope Is A Contract
+## Missing Columns And Wrong Aliases
 
-If the user gives a project, session, file, or time range, keep every query
-inside that scope. Do not broaden because a scoped result is small.
+Common wrong guesses:
 
-There are three different project-like scopes:
+- Summaries: use `source` and `content`; do not use `summary_type` or `text`.
+- Tool call name: use `tool_calls.name`. `tool_name` is only an alias in `SELECT tc.name AS tool_name`; `tc.tool_name` is not a column.
+- Tool call timestamps: `tool_calls` has no timestamp. Join `messages m ON m.uuid = tc.message_uuid`.
+- Tool result timestamps: `tool_results` has no timestamp. Join `messages m ON m.uuid = tr.message_uuid`.
+- Workflow agent message counts: `workflowTree()` returns `messageCount` for agents.
 
-- `sessions.project`: stored Claude Code project slug.
-- `sessions.project_path`: reconstructed absolute project path.
-- `messages.cwd`: working directory for a specific message.
-
-`project` filters in helpers are SQL `LIKE` patterns over `sessions.project`.
-`%quiet-zero%` can match benchmark or generated workspaces that merely contain
-that string. Prefer exact `sql()` filters when the user asks for exact project
-membership:
+When uncertain, inspect a tiny sample instead of guessing:
 
 ```js
-sql(`
-  SELECT id, title, project, project_path, ended_at
-  FROM sessions
-  WHERE project_path = ?
-  ORDER BY ended_at DESC
-  LIMIT 20
-`, '/Users/tomiya/Code/quiet-zero')
+const rows = summaries({ limit: 1 });
+return rows.length ? Object.keys(rows[0]) : [];
 ```
 
-Use fuzzy project search only when the task is discovery or the user explicitly
-asked to search broadly. If you broaden, make the broadening visible in the
-returned evidence.
+## FTS5 Syntax Errors
 
-Self-noise examples to filter when the user asks for real historical sessions:
-
-- `SkillOpt-outputs`
-- `obelisk_train`
-- `obelisk-eval`
-
-## FTS5 Hyphens And Syntax
-
-`search(text)` passes text to FTS5 `MATCH`. Hyphenated terms can be parsed as
-operators or separate tokens, and special characters can raise FTS syntax
-errors.
-
-For `workflow-script`, use a quoted tokenized phrase:
+`search(text)` uses raw FTS5 `MATCH`. Hyphenated terms and punctuation can be
+parsed as syntax.
 
 ```js
+// tokenized phrase for FTS
 search('"workflow script"', { limit: 10 })
 ```
 
-Use exact phrases for phrase semantics, separate terms for token semantics, and
-SQL `LIKE` for literal punctuation. Do not silently fallback from a scoped FTS
-query to all sessions.
-
-For exact hyphen matching, use SQL `LIKE` on `messages.text` under a scope:
+For literal punctuation, use SQL `LIKE` under the same scope:
 
 ```js
 sql(`
-  SELECT m.uuid, s.id AS session_id, s.title, substr(m.text,1,240) AS snippet
+  SELECT m.uuid, s.id AS session_id, s.title, substr(m.text,1,180) AS snippet
   FROM messages m
   JOIN sessions s ON s.id = m.session_id
   WHERE s.project LIKE ?
@@ -69,116 +44,36 @@ sql(`
 `, '%quiet-zero%', '%workflow-script%')
 ```
 
-`rank` is already applied by `ORDER BY rank`; lower rank sorts earlier in this
-runtime. Prefer returned order over comparing "closer to zero" manually.
+## Over-Large Runtime JSON
 
-## Context Is Not Always Causal
+If runtime stdout is large, fix the query instead of reading it in chunks.
 
-`search().context` returns temporal neighbors: nearby messages by timestamp in
-the same session. It is useful for quick orientation, but it is not the parent
-chain and may cross side branches, subagents, or workflow boundaries.
+- Lower `LIMIT`.
+- Shorten snippets to 160-240 chars.
+- Group in SQL/JS and return counts plus sparse examples.
+- For `fileHistory()`, filter to `Edit`/`Write` before projecting evidence.
+- For `workflowTree()`, omit `script`, `result_json`, and full agent messages unless explicitly requested.
+- Use `raw(uuid, { offset, limit })` only after identifying one specific message UUID.
 
-Use:
+## Empty Results
 
-- `context(uuid)` for message, parent chain, session, subagent, and workflow.
-- `trace(uuid)` for just the parent chain.
-- SQL timestamp neighbors for horizontal expansion inside one session.
+An empty array can be the correct answer for exact scopes or sentinels.
 
-## Ordering Defaults Matter
+When the user asks for a scoped project/file/session or exact term:
 
-Some helpers return newest first; others do not.
+1. run the scoped query;
+2. return `[]` or compact counts;
+3. say no matching prior result was found;
+4. do not call `recent()`, all-project `summaries()`, or `thread()` as fallback unless the user asks.
 
-- `sessions()` returns newest sessions first.
-- `summaries()` returns newest summaries first.
-- `workflows()` returns newest workflows first.
-- `failures()` returns newest failures first, but should still be treated as an evidence helper rather than a precise count helper.
-- `fileHistory()` orders by message timestamp ascending. If the user asks for recent changes, use SQL explicitly:
+## Counting From Snippets
 
-```js
-sql(`
-  SELECT tc.id, tc.name, tc.file_path, m.timestamp, s.id AS session_id, s.title
-  FROM tool_calls tc
-  JOIN messages m ON m.uuid = tc.message_uuid
-  JOIN sessions s ON s.id = tc.session_id
-  WHERE tc.file_path = ?
-    AND tc.name IN ('Edit', 'Write', 'NotebookEdit')
-  ORDER BY m.timestamp DESC
-  LIMIT 20
-`, '/absolute/path/to/file')
-```
-
-## Conversation Turns Are Expensive
-
-SQLite queries are cheap; repeated conversation turns are not. Every turn can
-write intermediate query output into conversation context and make later turns
-read it again.
-
-For conclusion, broad history, failure investigation, or file evolution tasks,
-prefer one bounded query script that does the mechanical retrieval work inside
-the script:
-
-1. locate candidates with `search()`, `summaries()`, or SQL;
-2. expand only selected hits with `context()`, `trace()`, or neighbor SQL;
-3. dedupe and group by `session_id`, facet, file, or tool;
-4. return compact evidence rows plus counts/limits.
-
-Do not show every intermediate result to the conversation. Return the final
-compact evidence view, then use the model for the conclusion.
-
-## Session Windows Are Not Evidence Plans
-
-After finding a relevant session, avoid defaulting to `LIMIT 25` or `LIMIT 40`
-message windows. That is transcript browsing in miniature: it often brings back
-thinking, transitions, and repeated context instead of the evidence needed for
-the question.
-
-Preferred detail pass:
-
-1. extract candidate terms, files, tools, or decisions from the first pass;
-2. query by learned facets inside the candidate sessions;
-3. return 2-4 rows per facet, 8-12 rows total, with 160-220 char snippets.
-
-If the vocabulary is still unclear, use a small session window as fallback:
-5-8 rows per session, filtered by timestamp, role, or discovered terms when
-possible, and explain the fallback in `query_plan`.
-
-## Compact Vs Raw
-
-Default to compact evidence. Raw/full access is a conscious escalation.
-
-- `workflowTree()` may include `script`, `result_json`, parsed `result`, and all agents. Project only the fields needed for the answer.
-- `thread(sessionId)` dumps a whole session; use it only as a last resort.
-- `raw(uuid)` can recover long original JSONL lines; use small windows and cite `totalLength`/`hasMore`.
-- Tool results and tool inputs can be large. Return short snippets.
-
-## Field Names To Avoid Guessing
-
-Common wrong guesses:
-
-- Summaries: use `source` and `content`; do not use `summary_type` or `text`.
-- Tool call name: use `tool_calls.name`. `tool_name` is only a safe alias in `SELECT tc.name AS tool_name`; `tc.tool_name` is not a table column.
-- Tool result timestamps: `tool_results` has no timestamp. Join `messages`.
-- Tool call timestamps: `tool_calls` has no timestamp. Join `messages`.
-- Workflow agent message counts: `workflowTree()` returns `messageCount` for agents.
-
-When uncertain:
-
-```js
-const rows = summaries({ limit: 1 });
-return rows.length ? Object.keys(rows[0]) : [];
-```
-
-## Counting Must Be Structural
-
-If the user asks "how many", "counts", "top N", or "group by", compute it in SQL
-or in the query script and return the computed data. Do not infer counts from
-visible snippets in prose.
-
-Good:
+If the user asks "how many", "counts", "top N", or "group by", compute it in
+SQL or in the query script. Do not infer counts from visible snippets.
 
 ```js
 sql(`
-  SELECT tc.name, COUNT(*) AS n
+  SELECT tc.name AS tool_name, COUNT(*) AS n
   FROM tool_results tr
   JOIN tool_calls tc ON tc.id = tr.tool_use_id
   WHERE tr.is_error = 1
@@ -187,21 +82,3 @@ sql(`
   LIMIT 10
 `)
 ```
-
-Bad:
-
-```js
-const rows = failures({ limit: 20 });
-return rows; // then count by eye in the final answer
-```
-
-## Empty Results
-
-An empty array is often the correct answer.
-
-When the user asks for a scoped project/file/session or an exact sentinel:
-
-1. Run the scoped query.
-2. Return `[]` or compact counts.
-3. Say no matching prior result was found.
-4. Do not call `recent()`, all-project `summaries()`, or `thread()` as fallback unless the user asks.

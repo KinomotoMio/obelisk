@@ -50,8 +50,9 @@ Before writing a query, classify the task. Progressive disclosure is useful, but
 skipping the relevant reference usually costs extra query rounds.
 
 - Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. Do this before running the SQL, not after a missing-column error.
-- Read `references/query-patterns.md` before broad "how did X evolve / what did we do / what problems happened / what was the conclusion" synthesis, and for one-shot synthesis retrieval, workflow trees, failed tool counts or failure groups, file history synthesis, summary neighbors, subagent recall, raw windows, and empty-result handling.
-- Read `references/pitfalls.md` when a scoped result is empty or tiny, when a query may over-fetch, when a term is hyphenated, when project scope is ambiguous, or when helper row fields are unclear.
+- Read `references/retrieval-semantics.md` before multi-step retrieval, scoped project/file/session searches, or synthesis/conclusion/history questions. It defines the query design frame.
+- Read `references/query-patterns.md` when you need copyable query scripts: one-shot synthesis, learned detail passes, workflow trees, failure groups, file history, summaries, subagents, raw windows, or empty results.
+- Read `references/pitfalls.md` after an error or when helper fields, FTS syntax, aliases, or row shapes are unclear.
 
 If a helper row shape is unclear, first run a tiny scoped query and return
 `Object.keys(row)` or a compact sample. Do not invent field names.
@@ -134,26 +135,14 @@ tiny sample before relying on less common filters.
 
 Keep queries scoped, bounded, and structural.
 
-- Preserve explicit project/session/file/time scopes. Empty or tiny scoped results are real results; do not broaden unless the user asks.
-- Treat project scope as three distinct semantics: exact `sessions.project` slug, exact `sessions.project_path`, or fuzzy `LIKE` search. Use `sql()` for exact slug/path membership; helper `project` means fuzzy `LIKE`.
-- Start with cheap locators: `sessions()`, `summaries()`, `search()`, or a small SQL query.
-- Expand incrementally with `context()`, `trace()`, neighbor SQL, or `raw()` windows.
-- For conclusion, broad history, failure investigation, or file evolution questions, prefer one bounded query script that locates, expands, dedupes, groups, and returns compact evidence rows. If a second detail pass is needed, derive its filters or facets from the first pass; do not dump whole session windows by default.
-- Return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets.
-- Avoid `thread()` unless the user explicitly asks for a full transcript or all smaller probes are insufficient.
-- Keep runtime JSON small, ideally under 10k-12k chars for synthesis tasks. Do not return all sessions, all summaries, all tool calls, complete workflow trees, full raw messages, or whole tool results.
-- When counting or aggregating, compute counts in SQL or in the query script and return those counts. Do not hand-count from long rows in prose.
-- For recent failures or "which tasks failed" questions, aggregate by session/task and return counts plus sparse examples. Do not return raw failure rows.
-- For broad "how did X evolve / what did we do / what problems happened" history synthesis, use a bounded facet sweep from `references/query-patterns.md`. For concept recall, session lookup, or exact term recall, keep compact `search()` first.
+- Scope First: classify the locator as scope, artifact, or semantic. Use the narrowest structural locator before FTS; empty scoped results are valid unless the user asks to broaden.
+- Plan Before Probe: for conclusion, broad history, failure investigation, or file evolution, write a bounded retrieval script instead of spending turns on intermediate results.
+- Structure Before Text: compute counts, joins, grouping, dedupe, and projection in SQL or JS; keep runtime JSON compact, ideally under 10k-12k chars for synthesis tasks.
+- Evidence Before Conclusion: return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets, then synthesize in the final answer.
 
-High-frequency field contracts:
-
-- `summaries()` uses `source` and `content`, not `summary_type` or `text`.
-- `search().context` is temporal neighbor context, not causal or parent-chain context.
-- `fileHistory()` includes `Read`; filter to `Edit`/`Write` for causal change history.
-- `workflowTree()` may expose raw `script` and `result_json`; omit them unless the user asks for raw workflow details.
-- `fileHistory()` is ordered oldest first. For recent file changes, use SQL with `ORDER BY m.timestamp DESC`.
-- FTS5 tokenizes hyphens and treats `search(text)` as raw `MATCH` syntax. For `workflow-script`, search the quoted tokenized phrase such as `"workflow script"` or use SQL `LIKE` for exact hyphen matching.
+If field, context, ordering, FTS, or helper semantics affect the query, read
+`references/retrieval-semantics.md` before coding. If a query errors, read
+`references/pitfalls.md` before retrying.
 
 ## Minimal Patterns
 
