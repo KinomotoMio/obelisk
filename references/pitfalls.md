@@ -107,6 +107,24 @@ sql(`
 `, '/absolute/path/to/file')
 ```
 
+## Conversation Turns Are Expensive
+
+SQLite queries are cheap; repeated conversation turns are not. Every turn can
+write intermediate query output into conversation context and make later turns
+read it again.
+
+For conclusion, broad history, failure investigation, or file evolution tasks,
+prefer one bounded query script that does the mechanical retrieval work inside
+the script:
+
+1. locate candidates with `search()`, `summaries()`, or SQL;
+2. expand only selected hits with `context()`, `trace()`, or neighbor SQL;
+3. dedupe and group by `session_id`, facet, file, or tool;
+4. return compact evidence rows plus counts/limits.
+
+Do not show every intermediate result to the conversation. Return the final
+compact evidence view, then use the model for the conclusion.
+
 ## Compact Vs Raw
 
 Default to compact evidence. Raw/full access is a conscious escalation.

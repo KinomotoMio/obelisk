@@ -26,6 +26,71 @@ return hits.slice(0, 5).map(h => {
 });
 ```
 
+## One-Shot Retrieval For Synthesis
+
+Use this for conclusion, broad history, failure investigation, or file evolution
+questions. The goal is to reduce conversation turns: keep intermediate search
+results inside the query script, then return only a compact task-local evidence
+view. This does not create stored semantic entities; the agent still reads the
+evidence and forms the conclusion.
+
+```js
+const project = '%quiet-zero%';
+const topic = 'obelisk retrieval semantics';
+const ftsTopic = topic.replace(/[-_]/g, ' ');
+const facets = [
+  'summary conclusion',
+  'runtime query script',
+  'failure problem',
+  'file change',
+];
+
+const candidates = [];
+for (const facet of facets) {
+  for (const h of search(`${ftsTopic} ${facet}`, { project, limit: 4 })) {
+    candidates.push({
+      kind: 'message',
+      facet,
+      session_id: h.session.id,
+      session_title: h.session.title,
+      uuid: h.message.uuid,
+      timestamp: h.message.timestamp,
+      snippet: h.message.text?.slice(0, 220),
+    });
+  }
+}
+
+for (const s of summaries({ project, limit: 8 })) {
+  if (/obelisk|retrieval|context|summary/i.test(`${s.content || ''} ${s.session_title || ''}`)) {
+    candidates.push({
+      kind: 'summary',
+      facet: 'summary',
+      summary_id: s.id,
+      session_id: s.session_id,
+      session_title: s.session_title,
+      timestamp: s.timestamp,
+      snippet: s.content?.slice(0, 240),
+    });
+  }
+}
+
+const seen = new Set();
+const evidence = [];
+for (const row of candidates.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))) {
+  const key = row.uuid || row.summary_id || `${row.session_id}:${row.timestamp}:${row.facet}`;
+  if (seen.has(key)) continue;
+  seen.add(key);
+  evidence.push(row);
+  if (evidence.length >= 16) break;
+}
+
+return {
+  query_plan: { project, topic, facets, per_facet_limit: 4, max_evidence: 16 },
+  evidence,
+  omitted: Math.max(0, candidates.length - evidence.length),
+};
+```
+
 ## Facet Sweep For Broad History
 
 Use this only for broad synthesis questions such as "how did X evolve", "what
@@ -115,18 +180,23 @@ return { summary: s, before, after };
 
 ## File History Synthesis
 
-`fileHistory()` contains reads as well as writes. For "why/how did this file
-change", scan a bounded `Edit`/`Write` set first, then return only compact
-evidence. Do not choose the answer from only the first few rows if the question
-asks for evolution.
+`fileHistory()` contains reads as well as writes and old-to-new rows. For
+"why/how did this file change", scan a bounded `Edit`/`Write` set first, then
+return only compact evidence. Do not return 20 long snippets; keep runtime JSON
+small enough that the final answer, not the query output, carries the prose.
 
 ```js
-const rows = fileHistory('/absolute/path/to/file', { limit: 100 });
+const rows = fileHistory('/absolute/path/to/file', { limit: 80 });
 const writes = rows.filter(r => ['Edit', 'Write'].includes(r.toolCall?.name));
 const reads = rows.filter(r => r.toolCall?.name === 'Read');
+const targetTerms = ['summaries', 'failures', 'raw'];
 
 const bySession = new Map();
 for (const r of writes) {
+  let input = {};
+  try { input = JSON.parse(r.toolCall.input_json || '{}'); } catch {}
+  const delta = String(input.new_string || input.content || input.old_string || '');
+  const snippet = delta.slice(0, 220);
   const sid = r.session.id;
   const group = bySession.get(sid) || {
     session_id: sid,
@@ -135,28 +205,29 @@ for (const r of writes) {
     write_edit_count: 0,
     first_timestamp: r.timestamp,
     last_timestamp: r.timestamp,
-    themes: [],
     evidence: [],
   };
   group.write_edit_count++;
   group.first_timestamp = group.first_timestamp < r.timestamp ? group.first_timestamp : r.timestamp;
   group.last_timestamp = group.last_timestamp > r.timestamp ? group.last_timestamp : r.timestamp;
-  const snippet = String(r.toolCall.input_json || '').slice(0, 360);
-  if (group.themes.length < 8) group.themes.push(snippet);
-  if (group.evidence.length < 3) {
+  if (group.evidence.length < 2) {
     group.evidence.push({
       tool: r.toolCall.name,
       tool_id: r.toolCall.id,
       timestamp: r.timestamp,
+      mentions: targetTerms.filter(k => delta.toLowerCase().includes(k)),
       snippet,
     });
   }
   bySession.set(sid, group);
 }
 
+const sessions = [...bySession.values()].slice(0, 6);
+const returnedEvidence = sessions.reduce((n, s) => n + s.evidence.length, 0);
 return {
   counts: { reads: reads.length, writes_edits: writes.length },
-  sessions: [...bySession.values()].slice(0, 10),
+  sessions,
+  omitted_write_edit_rows: Math.max(0, writes.length - returnedEvidence),
 };
 ```
 

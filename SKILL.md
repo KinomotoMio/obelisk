@@ -49,7 +49,7 @@ The query file runs inside `(async () => { ... })()`. Use `return` to emit JSON.
 Use progressive disclosure, but do not guess.
 
 - Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here.
-- Read `references/query-patterns.md` for workflow trees, failed tool counts or failure groups, broad development-history synthesis, file history synthesis, summary neighbors, subagent recall, raw windows, and empty-result handling.
+- Read `references/query-patterns.md` for one-shot synthesis retrieval, workflow trees, failed tool counts or failure groups, broad development-history synthesis, file history synthesis, summary neighbors, subagent recall, raw windows, and empty-result handling.
 - Read `references/pitfalls.md` when a scoped result is empty or tiny, when a query may over-fetch, when a term is hyphenated, when project scope is ambiguous, or when helper row fields are unclear.
 
 If a helper row shape is unclear, first run a tiny scoped query and return
@@ -137,6 +137,7 @@ Keep queries scoped, bounded, and structural.
 - Treat project scope as three distinct semantics: exact `sessions.project` slug, exact `sessions.project_path`, or fuzzy `LIKE` search. Use `sql()` for exact slug/path membership; helper `project` means fuzzy `LIKE`.
 - Start with cheap locators: `sessions()`, `summaries()`, `search()`, or a small SQL query.
 - Expand incrementally with `context()`, `trace()`, neighbor SQL, or `raw()` windows.
+- For conclusion, broad history, failure investigation, or file evolution questions, prefer one bounded query script that locates, expands, dedupes, groups, and returns compact evidence rows. Do not spend multiple conversation turns showing intermediate query results.
 - Return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets.
 - Avoid `thread()` unless the user explicitly asks for a full transcript or all smaller probes are insufficient.
 - Keep runtime JSON small. Do not return all sessions, all summaries, all tool calls, complete workflow trees, full raw messages, or whole tool results.
