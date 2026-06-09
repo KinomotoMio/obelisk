@@ -40,6 +40,13 @@ function createQueryApi(db) {
     return db.prepare(sql).all(...p);
   };
 
+  const normalizeOverviewOpts = (optsOrScalar) => {
+    if (optsOrScalar == null) return {};
+    if (typeof optsOrScalar === 'string') return { project: optsOrScalar };
+    if (typeof optsOrScalar === 'number') return { limit: optsOrScalar };
+    return optsOrScalar;
+  };
+
   const search = (text, opts = {}) => {
     const { limit = 20, sessionId, project, after, before, cwd } = opts;
     let where = 'WHERE mf.text MATCH ?';
@@ -181,6 +188,173 @@ function createQueryApi(db) {
     return db.prepare(`SELECT su.*, s.title as session_title, s.project FROM summaries su LEFT JOIN sessions s ON s.id=su.session_id WHERE ${where} ORDER BY su.timestamp DESC LIMIT ?`).all(...params);
   };
 
+  const overview = (optsOrScalar) => {
+    const opts = normalizeOverviewOpts(optsOrScalar);
+    const cwd = process.cwd();
+    const sessionLimit = opts.limit ?? 8;
+    const projectLimit = opts.projectLimit ?? 20;
+    const memoryLimit = opts.memoryLimit ?? 100;
+
+    const projectDescriptor = (row, source, confidence) => row ? ({
+      project: row.project,
+      project_path: row.project_path || null,
+      source,
+      confidence,
+    }) : null;
+
+    const latestProjectByPattern = (pattern) => {
+      const fromSessions = db.prepare(`
+        SELECT project, project_path
+        FROM sessions
+        WHERE project LIKE ?
+        ORDER BY COALESCE(ended_at, started_at) DESC
+        LIMIT 1
+      `).get(pattern);
+      if (fromSessions) return fromSessions;
+      return db.prepare(`
+        SELECT project, NULL AS project_path
+        FROM memories
+        WHERE project LIKE ?
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).get(pattern);
+    };
+
+    const resolveCurrentProject = () => {
+      if (opts.project) {
+        const row = latestProjectByPattern(opts.project);
+        const confidence = row ? (/[%_]/.test(opts.project) ? 'inferred' : 'exact') : 'unknown';
+        return projectDescriptor(row || { project: opts.project, project_path: null }, 'opts', confidence);
+      }
+
+      const paths = db.prepare(`
+        SELECT project, project_path, MAX(COALESCE(ended_at, started_at)) AS last_seen
+        FROM sessions
+        WHERE project IS NOT NULL AND project_path IS NOT NULL AND project_path != ''
+        GROUP BY project, project_path
+      `).all();
+      const byProjectPath = paths
+        .filter(r => cwd === r.project_path || cwd.startsWith(r.project_path + path.sep))
+        .sort((a, b) => b.project_path.length - a.project_path.length || String(b.last_seen || '').localeCompare(String(a.last_seen || '')))[0];
+      if (byProjectPath) return projectDescriptor(byProjectPath, 'cwd_project_path', 'exact');
+
+      const byMessageCwd = db.prepare(`
+        SELECT s.project, s.project_path, MAX(m.timestamp) AS last_seen
+        FROM messages m
+        LEFT JOIN sessions s ON s.id=m.session_id
+        WHERE m.cwd = ? AND s.project IS NOT NULL
+        GROUP BY s.project, s.project_path
+        ORDER BY last_seen DESC
+        LIMIT 1
+      `).get(cwd);
+      if (byMessageCwd) return projectDescriptor(byMessageCwd, 'cwd_messages', 'inferred');
+
+      return null;
+    };
+
+    const projects = db.prepare(`
+      WITH names AS (
+        SELECT project FROM sessions WHERE project IS NOT NULL GROUP BY project
+        UNION
+        SELECT project FROM memories WHERE project IS NOT NULL GROUP BY project
+      ),
+      session_stats AS (
+        SELECT project, COUNT(*) AS session_count, MAX(COALESCE(ended_at, started_at)) AS last_session_at
+        FROM sessions
+        WHERE project IS NOT NULL
+        GROUP BY project
+      ),
+      memory_stats AS (
+        SELECT project, COUNT(*) AS memory_count, MAX(created_at) AS last_memory_at
+        FROM memories
+        WHERE project IS NOT NULL
+        GROUP BY project
+      )
+      SELECT
+        n.project,
+        (
+          SELECT s2.project_path
+          FROM sessions s2
+          WHERE s2.project = n.project AND s2.project_path IS NOT NULL
+          ORDER BY COALESCE(s2.ended_at, s2.started_at) DESC
+          LIMIT 1
+        ) AS project_path,
+        COALESCE(ss.session_count, 0) AS session_count,
+        COALESCE(ms.memory_count, 0) AS memory_count,
+        ss.last_session_at,
+        ms.last_memory_at
+      FROM names n
+      LEFT JOIN session_stats ss ON ss.project = n.project
+      LEFT JOIN memory_stats ms ON ms.project = n.project
+      ORDER BY COALESCE(ss.last_session_at, ms.last_memory_at) DESC
+      LIMIT ?
+    `).all(projectLimit).map(row => {
+      const branches = db.prepare(`
+        SELECT git_branch
+        FROM sessions
+        WHERE project = ? AND git_branch IS NOT NULL AND git_branch != ''
+        GROUP BY git_branch
+        ORDER BY MAX(COALESCE(ended_at, started_at)) DESC
+        LIMIT 5
+      `).all(row.project).map(r => r.git_branch);
+      return { ...row, recent_branches: branches };
+    });
+
+    const currentProject = resolveCurrentProject();
+    let current_project = null;
+    if (currentProject?.project) {
+      const sessionTotal = db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE project = ?').get(currentProject.project)?.c || 0;
+      const sessionsForProject = db.prepare(`
+        SELECT id, title, project, project_path, started_at, ended_at, git_branch, message_count
+        FROM sessions
+        WHERE project = ?
+        ORDER BY COALESCE(ended_at, started_at) DESC
+        LIMIT ?
+      `).all(currentProject.project, sessionLimit);
+      const memoryTotal = db.prepare('SELECT COUNT(*) AS c FROM memories WHERE project = ?').get(currentProject.project)?.c || 0;
+      const memoriesForProject = db.prepare(`
+        SELECT id, path, summary, session_id, project, created_at
+        FROM memories
+        WHERE project = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `).all(currentProject.project, memoryLimit);
+      current_project = {
+        project: currentProject.project,
+        project_path: currentProject.project_path,
+        session_total: sessionTotal,
+        sessions: sessionsForProject,
+        memory_total: memoryTotal,
+        memories: memoriesForProject,
+      };
+    }
+
+    const totalProjects = db.prepare(`
+      SELECT COUNT(*) AS c
+      FROM (
+        SELECT project FROM sessions WHERE project IS NOT NULL GROUP BY project
+        UNION
+        SELECT project FROM memories WHERE project IS NOT NULL GROUP BY project
+      )
+    `).get()?.c || 0;
+    const totalSessions = db.prepare('SELECT COUNT(*) AS c FROM sessions').get()?.c || 0;
+    const totalMemories = db.prepare('SELECT COUNT(*) AS c FROM memories').get()?.c || 0;
+
+    return {
+      current: {
+        cwd,
+        project: currentProject,
+      },
+      current_project,
+      projects,
+      totals: {
+        projects: totalProjects,
+        sessions: totalSessions,
+        memories: totalMemories,
+      },
+    };
+  };
+
   const resolveJsonlPath = (messageUuid) => {
     const msg = db.prepare('SELECT session_id, agent_id FROM messages WHERE uuid=?').get(messageUuid);
     if (!msg) return null;
@@ -251,7 +425,7 @@ function createQueryApi(db) {
     return db.prepare(`SELECT mem.* FROM memories mem ${join} WHERE ${where} ORDER BY mem.created_at DESC LIMIT ?`).all(...params);
   };
 
-  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw, memories };
+  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw, memories, overview };
 }
 
 function createRememberApi(db) {

@@ -122,6 +122,7 @@ All list helpers accept a bounded `limit`. Many also accept:
 `{ project, after, before, sessionId, sessions, branch }`. Check the schema or a
 tiny sample before relying on less common filters.
 
+- `overview(opts?)` -- compact orientation map. Returns current cwd/project if knowable, global project counts, and current-project recent sessions plus memory records. It is a map, not evidence.
 - `sessions(opts?)` -- session rows, newest first. `project` is a SQL `LIKE` pattern.
 - `recent(n?)` -- shorthand for recent sessions.
 - `summaries(opts?)` -- summary rows, newest first: `{ id, session_id, timestamp, source, content, session_title, project }`.
@@ -140,9 +141,11 @@ tiny sample before relying on less common filters.
 Keep queries scoped, bounded, and structural.
 
 - Scope First: classify the locator as scope, artifact, or semantic. Use the narrowest structural locator before FTS; empty scoped results are valid unless the user asks to broaden.
+- Orient When Needed: use `overview()` when the current project or available scopes are unclear. It is a navigation map; confirm facts with `memories()`, `search()`, helpers, or `sql()`.
 - Plan Before Probe: for conclusion, broad history, failure investigation, or file evolution, write a bounded retrieval script instead of spending turns on intermediate results.
 - Structure Before Text: compute counts, joins, grouping, dedupe, and projection in SQL or JS; keep runtime JSON compact, ideally under 10k-12k chars for synthesis tasks.
 - Evidence Before Conclusion: return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets, then synthesize in the final answer.
+- Persist Durable Conclusions: after answering, if retrieval produced a durable conclusion that future sessions are likely to reuse and `memories()` does not already cover it, explicitly offer to write a memory. Keep the offer brief. Do not write the markdown file or run `--remember` until the user approves.
 
 If field, context, ordering, FTS, or helper semantics affect the query, read
 `references/retrieval-semantics.md` before coding. If a query errors, read
@@ -162,6 +165,12 @@ complete truth; query and cite it compactly.
 prior conclusions relevant to the current task. Like other list helpers,
 passing a string is treated as `sessionId`, and passing a number is treated as
 `limit`. Read the file at `path` for full content.
+
+Good memory candidates include design decisions, project conventions, abandoned
+alternatives, repeated failure causes, workflow patterns, and conclusions
+synthesized across multiple raw evidence points. Do not propose memory for
+one-off lookups, uncertain findings, or conclusions already covered by existing
+memories.
 
 **Writing memories:** after a retrieval produces a conclusion worth persisting,
 propose writing a memory file. The user must approve. Flow:

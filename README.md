@@ -108,9 +108,9 @@ references only when the question needs them:
 - `context(uuid)` — full story around a message (parent chain, subagent/workflow metadata)
 - `sql(query, ...params)` — read-only SQL for structured queries
 
-**Structured shortcuts** — session, memory, summary, subagent, workflow,
-file-history, failure, raw-window, and parent-chain helpers over the same
-SQLite data.
+**Structured shortcuts** — overview, session, memory, summary, subagent,
+workflow, file-history, failure, raw-window, and parent-chain helpers over the
+same SQLite data.
 
 **References** — agent reads on demand when the task needs deeper structure:
 

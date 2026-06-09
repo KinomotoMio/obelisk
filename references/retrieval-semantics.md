@@ -11,9 +11,15 @@ Classify the user's request before choosing tools.
 
 | User signal | Locator mode | Start with | Avoid first |
 |-------------|--------------|------------|-------------|
+| unclear project/session landscape | orientation | `overview()` | treating overview rows as evidence |
 | project name/path, session, cwd, file, time range | scope | `sessions()`, exact SQL on `project_path`, `sessionId`, `fileHistory()` | broad FTS |
 | workflow, subagent, tool call, summary, edit | artifact | `workflows()`, `subagents()`, `summaries()`, `tool_calls`, `tool_results` | all-session search |
 | concept, conclusion, design history, vague memory | semantic | `memories({ query })`, `search()`, summaries, bounded facet sweep | session dumps |
+
+`overview()` is a navigation map: current cwd/project if knowable, global
+project counts, and recent current-project session/memory entry points. Use it
+when scope is unclear, then query the memory or raw session layer for evidence.
+It does not guess the current session.
 
 One-shot retrieval is not all-shot retrieval. A query script may perform
 multiple steps, but the first locator should be the narrowest semantic fit. If a
@@ -93,6 +99,15 @@ For semantic questions, build a task-local evidence view:
 
 Then synthesize the conclusion in the final answer. Do not pretend the raw
 evidence view is itself a stored Obelisk entity.
+
+After synthesis, check whether the conclusion should become a memory. Offer to
+write one when the result is durable, likely to help future sessions, and not
+already covered by `prior_memories`. Good candidates include design decisions,
+project conventions, abandoned alternatives, repeated failure causes, workflow
+patterns, and conclusions synthesized across multiple raw evidence points. Do
+not propose memory for one-off lookups, uncertain findings, or duplicate
+coverage. The offer is only a proposal: write the markdown file and run
+`--remember` only after user approval.
 
 ## Text Search Semantics
 

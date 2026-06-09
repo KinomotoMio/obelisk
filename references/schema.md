@@ -416,6 +416,85 @@ const last5 = recent(5);
 return last5.map(s => ({ title: s.title, project: s.project_path, ended: s.ended_at }));
 ```
 
+#### `overview(opts?)`
+
+Compact orientation map for choosing the next retrieval scope. It is not an
+evidence helper: it does not return snippets, full messages, or markdown file
+contents. Passing a string is treated as `project`, and passing a number is
+treated as the current-project session `limit`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.project` | `string` | Project slug or SQL `LIKE` pattern to use as the current project scope |
+| `opts.limit` | `number` | Max recent sessions in `current_project.sessions` (default 8) |
+| `opts.projectLimit` | `number` | Max rows in the global `projects` map (default 20) |
+| `opts.memoryLimit` | `number` | Max memory records in `current_project.memories` (default 100) |
+
+If `opts.project` is absent, `overview()` tries to identify the current project
+from `process.cwd()` against `sessions.project_path`, then from exact
+`messages.cwd` matches. It does not guess the current session.
+
+**Returns:**
+
+```js
+{
+  current: {
+    cwd,
+    project: {
+      project,
+      project_path,
+      source: 'opts' | 'cwd_project_path' | 'cwd_messages',
+      confidence: 'exact' | 'inferred' | 'unknown'
+    } | null
+  },
+  current_project: {
+    project,
+    project_path,
+    session_total,
+    sessions: [
+      { id, title, project, project_path, started_at, ended_at, git_branch, message_count }
+    ],
+    memory_total,
+    memories: [
+      { id, path, summary, session_id, project, created_at }
+    ]
+  } | null,
+  projects: [
+    {
+      project,
+      project_path,
+      session_count,
+      memory_count,
+      last_session_at,
+      last_memory_at,
+      recent_branches
+    }
+  ],
+  totals: { projects, sessions, memories }
+}
+```
+
+Use `current_project.sessions` as recent entry points only. `session_total` and
+`memory_total` tell you whether the returned arrays are complete enough for the
+task. Confirm facts with `memories()`, `search()`, other helpers, or `sql()`.
+
+```js
+const map = overview({ limit: 5 });
+return {
+  current: map.current,
+  sessions: map.current_project?.sessions.map(s => ({
+    id: s.id,
+    title: s.title,
+    ended_at: s.ended_at,
+  })),
+  memories: map.current_project?.memories.map(m => ({
+    id: m.id,
+    path: m.path,
+    summary: m.summary,
+  })),
+};
+```
+
 #### `sessions(opts?)`
 
 Query sessions with filters. For backward compatibility, passing a number is treated as `limit`.

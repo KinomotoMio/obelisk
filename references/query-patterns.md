@@ -4,6 +4,37 @@ These are copyable CodeAct patterns for `runtime.mjs --query` scripts, plus one
 `--remember` registration pattern. They are not new APIs. Adapt them to the
 user's scope and return compact evidence.
 
+## Orient Before Retrieval
+
+Use `overview()` when the current project or available scopes are unclear. Treat
+the result as a map, not evidence; follow up with `memories()`, `search()`,
+helpers, or `sql()` for facts.
+
+```js
+const map = overview({ limit: 6 });
+return {
+  current: map.current,
+  current_project: map.current_project && {
+    project: map.current_project.project,
+    session_total: map.current_project.session_total,
+    sessions: map.current_project.sessions.map(s => ({
+      id: s.id,
+      title: s.title,
+      branch: s.git_branch,
+      ended_at: s.ended_at,
+    })),
+    memory_total: map.current_project.memory_total,
+    memories: map.current_project.memories.map(m => ({
+      id: m.id,
+      path: m.path,
+      summary: m.summary?.slice(0, 240),
+    })),
+  },
+  projects: map.projects.slice(0, 8),
+  totals: map.totals,
+};
+```
+
 ## Bounded Search To Context
 
 Use `search()` to locate candidates, then expand only the strongest hits.
