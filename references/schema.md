@@ -17,8 +17,8 @@ One row per Claude Code session.
 CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,   -- session UUID (matches JSONL filename)
   title         TEXT,               -- AI-generated session title (may be NULL)
-  project       TEXT,               -- project slug (hyphenated path, e.g. "Users-tomiya-Code-quiet-zero")
-  project_path  TEXT,               -- reconstructed filesystem path (e.g. "/Users/tomiya/Code/quiet-zero")
+  project       TEXT,               -- Claude project slug (e.g. "-Users-tomiya-Code-quiet-zero")
+  project_path  TEXT,               -- absolute session cwd-derived path, with slug fallback (e.g. "/Users/tomiya/Code/quiet-zero")
   started_at    TEXT,               -- ISO 8601 timestamp of first message
   ended_at      TEXT,               -- ISO 8601 timestamp of last message
   git_branch    TEXT,               -- git branch active during session (if any)
@@ -242,10 +242,11 @@ Full-text search across all message text using FTS5.
 | `opts.cwd` | `string` | Filter by working directory (supports LIKE) |
 
 **Scope note:** `sessions.project` is the stored Claude Code project slug,
-`sessions.project_path` is the reconstructed absolute project path, and
-`messages.cwd` is the working directory at message time. Helper `project`
-filters are fuzzy `LIKE` filters over `sessions.project`. For exact project
-membership, use `sql()` with `s.project = ?` or `s.project_path = ?`.
+`sessions.project_path` is the absolute session path derived from message `cwd`
+when available, and `messages.cwd` is the working directory at message time.
+Helper `project` filters are fuzzy `LIKE` filters over `sessions.project`. For
+exact project membership, use `sql()` with `s.project = ?` or
+`s.project_path = ?`.
 
 **Returns:** `Array<{ message, session, rank, context }>` where `context` is the
 6 nearest messages by timestamp in the same session. It is temporal neighbor

@@ -3,6 +3,29 @@ import { CLAUDE_DIR, openDb, trunc, truncJson, extractText, filePath, isDir, rea
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
 
+function legacyProjectPathFromSlug(project) {
+  if (!project) return null;
+  return '/' + project.replace(/-/g, '/').replace(/^\//, '');
+}
+
+function normalizeObservedCwd(cwd) {
+  if (typeof cwd !== 'string' || !cwd.trim() || !path.isAbsolute(cwd)) return null;
+  return path.normalize(cwd);
+}
+
+function inferProjectPath(project, observedCwds = []) {
+  const byPath = new Map();
+  for (const cwd of observedCwds) {
+    const normalized = normalizeObservedCwd(cwd);
+    if (!normalized) continue;
+    const current = byPath.get(normalized) || { path: normalized, count: 0, first: byPath.size };
+    current.count++;
+    byPath.set(normalized, current);
+  }
+  const best = [...byPath.values()].sort((a, b) => b.count - a.count || a.first - b.first)[0];
+  return best?.path || legacyProjectPathFromSlug(project);
+}
+
 function discoverJsonlFiles() {
   const files = [];
   if (!fs.existsSync(PROJECTS_DIR)) return files;
@@ -74,6 +97,7 @@ function indexJsonl(db, fi) {
     version: existing?.version || null,
     title: existing?.title || null,
     n: existing?.message_count || 0,
+    cwds: [],
   };
 
   let lineNum = 0;
@@ -101,6 +125,7 @@ function indexJsonl(db, fi) {
     if (obj.gitBranch) sm.git_branch = obj.gitBranch;
     if (obj.version) sm.version = obj.version;
     sm.n++;
+    if (!fi.isSubagent && obj.cwd) sm.cwds.push(obj.cwd);
 
     const msg = obj.message || {};
     const text = extractText(msg.content);
@@ -132,10 +157,26 @@ function indexJsonl(db, fi) {
   });
 
   if (!fi.isSubagent) {
-    const pp = '/' + fi.project.replace(/-/g, '/').replace(/^\//, '');
+    const pp = inferProjectPath(fi.project, sm.cwds);
     ins.ses.run(fi.sessionId, sm.title, fi.project, pp, sm.started_at, sm.ended_at, sm.git_branch, sm.version, sm.n, fi.path);
   }
   ins.idx.run(fi.path, mt, lineNum);
+}
+
+function refreshSessionProjectPaths(db) {
+  const sessions = db.prepare('SELECT id, project FROM sessions').all();
+  const cwdStmt = db.prepare(`
+    SELECT cwd
+    FROM messages
+    WHERE session_id = ? AND cwd IS NOT NULL AND cwd != ''
+    ORDER BY timestamp IS NULL, timestamp
+  `);
+  const update = db.prepare('UPDATE sessions SET project_path = ? WHERE id = ?');
+  for (const session of sessions) {
+    const cwds = cwdStmt.all(session.id).map(row => row.cwd);
+    const projectPath = inferProjectPath(session.project, cwds);
+    if (projectPath) update.run(projectPath, session.id);
+  }
 }
 
 function indexSubagentMeta(db, fi) {
@@ -226,6 +267,7 @@ function buildIndex({ force = false } = {}) {
   db.exec('BEGIN');
   try {
     indexWorkflows(db);
+    refreshSessionProjectPaths(db);
     indexHistory(db);
     db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
     db.prepare("INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES ('__last_build__', ?, 0)").run(Date.now());
@@ -237,4 +279,4 @@ function buildIndex({ force = false } = {}) {
   db.close();
 }
 
-export { buildIndex };
+export { buildIndex, inferProjectPath, refreshSessionProjectPaths };

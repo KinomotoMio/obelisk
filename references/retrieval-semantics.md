@@ -30,7 +30,7 @@ Project-like fields are distinct:
 
 - `sessions.project`: stored Claude Code project slug.
 - `memories.project`: stored project slug copied onto registered memory records.
-- `sessions.project_path`: reconstructed absolute project path.
+- `sessions.project_path`: absolute session path derived from message `cwd` when available; slug decoding is only a fallback.
 - `messages.cwd`: working directory at message time.
 - helper `project`: SQL `LIKE` over `sessions.project`, not exact membership.
 
