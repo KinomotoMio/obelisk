@@ -7,16 +7,23 @@ const vm = require('node:vm');
 
 import { DB_PATH, openDb } from './db.mjs';
 import { buildIndex } from './indexer.mjs';
-import { createQueryApi } from './query.mjs';
+import { createQueryApi, createRememberApi } from './query.mjs';
 
-function executeQuery(db, scriptContent) {
-  const api = createQueryApi(db);
+function executeScript(api, scriptContent) {
   const sandbox = {
     ...api, JSON, Math, Array, Object, Set, Map, Date, RegExp,
     parseInt, parseFloat, String, Number, Boolean, Error, Promise, console, setTimeout,
   };
   const ctx = vm.createContext(sandbox);
   return vm.runInNewContext(`(async()=>{${scriptContent}})()`, ctx, { timeout: 30000 });
+}
+
+function executeQuery(db, scriptContent) {
+  return executeScript(createQueryApi(db), scriptContent);
+}
+
+function executeRemember(db, scriptContent) {
+  return executeScript(createRememberApi(db), scriptContent);
 }
 
 function main() {
@@ -42,7 +49,16 @@ function main() {
       .catch(e => { process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n'); db.close(); process.exitCode = 1; });
     return;
   }
-  process.stderr.write('Usage:\n  node runtime.mjs --build\n  node runtime.mjs --search "text"\n  node runtime.mjs --query <file.js>\n');
+  if (args[0] === '--remember' && args[1]) {
+    buildIndex();
+    const db = openDb();
+    const script = fs.readFileSync(path.resolve(args[1]), 'utf8');
+    executeRemember(db, script)
+      .then(r => { process.stdout.write(JSON.stringify(r, null, 2) + '\n'); db.close(); })
+      .catch(e => { process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n'); db.close(); process.exitCode = 1; });
+    return;
+  }
+  process.stderr.write('Usage:\n  node runtime.mjs --build\n  node runtime.mjs --search "text"\n  node runtime.mjs --query <file.js>\n  node runtime.mjs --remember <file.js>\n');
   process.exitCode = 1;
 }
 

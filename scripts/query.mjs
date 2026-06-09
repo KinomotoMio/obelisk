@@ -24,8 +24,21 @@ function buildWhere(opts, aliases) {
 
 const BASH_EXIT_PAT = 'Exit code %';
 
+function assertReadOnlySql(sql) {
+  const text = String(sql || '').trim();
+  if (!/^(SELECT|WITH)\b/i.test(text)) {
+    throw new Error('sql() only supports read-only SELECT/WITH queries');
+  }
+  if (/\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|PRAGMA|VACUUM|ATTACH|DETACH)\b/i.test(text)) {
+    throw new Error('sql() only supports read-only SELECT/WITH queries');
+  }
+}
+
 function createQueryApi(db) {
-  const q = (sql, ...p) => db.prepare(sql).all(...p);
+  const q = (sql, ...p) => {
+    assertReadOnlySql(sql);
+    return db.prepare(sql).all(...p);
+  };
 
   const search = (text, opts = {}) => {
     const { limit = 20, sessionId, project, after, before, cwd } = opts;
@@ -213,7 +226,65 @@ function createQueryApi(db) {
     };
   };
 
-  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw };
+  const memories = (optsOrSid) => {
+    const opts = normalizeOpts(optsOrSid);
+    const { limit = 50, query } = opts;
+    const needsJoin = opts.branch;
+    const { where: baseWhere, params } = buildWhere(opts, {
+      sessionId: 'mem.session_id',
+      project: 'mem.project',
+      timestamp: 'mem.created_at',
+      branch: 's.git_branch',
+    });
+    const terms = String(query || '')
+      .trim()
+      .replace(/[-_]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+    let where = baseWhere;
+    for (const term of terms) {
+      where += " AND lower(coalesce(mem.summary,'') || ' ' || coalesce(mem.path,'')) LIKE ?";
+      params.push(`%${term.toLowerCase()}%`);
+    }
+    params.push(limit);
+    const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=mem.session_id' : '';
+    return db.prepare(`SELECT mem.* FROM memories mem ${join} WHERE ${where} ORDER BY mem.created_at DESC LIMIT ?`).all(...params);
+  };
+
+  return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw, memories };
 }
 
-export { createQueryApi };
+function createRememberApi(db) {
+  const resolveMemoryPath = (memoryPath, sessionId) => {
+    let base = null;
+    if (sessionId) {
+      base = db.prepare('SELECT project_path FROM sessions WHERE id=?').get(sessionId)?.project_path || null;
+    }
+    const resolved = path.isAbsolute(memoryPath)
+      ? path.normalize(memoryPath)
+      : path.resolve(base || process.cwd(), memoryPath);
+    let stat;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+      throw new Error(`remember() memory file does not exist: ${resolved}`);
+    }
+    if (!stat.isFile()) throw new Error(`remember() memory path is not a file: ${resolved}`);
+    return resolved;
+  };
+
+  const remember = ({ path: memoryPath, session_id, message_start, message_end, summary, project }) => {
+    if (!memoryPath || !summary) throw new Error('remember() requires path and summary');
+    const normalizedPath = resolveMemoryPath(memoryPath, session_id);
+    const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const proj = project || db.prepare('SELECT project FROM sessions WHERE id=?').get(session_id)?.project || null;
+    const created_at = new Date().toISOString();
+    db.prepare('INSERT OR REPLACE INTO memories (id, session_id, project, message_start, message_end, path, summary, created_at) VALUES (?,?,?,?,?,?,?,?)').run(
+      id, session_id || null, proj, message_start || null, message_end || null, normalizedPath, summary, created_at);
+    return { id, path: normalizedPath, project: proj, created_at };
+  };
+
+  return { remember };
+}
+
+export { createQueryApi, createRememberApi };

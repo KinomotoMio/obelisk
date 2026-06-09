@@ -177,6 +177,28 @@ CREATE TABLE index_state (
 );
 ```
 
+### memories
+
+Human-approved markdown memory records registered in Obelisk. The markdown
+file at `path` is the durable memory content; `summary` is the compact retrieval
+surface.
+
+```sql
+CREATE TABLE memories (
+  id            TEXT PRIMARY KEY,   -- memory record ID
+  session_id    TEXT,               -- FK -> sessions.id where the memory was drawn, if known
+  project       TEXT,               -- project slug used for scoped recall
+  message_start TEXT,               -- first relevant message UUID, if known
+  message_end   TEXT,               -- last relevant message UUID, if known
+  path          TEXT,               -- normalized absolute markdown memory file path
+  summary       TEXT,               -- retrieval summary of the memory
+  created_at    TEXT                -- ISO 8601 registration time
+);
+```
+
+Indexes: `idx_memories_project(project)`,
+`idx_memories_session(session_id)`, `idx_memories_created(created_at)`.
+
 ### Key Relationships
 
 ```
@@ -185,8 +207,10 @@ sessions.id        <--  tool_calls.session_id
 sessions.id        <--  tool_results.session_id
 sessions.id        <--  subagents.session_id
 sessions.id        <--  workflows.session_id
+sessions.id        <--  memories.session_id
 messages.uuid      <--  tool_calls.message_uuid
 messages.uuid      <--  tool_results.message_uuid
+messages.uuid      <--  memories.message_start / memories.message_end
 messages.agent_id  -->  subagents.agent_id      (for subagent messages)
 messages.agent_id  -->  workflow_agents.agent_id (for workflow agent messages)
 tool_calls.id      <--  tool_results.tool_use_id
@@ -197,8 +221,9 @@ workflows.run_id   <--  workflow_agents.run_id
 
 ## 2. Query API Reference
 
-All functions are available as globals inside `--query` scripts.
-Scripts run in an async IIFE with a 30-second timeout.
+Read helpers are available as globals inside `--query` scripts. Memory write
+helpers are available only inside `--remember` scripts. Scripts run in an async
+IIFE with a 30-second timeout.
 
 ### Simple Layer
 
@@ -250,14 +275,17 @@ return { chain_length: c.parentChain.length, session_title: c.session?.title };
 
 #### `sql(query, ...params)`
 
-Raw SQL with parameterized bindings. Returns an array of row objects.
+Read-only SQL with parameterized bindings. Returns an array of row objects.
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `query` | `string` | SQL SELECT statement |
+| `query` | `string` | SQL SELECT/WITH statement |
 | `...params` | `any` | Bind parameters (positional `?`) |
 
 **Returns:** `Array<Object>` -- each row as `{ column: value }`.
+
+Write statements are rejected. Use `--remember` and `remember()` for memory
+registration after user approval.
 
 ```js
 const rows = sql('SELECT id, title FROM sessions WHERE project = ? ORDER BY ended_at DESC LIMIT 5', 'Users-tomiya-Code-quiet-zero');
@@ -410,6 +438,76 @@ For exact slug/path membership, use raw SQL with `project = ?` or
 ```js
 const qz = sessions({ project: '%quiet-zero%', limit: 5 });
 return qz.map(s => ({ title: s.title, branch: s.git_branch, ended: s.ended_at }));
+```
+
+#### `memories(opts?)`
+
+Registered markdown memory records. Like other list helpers, passing a string
+is treated as `sessionId`, and passing a number is treated as `limit`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.query` | `string` | Term filter over `summary` and `path`; hyphens/underscores are treated as spaces |
+| `opts.project` | `string` | SQL `LIKE` pattern over `memories.project` |
+| `opts.sessionId` | `string` | Restrict to one source session |
+| `opts.sessions` | `string[]` | Restrict to a set of source session IDs |
+| `opts.after` | `string` | ISO 8601 lower bound on `created_at` |
+| `opts.before` | `string` | ISO 8601 upper bound on `created_at` |
+| `opts.branch` | `string` | Filter by source session git branch (exact match) |
+| `opts.limit` | `number` | Max results (default 50) |
+
+**Returns:** `Array<memory_row>` ordered by `created_at` descending.
+
+`query` is a lightweight term filter, not FTS5 ranking. Use it to avoid pulling
+all recent memories, then read the markdown file at `path` when a memory looks
+relevant.
+
+```js
+const prior = memories({
+  project: '%quiet-zero%',
+  query: 'memory layer markdown',
+  limit: 5,
+});
+return prior.map(m => ({
+  id: m.id,
+  path: m.path,
+  session_id: m.session_id,
+  summary: m.summary?.slice(0, 240),
+}));
+```
+
+#### `remember(record)`
+
+Register a human-approved markdown memory file. This is a write helper, not a
+recall helper; use it only after the user has approved writing memory. It is
+available only in scripts run with `runtime.mjs --remember`.
+
+`--remember` exposes only `remember()`, not `search()`, `sql()`, `memories()`,
+or other retrieval helpers. If source IDs are unknown, find them first with a
+normal `--query` script.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `record.path` | `string` | Existing markdown file path. Relative paths resolve against the source session `project_path` when `session_id` is provided, otherwise against the runtime cwd |
+| `record.summary` | `string` | Required retrieval summary: decision, reasoning, constraints |
+| `record.session_id` | `string` | Source session ID, if known |
+| `record.message_start` | `string` | First relevant source message UUID, if known |
+| `record.message_end` | `string` | Last relevant source message UUID, if known |
+| `record.project` | `string` | Project slug override. Defaults from `sessions.project` for `session_id` |
+
+`remember()` validates that `path` exists and is a regular file. It stores the
+normalized absolute path in `memories.path`.
+
+**Returns:** `{ id, path, project, created_at }`.
+
+```js
+return remember({
+  path: '.obelisk/memories/memory-layer-design.md',
+  session_id: 'source-session-id',
+  message_start: 'first-message-uuid',
+  message_end: 'last-message-uuid',
+  summary: 'Decision: keep Obelisk as one user-facing entry that queries both memory and raw session evidence. Memory is prior notes, not final authority.',
+});
 ```
 
 ---

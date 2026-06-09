@@ -54,6 +54,13 @@ CREATE INDEX IF NOT EXISTS idx_sa_session ON subagents(session_id);
 CREATE INDEX IF NOT EXISTS idx_wf_session ON workflows(session_id);
 CREATE INDEX IF NOT EXISTS idx_wa_run ON workflow_agents(run_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
+CREATE TABLE IF NOT EXISTS memories (
+  id TEXT PRIMARY KEY, session_id TEXT, project TEXT,
+  message_start TEXT, message_end TEXT,
+  path TEXT, summary TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 `;
 
 function openDb() {

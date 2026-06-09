@@ -1,7 +1,8 @@
 # Obelisk Query Patterns
 
-These are copyable CodeAct patterns for `runtime.mjs --query` scripts. They are
-not new APIs. Adapt them to the user's scope and return compact evidence.
+These are copyable CodeAct patterns for `runtime.mjs --query` scripts, plus one
+`--remember` registration pattern. They are not new APIs. Adapt them to the
+user's scope and return compact evidence.
 
 ## Bounded Search To Context
 
@@ -23,6 +24,76 @@ return hits.slice(0, 5).map(h => {
       snippet: m.text?.slice(0, 120),
     })),
   };
+});
+```
+
+## Memory Plus Session Evidence
+
+Use this when prior conclusions may exist but the answer still depends on raw
+session evidence. Keep memory as prior notes, not final authority; compare it
+with session evidence in your final answer when correctness matters.
+
+```js
+const project = '%quiet-zero%';
+const topic = 'markdown memory layer';
+const ftsTopic = topic.replace(/[-_]/g, ' ');
+
+const prior_memories = memories({
+  project,
+  query: topic,
+  limit: 5,
+}).map(m => ({
+  id: m.id,
+  path: m.path,
+  session_id: m.session_id,
+  message_start: m.message_start,
+  message_end: m.message_end,
+  created_at: m.created_at,
+  summary: m.summary?.slice(0, 260),
+}));
+
+const session_evidence = search(ftsTopic, { project, limit: 8 })
+  .slice(0, 6)
+  .map(h => ({
+    session_id: h.session.id,
+    session_title: h.session.title,
+    uuid: h.message.uuid,
+    timestamp: h.message.timestamp,
+    snippet: h.message.text?.slice(0, 220),
+  }));
+
+return {
+  query_plan: {
+    project,
+    topic,
+    memory_limit: 5,
+    session_limit: 8,
+  },
+  prior_memories,
+  session_evidence,
+};
+```
+
+## Register Approved Memory
+
+Use this only after the user approves writing memory and the markdown file
+already exists. `remember()` validates the file and stores a normalized absolute
+path, so keep the script small and return the registered record.
+
+Run this script with `runtime.mjs --remember <script>`. The `--remember` runtime
+exposes only `remember()`, not retrieval helpers.
+
+```js
+return remember({
+  path: '.obelisk/memories/memory-layer-design.md',
+  session_id: 'source-session-id',
+  message_start: 'first-message-uuid',
+  message_end: 'last-message-uuid',
+  summary: [
+    'Decision: Obelisk uses one user-facing entry that queries both memory and raw sessions.',
+    'Memory records are prior notes and must be identified naturally when they influence an answer.',
+    'New memory writes require human confirmation before the markdown file is written and registered.',
+  ].join(' '),
 });
 ```
 

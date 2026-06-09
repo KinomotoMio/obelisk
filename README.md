@@ -28,8 +28,9 @@ Every past session, subagent, and workflow -- queryable by your agent.
 Most history tools help humans find old chats.
 
 Obelisk is built for agents. It exposes past work as structured data: sessions,
-messages, tool calls, subagents, workflows, file history, failures, and parent
-chains. The agent writes the query, runs it locally, and answers in plain language.
+messages, tool calls, subagents, workflows, file history, failures, parent
+chains, and human-approved markdown memories. The agent writes the query, runs
+it locally, and answers in plain language.
 
 You don't manage history. You ask questions about past work.
 
@@ -88,6 +89,10 @@ Runs it via node runtime.mjs --query <script>
 Reads the JSON result, answers you in natural language
 ```
 
+When a retrieval produces a memory worth keeping, the agent proposes a markdown
+memory file. After user approval, it registers that file with the narrow
+`runtime.mjs --remember <script>` runtime, which exposes only `remember()`.
+
 **The core idea: don't make humans browse, tag, or organize sessions.**
 Don't invent a rigid query DSL either.
 
@@ -101,10 +106,11 @@ references only when the question needs them:
 
 - `search(text)` — FTS5 full-text search, returns matches with surrounding context
 - `context(uuid)` — full story around a message (parent chain, subagent/workflow metadata)
-- `sql(query, ...params)` — raw SQL for anything else
+- `sql(query, ...params)` — read-only SQL for structured queries
 
-**Structured shortcuts** — session, summary, subagent, workflow, file-history,
-failure, raw-window, and parent-chain helpers over the same SQLite data.
+**Structured shortcuts** — session, memory, summary, subagent, workflow,
+file-history, failure, raw-window, and parent-chain helpers over the same
+SQLite data.
 
 **References** — agent reads on demand when the task needs deeper structure:
 
@@ -126,6 +132,7 @@ schema stay out of the first prompt until the agent needs them.
 | **Subagents** | `subagents/agent-<id>.jsonl` | Agent type, description, full conversation |
 | **Workflows** | `workflows/wf_<runId>.json` | Script, structured result, agent count |
 | **Workflow agents** | `subagents/workflows/wf_<runId>/` | Per-agent transcripts linked to workflow |
+| **Memories** | markdown files registered by the agent after user approval | Prior conclusions linked to source sessions/messages |
 
 Full-text search via FTS5 covers message text across every layer, while the SQLite tables preserve the structure agents need for investigation.
 

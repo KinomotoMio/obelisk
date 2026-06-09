@@ -4,6 +4,7 @@ description: >
   Search and query past Claude Code session history.
   Reactive: when the user asks "how did I fix X", "what did we do last time", "find the session where", "上次怎么修的", "之前的session", "历史记录".
   Proactive: when the user references past work you lack context for, when you're about to modify a file with complex edit history, when the user says "继续之前的" or "continue where we left off", or when understanding prior decisions would improve your current response.
+  Memory: when the user says "记住这个", "remember this", "写入记忆", "save this conclusion", or when you determine a retrieval result contains a conclusion worth persisting.
 allowed-tools:
   - Read
   - Bash(node:*)
@@ -43,6 +44,8 @@ Custom query:
 3. Parse JSON stdout and answer with concise evidence.
 
 The query file runs inside `(async () => { ... })()`. Use `return` to emit JSON.
+Query scripts are read-only: `remember()` is not available, and `sql()` only
+accepts read-only SELECT/WITH queries.
 
 ## Query Routing
 
@@ -97,7 +100,7 @@ expand vertically from one evidence point without dumping the whole session.
 
 ### `sql(query, ...params)`
 
-Raw SQL with `?` placeholders. Returns array rows.
+Read-only SQL SELECT/WITH with `?` placeholders. Returns array rows.
 
 Before writing non-trivial SQL, read `references/schema.md`. Common safe joins:
 
@@ -107,7 +110,7 @@ Before writing non-trivial SQL, read `references/schema.md`. Common safe joins:
 - Prefer SQL-side `GROUP BY`, `COUNT`, `MAX`, `ORDER BY`, and `LIMIT` over hand-counting in the final answer.
 
 Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `summaries`,
-`subagents`, `workflows`, `workflow_agents`, `messages_fts`.
+`memories`, `subagents`, `workflows`, `workflow_agents`, `messages_fts`.
 
 ## Structured Helpers
 
@@ -130,6 +133,7 @@ tiny sample before relying on less common filters.
 - `trace(uuid)` -- parent chain from root to message.
 - `thread(sessionId)` -- full session messages; last resort only.
 - `raw(uuid, opts?)` -- windowed access to the original JSONL line.
+- `memories(opts?)` -- recall memory layer, newest first. opts: `{ query, project, sessionId, sessions, after, before, branch, limit }`. `query` filters summary/path by terms. Returns registered memory records (id, path, summary, project, session_id, created_at). Read the file at `path` for full content.
 
 ## Retrieval Contract
 
@@ -143,6 +147,61 @@ Keep queries scoped, bounded, and structural.
 If field, context, ordering, FTS, or helper semantics affect the query, read
 `references/retrieval-semantics.md` before coding. If a query errors, read
 `references/pitfalls.md` before retrying.
+
+## Memory Layer
+
+Obelisk has a persistent memory layer alongside raw session data. Every
+retrieval queries both layers: `memories()` for prior conclusions, `search()`
+and helpers for raw session evidence. Use memory as prior notes, not final
+authority. If a memory record influences your answer, say naturally that it was
+previously recorded, and compare it with raw session evidence when correctness
+depends on it. Raw session data is the evidence layer, but one hit is not a
+complete truth; query and cite it compactly.
+
+**Recall:** query `memories({ query: 'topic terms', project: '...' })` to find
+prior conclusions relevant to the current task. Like other list helpers,
+passing a string is treated as `sessionId`, and passing a number is treated as
+`limit`. Read the file at `path` for full content.
+
+**Writing memories:** after a retrieval produces a conclusion worth persisting,
+propose writing a memory file. The user must approve. Flow:
+
+1. Write a markdown file using the `Write` tool (user approves).
+2. Register it via `remember()` in a narrow memory-registration script:
+
+```js
+return remember({
+  path: '.obelisk/memories/design-decision-x.md',
+  session_id: 'current-session-id',
+  message_start: 'uuid-of-first-relevant-msg',
+  message_end: 'uuid-of-last-relevant-msg',
+  summary: 'Detailed summary: what was decided, why, what alternatives were considered, and what constraints drove the choice.'
+})
+```
+
+Run the registration script with:
+
+```bash
+node $SKILL_DIR/scripts/runtime.mjs --remember /tmp/register-memory.mjs
+```
+
+`--remember` exposes only `remember()`. It does not expose `search()`, `sql()`,
+`memories()`, or other retrieval helpers. If you need source IDs, find them
+first with a normal `--query` script.
+
+`remember()` validates that `path` already exists and points to a file. Relative
+paths are resolved against the source session's `project_path` when
+`session_id` is provided, then stored as normalized absolute paths. Prefer
+project-relative paths such as `.obelisk/memories/...` plus `session_id`.
+
+`summary` should be detailed enough that `memories()` results alone can judge
+relevance without reading the file. Include the decision, the reasoning, and
+the key constraints — not just a title.
+
+The `message_start`/`message_end` range marks where in the conversation this
+conclusion was drawn. Use it later to trace back to the original evidence.
+
+Memory records survive index rebuilds. They are never auto-deleted.
 
 ## Minimal Patterns
 

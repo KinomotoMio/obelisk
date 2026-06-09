@@ -13,7 +13,7 @@ Classify the user's request before choosing tools.
 |-------------|--------------|------------|-------------|
 | project name/path, session, cwd, file, time range | scope | `sessions()`, exact SQL on `project_path`, `sessionId`, `fileHistory()` | broad FTS |
 | workflow, subagent, tool call, summary, edit | artifact | `workflows()`, `subagents()`, `summaries()`, `tool_calls`, `tool_results` | all-session search |
-| concept, conclusion, design history, vague memory | semantic | `search()`, summaries, bounded facet sweep | session dumps |
+| concept, conclusion, design history, vague memory | semantic | `memories({ query })`, `search()`, summaries, bounded facet sweep | session dumps |
 
 One-shot retrieval is not all-shot retrieval. A query script may perform
 multiple steps, but the first locator should be the narrowest semantic fit. If a
@@ -23,6 +23,7 @@ unless scoped evidence is insufficient and `query_plan` says why.
 Project-like fields are distinct:
 
 - `sessions.project`: stored Claude Code project slug.
+- `memories.project`: stored project slug copied onto registered memory records.
 - `sessions.project_path`: reconstructed absolute project path.
 - `messages.cwd`: working directory at message time.
 - helper `project`: SQL `LIKE` over `sessions.project`, not exact membership.
@@ -62,23 +63,27 @@ Use the database shape before asking the model to read text.
 
 Ordering and context are semantic:
 
-- `sessions()`, `summaries()`, `workflows()`, and `failures()` are newest first.
+- `sessions()`, `memories()`, `summaries()`, `workflows()`, and `failures()` are newest first.
 - `fileHistory()` is oldest first.
 - `search().context` is temporal neighbors in one session, not causal context.
 - `context(uuid)` and `trace(uuid)` are for parent-chain/causal expansion.
 
 ### Evidence Before Conclusion
 
-Obelisk stores original structure, not precompiled claims. It has sessions,
-messages, summaries, tool calls/results, files, subagents, workflows, parent
-chains, and raw JSONL windows. It does not store "claim", "stance",
-"contradiction", or "conclusion" entities.
+Obelisk's raw session layer stores original structure, not precompiled claims:
+sessions, messages, summaries, tool calls/results, files, subagents, workflows,
+parent chains, and raw JSONL windows. The memory layer can store
+human-approved markdown conclusions, but treat them as prior notes to compare
+against raw evidence when correctness matters.
 
 For semantic questions, build a task-local evidence view:
 
 ```js
 {
   query_plan: { mode, scope, facets, limits },
+  prior_memories: [
+    { id, path, session_id, created_at, summary }
+  ],
   evidence: [
     { type, id, session_id, timestamp, facet, snippet }
   ],
@@ -86,8 +91,8 @@ For semantic questions, build a task-local evidence view:
 }
 ```
 
-Then synthesize the conclusion in the final answer. Do not pretend the evidence
-view is a stored Obelisk entity.
+Then synthesize the conclusion in the final answer. Do not pretend the raw
+evidence view is itself a stored Obelisk entity.
 
 ## Text Search Semantics
 
