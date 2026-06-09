@@ -21,6 +21,11 @@ project counts, and recent current-project session/memory entry points. Use it
 when scope is unclear, then query the memory or raw session layer for evidence.
 It does not guess the current session.
 
+For a new task, the first pass normally starts with `overview({ limit: 6 })`
+unless the user gave an exact session ID, message UUID, or absolute file path.
+Broad synthesis and progress-summary tasks should start from
+`references/query-patterns.md`, not raw SQL.
+
 One-shot retrieval is not all-shot retrieval. A query script may perform
 multiple steps, but the first locator should be the narrowest semantic fit. If a
 scope locator finds the relevant project/session/file, do not also run broad FTS
@@ -34,9 +39,11 @@ Project-like fields are distinct:
 - `messages.cwd`: working directory at message time.
 - helper `project`: SQL `LIKE` over `sessions.project`, not exact membership.
 
-For exact project membership, use `sql()` with `s.project = ?` or
-`s.project_path = ?`. Empty or tiny scoped results are valid results; do not
-broaden unless the user asks or your `query_plan` explicitly marks a fallback.
+For exact project membership, prefer helper filters or a scoped first pass when
+they are expressive enough; use `sql()` with `s.project = ?` or
+`s.project_path = ?` when you need exact membership across a join or
+aggregation. Empty or tiny scoped results are valid results; do not broaden
+unless the user asks or your `query_plan` explicitly marks a fallback.
 
 ### Plan Before Probe
 
@@ -58,7 +65,9 @@ If vocabulary is still unclear, use a small filtered window and say so in
 
 ### Structure Before Text
 
-Use the database shape before asking the model to read text.
+Use the database shape before asking the model to read text. This means
+structured helpers and compact JS shaping first; raw SQL only when it expresses
+the needed join, grouping, or exact schema-level check better than helpers.
 
 - Count and aggregate in SQL or JS (`GROUP BY`, `COUNT`, `MAX`, `ORDER BY`, `LIMIT`).
 - Join metadata from the owner table instead of inventing fields.

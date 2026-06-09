@@ -4,6 +4,67 @@ These are copyable CodeAct patterns for `runtime.mjs --query` scripts, plus one
 `--remember` registration pattern. They are not new APIs. Adapt them to the
 user's scope and return compact evidence.
 
+Read this before the first query for broad synthesis, progress summaries,
+design history, weekly/monthly reviews, or questions that ask what the user did,
+learned, decided, tried, or abandoned. Start with a helper-first pass; use raw
+`sql()` only when the helper surface cannot express the needed join or
+aggregation.
+
+## First Pass: Overview + Recall + Evidence
+
+Use this for broad synthesis before writing custom SQL. It gives the agent a
+map, prior notes, and raw session evidence in one bounded result. Then run a
+faceted detail pass if the first pass reveals useful projects, sessions, files,
+or terms.
+
+```js
+const topic = 'topic terms from the user request';
+const map = overview({ limit: 6 });
+const project = map.current.project?.project;
+const scoped = project ? { project } : {};
+
+return {
+  query_plan: {
+    mode: 'first_pass',
+    topic,
+    project: project || null,
+    limits: { sessions: 6, memories: 5, search: 8 },
+  },
+  orientation: map.current_project && {
+    project: map.current_project.project,
+    session_total: map.current_project.session_total,
+    sessions: map.current_project.sessions.map(s => ({
+      id: s.id,
+      title: s.title,
+      branch: s.git_branch,
+      ended_at: s.ended_at,
+    })),
+    memory_total: map.current_project.memory_total,
+    memories: map.current_project.memories.map(m => ({
+      id: m.id,
+      path: m.path,
+      summary: m.summary?.slice(0, 240),
+    })),
+  },
+  prior_memories: memories({ ...scoped, query: topic, limit: 5 }).map(m => ({
+    id: m.id,
+    path: m.path,
+    session_id: m.session_id,
+    created_at: m.created_at,
+    summary: m.summary?.slice(0, 260),
+  })),
+  session_evidence: search(topic.replace(/[-_]/g, ' '), { ...scoped, limit: 8 })
+    .slice(0, 6)
+    .map(h => ({
+      session_id: h.session.id,
+      session_title: h.session.title,
+      uuid: h.message.uuid,
+      timestamp: h.message.timestamp,
+      snippet: h.message.text?.slice(0, 220),
+    })),
+};
+```
+
 ## Orient Before Retrieval
 
 Use `overview()` when the current project or available scopes are unclear. Treat

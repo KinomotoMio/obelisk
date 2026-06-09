@@ -47,14 +47,39 @@ The query file runs inside `(async () => { ... })()`. Use `return` to emit JSON.
 Query scripts are read-only: `remember()` is not available, and `sql()` only
 accepts read-only SELECT/WITH queries.
 
+## Default First Pass
+
+Start with helpers, not raw SQL. For the first Obelisk query in a task, normally
+call `overview({ limit: 6 })` unless the user already gave an exact
+`session_id`, message `uuid`, or absolute file path.
+
+For semantic or synthesis tasks, combine orientation, memory recall, and raw
+session evidence before deciding whether a detail pass is needed:
+
+```js
+const map = overview({ limit: 6 });
+const project = map.current.project?.project;
+const topic = 'topic terms from the user request';
+
+return {
+  orientation: map.current_project,
+  prior_memories: memories({ project, query: topic, limit: 5 }),
+  session_evidence: search(topic.replace(/[-_]/g, ' '), { project, limit: 8 }),
+};
+```
+
+Use `sql()` only as an escalation path for exact joins, aggregations, or schema
+questions that helpers cannot express cleanly. Do not use raw SQL as a generic
+fallback for broad retrieval.
+
 ## Query Routing
 
 Before writing a query, classify the task. Progressive disclosure is useful, but
 skipping the relevant reference usually costs extra query rounds.
 
-- Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. Do this before running the SQL, not after a missing-column error.
+- Read `references/query-patterns.md` before the first query for broad synthesis, progress summaries, design history, weekly/monthly reviews, or questions that ask what the user did, learned, decided, tried, or abandoned. Start from the first-pass or one-shot synthesis pattern, then run a faceted detail pass if needed.
 - Read `references/retrieval-semantics.md` before multi-step retrieval, scoped project/file/session searches, or synthesis/conclusion/history questions. It defines the query design frame.
-- Read `references/query-patterns.md` when you need copyable query scripts: one-shot synthesis, learned detail passes, workflow trees, failure groups, file history, summaries, subagents, raw windows, or empty results.
+- Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. Do this before running the SQL, not after a missing-column error. Do not start with raw SQL for broad synthesis unless helpers cannot express the needed aggregation or join.
 - Read `references/pitfalls.md` after an error or when helper fields, FTS syntax, aliases, or row shapes are unclear.
 
 If a helper row shape is unclear, first run a tiny scoped query and return
@@ -100,7 +125,9 @@ expand vertically from one evidence point without dumping the whole session.
 
 ### `sql(query, ...params)`
 
-Read-only SQL SELECT/WITH with `?` placeholders. Returns array rows.
+Read-only SQL SELECT/WITH with `?` placeholders. Returns array rows. SQL is an
+escape hatch for exact structured joins and aggregations after the helper-first
+surface is insufficient; it is not the default retrieval entry point.
 
 Before writing non-trivial SQL, read `references/schema.md`. Common safe joins:
 
@@ -115,8 +142,8 @@ Tables: `sessions`, `messages`, `tool_calls`, `tool_results`, `summaries`,
 ## Structured Helpers
 
 These helpers are convenience accessors over the same SQLite structure. They do
-not replace `sql()`; use `sql()` when you need an exact aggregation or a join
-the helper does not expose.
+not replace `sql()`, but they are the default first-pass surface. Use `sql()`
+when you need an exact aggregation or a join the helper does not expose.
 
 All list helpers accept a bounded `limit`. Many also accept:
 `{ project, after, before, sessionId, sessions, branch }`. Check the schema or a
@@ -141,7 +168,8 @@ tiny sample before relying on less common filters.
 Keep queries scoped, bounded, and structural.
 
 - Scope First: classify the locator as scope, artifact, or semantic. Use the narrowest structural locator before FTS; empty scoped results are valid unless the user asks to broaden.
-- Orient When Needed: use `overview()` when the current project or available scopes are unclear. It is a navigation map; confirm facts with `memories()`, `search()`, helpers, or `sql()`.
+- Orient First: for a new task, normally call `overview({ limit: 6 })` before deeper retrieval unless the user gave an exact session/message/file locator. It is a navigation map; confirm facts with `memories()`, `search()`, helpers, or, only when needed, `sql()`.
+- Helper First: prefer `overview()`, `memories()`, `search()`, `sessions()`, `summaries()`, `fileHistory()`, and other helpers for first-pass retrieval. Escalate to raw `sql()` only when helpers cannot express the needed join, grouping, or exact schema-level check.
 - Plan Before Probe: for conclusion, broad history, failure investigation, or file evolution, write a bounded retrieval script instead of spending turns on intermediate results.
 - Structure Before Text: compute counts, joins, grouping, dedupe, and projection in SQL or JS; keep runtime JSON compact, ideally under 10k-12k chars for synthesis tasks.
 - Evidence Before Conclusion: return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets, then synthesize in the final answer.
