@@ -527,7 +527,7 @@ is treated as `sessionId`, and passing a number is treated as `limit`.
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `opts.query` | `string` | Term filter over `summary` and `path`; hyphens/underscores are treated as spaces |
+| `opts.query` | `string` | English term filter over `summary` and `path`; hyphens/underscores are treated as spaces |
 | `opts.project` | `string` | SQL `LIKE` pattern over `memories.project` |
 | `opts.sessionId` | `string` | Restrict to one source session |
 | `opts.sessions` | `string[]` | Restrict to a set of source session IDs |
@@ -538,9 +538,11 @@ is treated as `sessionId`, and passing a number is treated as `limit`.
 
 **Returns:** `Array<memory_row>` ordered by `created_at` descending.
 
-`query` is a lightweight term filter, not FTS5 ranking. Use it to avoid pulling
-all recent memories, then read the markdown file at `path` when a memory looks
-relevant.
+`query` is a lightweight English term filter, not FTS5 ranking. Translate
+non-English user requests into concise English query terms before calling
+`memories()`. Use it to avoid pulling all recent memories, then read the
+markdown file at `path` when a memory looks relevant. The runtime rejects
+obvious CJK text in memory queries.
 
 ```js
 const prior = memories({
@@ -569,14 +571,15 @@ normal `--query` script.
 | Param | Type | Description |
 |-------|------|-------------|
 | `record.path` | `string` | Existing markdown file path. Relative paths resolve against the source session `project_path` when `session_id` is provided, otherwise against the runtime cwd |
-| `record.summary` | `string` | Required retrieval summary: decision, reasoning, constraints |
+| `record.summary` | `string` | Required English retrieval summary: decision, reasoning, constraints |
 | `record.session_id` | `string` | Source session ID, if known |
 | `record.message_start` | `string` | First relevant source message UUID, if known |
 | `record.message_end` | `string` | Last relevant source message UUID, if known |
 | `record.project` | `string` | Project slug override. Defaults from `sessions.project` for `session_id` |
 
-`remember()` validates that `path` exists and is a regular file. It stores the
-normalized absolute path in `memories.path`.
+`remember()` validates that `path` exists and is a regular file, and rejects
+obvious CJK text in `summary`. It stores the normalized absolute path in
+`memories.path`.
 
 **Returns:** `{ id, path, project, created_at }`.
 

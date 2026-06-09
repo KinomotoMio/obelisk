@@ -18,7 +18,7 @@ faceted detail pass if the first pass reveals useful projects, sessions, files,
 or terms.
 
 ```js
-const topic = 'topic terms from the user request';
+const topic = 'English topic terms translated from the user request';
 const map = overview({ limit: 6 });
 const project = map.current.project?.project;
 const scoped = project ? { project } : {};
@@ -124,6 +124,7 @@ return hits.slice(0, 5).map(h => {
 Use this when prior conclusions may exist but the answer still depends on raw
 session evidence. Keep memory as prior notes, not final authority; compare it
 with session evidence in your final answer when correctness matters.
+Memory query terms are English even when the user asks in another language.
 
 ```js
 const project = '%quiet-zero%';

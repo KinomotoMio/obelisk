@@ -34,6 +34,17 @@ function assertReadOnlySql(sql) {
   }
 }
 
+const CJK_TEXT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+function assertEnglishMemoryText(value, label) {
+  const text = String(value || '');
+  if (!text.trim()) return;
+  if (CJK_TEXT_RE.test(text)) {
+    const requirement = label.includes('query') ? 'must use English terms' : 'must be written in English';
+    throw new Error(`${label} ${requirement}; translate user-language terms before using the memory layer`);
+  }
+}
+
 function createQueryApi(db) {
   const q = (sql, ...p) => {
     assertReadOnlySql(sql);
@@ -403,6 +414,7 @@ function createQueryApi(db) {
   const memories = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 50, query } = opts;
+    assertEnglishMemoryText(query, 'memories() query');
     const needsJoin = opts.branch;
     const { where: baseWhere, params } = buildWhere(opts, {
       sessionId: 'mem.session_id',
@@ -449,6 +461,7 @@ function createRememberApi(db) {
 
   const remember = ({ path: memoryPath, session_id, message_start, message_end, summary, project }) => {
     if (!memoryPath || !summary) throw new Error('remember() requires path and summary');
+    assertEnglishMemoryText(summary, 'remember() summary');
     const normalizedPath = resolveMemoryPath(memoryPath, session_id);
     const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const proj = project || db.prepare('SELECT project FROM sessions WHERE id=?').get(session_id)?.project || null;

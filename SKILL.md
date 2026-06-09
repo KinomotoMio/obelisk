@@ -59,7 +59,7 @@ session evidence before deciding whether a detail pass is needed:
 ```js
 const map = overview({ limit: 6 });
 const project = map.current.project?.project;
-const topic = 'topic terms from the user request';
+const topic = 'English topic terms translated from the user request';
 
 return {
   orientation: map.current_project,
@@ -161,7 +161,7 @@ tiny sample before relying on less common filters.
 - `trace(uuid)` -- parent chain from root to message.
 - `thread(sessionId)` -- full session messages; last resort only.
 - `raw(uuid, opts?)` -- windowed access to the original JSONL line.
-- `memories(opts?)` -- recall memory layer, newest first. opts: `{ query, project, sessionId, sessions, after, before, branch, limit }`. `query` filters summary/path by terms. Returns registered memory records (id, path, summary, project, session_id, created_at). Read the file at `path` for full content.
+- `memories(opts?)` -- recall memory layer, newest first. opts: `{ query, project, sessionId, sessions, after, before, branch, limit }`. `query` filters summary/path by English terms. Returns registered memory records (id, path, summary, project, session_id, created_at). Read the file at `path` for full content.
 
 ## Retrieval Contract
 
@@ -189,10 +189,16 @@ previously recorded, and compare it with raw session evidence when correctness
 depends on it. Raw session data is the evidence layer, but one hit is not a
 complete truth; query and cite it compactly.
 
-**Recall:** query `memories({ query: 'topic terms', project: '...' })` to find
-prior conclusions relevant to the current task. Like other list helpers,
-passing a string is treated as `sessionId`, and passing a number is treated as
-`limit`. Read the file at `path` for full content.
+The memory layer is English-indexed. Use English terms in `memories({ query })`
+even when the user asks in another language. Write every `remember().summary`
+in English, regardless of the current conversation language. The runtime rejects
+obvious CJK text in memory queries and summaries as a guardrail.
+
+**Recall:** query `memories({ query: 'English topic terms', project: '...' })`
+to find prior conclusions relevant to the current task. Translate non-English
+user requests into concise English query terms before calling `memories()`. Like
+other list helpers, passing a string is treated as `sessionId`, and passing a
+number is treated as `limit`. Read the file at `path` for full content.
 
 Good memory candidates include design decisions, project conventions, abandoned
 alternatives, repeated failure causes, workflow patterns, and conclusions
@@ -231,9 +237,9 @@ paths are resolved against the source session's `project_path` when
 `session_id` is provided, then stored as normalized absolute paths. Prefer
 project-relative paths such as `.obelisk/memories/...` plus `session_id`.
 
-`summary` should be detailed enough that `memories()` results alone can judge
-relevance without reading the file. Include the decision, the reasoning, and
-the key constraints — not just a title.
+`summary` must be English and detailed enough that `memories()` results alone
+can judge relevance without reading the file. Include the decision, the
+reasoning, and the key constraints — not just a title.
 
 The `message_start`/`message_end` range marks where in the conversation this
 conclusion was drawn. Use it later to trace back to the original evidence.

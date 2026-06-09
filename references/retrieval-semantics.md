@@ -106,6 +106,11 @@ For semantic questions, build a task-local evidence view:
 }
 ```
 
+Memory recall is English-indexed: translate non-English user requests into
+concise English query terms before calling `memories({ query })`. Memory
+summaries registered with `remember()` are also English, regardless of the
+conversation language.
+
 Then synthesize the conclusion in the final answer. Do not pretend the raw
 evidence view is itself a stored Obelisk entity.
 
