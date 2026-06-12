@@ -78,7 +78,8 @@ the needed join, grouping, or exact schema-level check better than helpers.
 
 Ordering and context are semantic:
 
-- `sessions()`, `memories()`, `summaries()`, `workflows()`, and `failures()` are newest first.
+- `sessions()`, `summaries()`, `workflows()`, and `failures()` are newest first.
+- `memories()` without `query` is newest first; `memories({ query })` is FTS-ranked over memory `summary`/`path`, with lower rank sorting earlier.
 - `fileHistory()` is oldest first.
 - `search().context` is temporal neighbors in one session, not causal context.
 - `context(uuid)` and `trace(uuid)` are for parent-chain/causal expansion.
@@ -97,19 +98,44 @@ For semantic questions, build a task-local evidence view:
 {
   query_plan: { mode, scope, facets, limits },
   prior_memories: [
-    { id, path, session_id, created_at, summary }
+    { id, path, anchors, session_id, created_at, summary }
   ],
   evidence: [
-    { type, id, session_id, timestamp, facet, snippet }
+    { type, id, session_id, timestamp, content_type, is_meta, facet, snippet }
   ],
   omitted: 0
 }
 ```
 
+For message evidence, preserve `content_type` when projecting snippets.
+`text` can support user-visible claims; `thinking` is only trace/debug context;
+`tool_use` means follow `tool_calls` for structured details; `tool_result`
+means follow `tool_results` for structured output. Mixed or unfamiliar message
+surfaces remain `unknown`.
+
+Preserve `is_meta` separately from `content_type`. Default message evidence
+should exclude `is_meta=1` rows because they are transcript control-plane
+content, not ordinary user intent or assistant conclusions. Include them only
+when investigating injected caveats, command envelopes, or transcript structure.
+When writing raw SQL for ordinary conversation evidence, add
+`COALESCE(m.is_meta,0)=0` to message filters unless meta rows are the subject of
+the investigation.
+
 Memory recall is English-indexed: translate non-English user requests into
 concise English query terms before calling `memories({ query })`. Memory
 summaries registered with `remember()` are also English, regardless of the
 conversation language.
+`memories({ query })` uses safe FTS5 tokenization over memory `summary` and
+`path`, so hyphens and punctuation do not need raw `MATCH` escaping.
+`memories()` returns active memories only. For raw SQL memory recall, include
+`deleted_at IS NULL`; archived memory records are management/audit data.
+
+The agent may decide whether to use, ignore, or verify a recalled memory for the
+current answer without user approval because no persistent state changes. If a
+user explicitly says a memory is wrong, outdated, should be forgotten, or should
+be replaced, that request is approval to mutate the exact matching memory. If
+the agent discovers the conflict without an explicit user request, it should
+answer from current evidence and ask before archiving or replacing the memory.
 
 Then synthesize the conclusion in the final answer. Do not pretend the raw
 evidence view is itself a stored Obelisk entity.
@@ -121,7 +147,11 @@ project conventions, abandoned alternatives, repeated failure causes, workflow
 patterns, and conclusions synthesized across multiple raw evidence points. Do
 not propose memory for one-off lookups, uncertain findings, or duplicate
 coverage. The offer is only a proposal: write the markdown file and run
-`--remember` only after user approval.
+`--attune` only after user approval.
+
+Memory updates are archive-plus-write, not in-place edits: run `forget()` on the
+old record and `remember()` the replacement markdown file under the same user
+approval.
 
 ## Text Search Semantics
 

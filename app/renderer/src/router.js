@@ -1,0 +1,65 @@
+// Vue Router configuration for Obelisk.
+// Routes map to the main content views; sidebar navigation drives route changes.
+
+import { createRouter, createWebHashHistory } from 'vue-router';
+
+// Lazy-loaded view components (will be created as Vue SFCs later)
+const SessionList = () => import('./views/SessionList.vue');
+const SessionDetail = () => import('./views/SessionDetail.vue');
+const SubagentDetail = () => import('./views/SubagentDetail.vue');
+const MemoryList = () => import('./views/MemoryList.vue');
+const MemoryDetail = () => import('./views/MemoryDetail.vue');
+const Usage = () => import('./views/Usage.vue');
+
+const routes = [
+  {
+    path: '/sessions',
+    name: 'SessionList',
+    component: SessionList
+  },
+  {
+    path: '/sessions/:id',
+    name: 'SessionDetail',
+    component: SessionDetail,
+    props: true,
+    meta: { keepAlive: true }
+  },
+  {
+    path: '/sessions/:id/agent/:agentId',
+    name: 'SubagentDetail',
+    component: SubagentDetail,
+    props: true
+  },
+  {
+    path: '/memory',
+    name: 'MemoryList',
+    component: MemoryList
+  },
+  {
+    path: '/memory/:id',
+    name: 'MemoryDetail',
+    component: MemoryDetail,
+    props: true
+  },
+  {
+    path: '/usage',
+    name: 'Usage',
+    component: Usage
+  },
+  {
+    path: '/',
+    redirect: '/memory'
+  },
+  {
+    // Catch-all redirect
+    path: '/:pathMatch(.*)*',
+    redirect: '/memory'
+  }
+];
+
+const router = createRouter({
+  history: createWebHashHistory(),
+  routes
+});
+
+export default router;

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   message_count INTEGER DEFAULT 0, jsonl_path TEXT);
 CREATE TABLE IF NOT EXISTS messages (
   uuid TEXT PRIMARY KEY, session_id TEXT, type TEXT, parent_uuid TEXT,
-  timestamp TEXT, role TEXT, text TEXT, model TEXT,
+  timestamp TEXT, role TEXT, text TEXT, content_type TEXT,
+  is_meta INTEGER DEFAULT 0, model TEXT,
   is_sidechain INTEGER DEFAULT 0, agent_id TEXT,
   input_tokens INTEGER, output_tokens INTEGER,
   cwd TEXT, skill TEXT, turn_duration_ms INTEGER);
@@ -57,7 +58,12 @@ CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY, session_id TEXT, project TEXT,
   message_start TEXT, message_end TEXT,
-  path TEXT, summary TEXT, created_at TEXT);
+  path TEXT, anchors TEXT, summary TEXT, created_at TEXT,
+  deleted_at TEXT, deleted_reason TEXT);
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  id UNINDEXED, path, summary,
+  content=memories, content_rowid=rowid,
+  tokenize='unicode61 remove_diacritics 1');
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
@@ -68,7 +74,25 @@ function openDb() {
   db.exec('PRAGMA journal_mode=WAL');
   db.exec('PRAGMA synchronous=NORMAL');
   db.exec(SCHEMA);
+  migrateDb(db);
   return db;
+}
+
+function ensureColumn(db, table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function migrateDb(db) {
+  ensureColumn(db, 'messages', 'content_type', 'TEXT');
+  ensureColumn(db, 'messages', 'is_meta', 'INTEGER DEFAULT 0');
+  ensureColumn(db, 'memories', 'anchors', 'TEXT');
+  ensureColumn(db, 'memories', 'deleted_at', 'TEXT');
+  ensureColumn(db, 'memories', 'deleted_reason', 'TEXT');
+}
+
+function rebuildMemoryFts(db) {
+  db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
 }
 
 function trunc(s) {
@@ -101,6 +125,30 @@ function extractText(content) {
   return parts.length ? trunc(parts.join('\n')) : null;
 }
 
+function extractContentType(content) {
+  if (typeof content === 'string') return 'text';
+  if (!Array.isArray(content) || !content.length) return 'unknown';
+  const types = new Set();
+  let sawUnknown = false;
+  for (const b of content) {
+    if (!b || typeof b !== 'object') { sawUnknown = true; continue; }
+    if (b.type === 'text') types.add('text');
+    else if (b.type === 'thinking') types.add('thinking');
+    else if (b.type === 'tool_use') types.add('tool_use');
+    else if (b.type === 'tool_result') types.add('tool_result');
+    else sawUnknown = true;
+  }
+  return !sawUnknown && types.size === 1 ? [...types][0] : 'unknown';
+}
+
+const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<task-notification>|<local-command-caveat>|<local-command-stdout>)/;
+
+function extractMessageIsMeta(record, text = extractText(record?.message?.content)) {
+  const msg = record?.message || {};
+  if (record?.isMeta === true || msg.isMeta === true) return 1;
+  return typeof text === 'string' && COMMAND_ENVELOPE_RE.test(text) ? 1 : 0;
+}
+
 function filePath(name, input) {
   if (!input) return null;
   return ['Read', 'Edit', 'Write', 'NotebookEdit'].includes(name) ? (input.file_path || null) : null;
@@ -129,4 +177,4 @@ function readLines(filePath, callback) {
   }
 }
 
-export { CLAUDE_DIR, DB_PATH, TEXT_LIMIT, openDb, trunc, truncJson, extractText, filePath, isDir, readLines, fs, path, os };
+export { CLAUDE_DIR, DB_PATH, TEXT_LIMIT, openDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path, os };

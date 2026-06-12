@@ -91,7 +91,14 @@ Reads the JSON result, answers you in natural language
 
 When a retrieval produces a memory worth keeping, the agent proposes a markdown
 memory file. After user approval, it registers that file with the narrow
-`runtime.mjs --remember <script>` runtime, which exposes only `remember()`.
+`runtime.mjs --attune <script>` runtime, which exposes only memory mutation
+helpers such as `remember()` and `forget()`.
+
+Memory is a synthesis cache, not a replacement for raw sessions. The agent can
+decide whether to use, ignore, or verify a memory during an answer. Persistent
+changes still require human approval, but explicit corrections count: if you say
+a memory is wrong, outdated, or should be replaced, the agent can archive or
+update the exact matching record without a second confirmation.
 
 **The core idea: don't make humans browse, tag, or organize sessions.**
 Don't invent a rigid query DSL either.
@@ -104,7 +111,7 @@ references only when the question needs them:
 
 **Core primitives** — the main CodeAct surface:
 
-- `search(text)` — FTS5 full-text search, returns matches with surrounding context
+- `search(text)` — FTS5 full-text search, returns matches with surrounding context plus message `content_type` and `is_meta`
 - `context(uuid)` — full story around a message (parent chain, subagent/workflow metadata)
 - `sql(query, ...params)` — read-only SQL for structured queries
 
@@ -132,9 +139,9 @@ schema stay out of the first prompt until the agent needs them.
 | **Subagents** | `subagents/agent-<id>.jsonl` | Agent type, description, full conversation |
 | **Workflows** | `workflows/wf_<runId>.json` | Script, structured result, agent count |
 | **Workflow agents** | `subagents/workflows/wf_<runId>/` | Per-agent transcripts linked to workflow |
-| **Memories** | markdown files registered by the agent after user approval | Prior conclusions linked to source sessions/messages |
+| **Memories** | markdown files registered by the agent after user approval | Prior conclusions linked to source sessions/messages and optional anchors |
 
-Full-text search via FTS5 covers message text across every layer, while the SQLite tables preserve the structure agents need for investigation.
+Full-text search via FTS5 covers message text across every session layer and ranked memory recall over registered memory summaries, while the SQLite tables preserve the structure agents need for investigation.
 
 ## Structure
 

@@ -1,0 +1,41 @@
+{
+  "name": "obelisk",
+  "version": "0.1.0",
+  "description": "Memory management for Obelisk — let Claude Code search its own memory",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dev:renderer": "vite renderer",
+    "build:renderer": "vite build renderer",
+    "build": "electron-builder"
+  },
+  "build": {
+    "appId": "com.obelisk.app",
+    "productName": "Obelisk",
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "dist-renderer/**/*",
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ]
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "vite": "^6.0.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
+  }
+}

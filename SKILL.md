@@ -44,8 +44,8 @@ Custom query:
 3. Parse JSON stdout and answer with concise evidence.
 
 The query file runs inside `(async () => { ... })()`. Use `return` to emit JSON.
-Query scripts are read-only: `remember()` is not available, and `sql()` only
-accepts read-only SELECT/WITH queries.
+Query scripts are read-only: `remember()` and `forget()` are not available, and
+`sql()` only accepts read-only SELECT/WITH queries.
 
 ## Default First Pass
 
@@ -95,7 +95,7 @@ messages.
 Returns:
 
 ```js
-[{ message: { uuid, text, role, timestamp, model, cwd },
+[{ message: { uuid, text, content_type, is_meta, role, timestamp, model, cwd },
    session: { id, title, project, started_at },
    rank,
    context }]
@@ -105,7 +105,22 @@ Returns:
 timestamp. It is not the parent chain. Use `context(uuid)` or `trace(uuid)` for
 causal/parent-chain context.
 
-Opts: `{ limit, sessionId, project, after, before, cwd }`.
+Use `message.content_type` to keep evidence boundaries intact:
+`text` is user/assistant visible language, `thinking` is trace/debug material,
+`tool_use` marks a tool-call message whose details live in `tool_calls`, and
+`tool_result` marks a tool-result message whose details live in `tool_results`.
+`unknown` is a conservative fallback. Do not treat `thinking` as a user-visible
+assistant conclusion. Real user input is `type='user'` plus `content_type='text'`;
+do not invent a separate `user_message` content type.
+
+Use `message.is_meta` to separate transcript control-plane material from
+conversation evidence. `is_meta=1` marks injected caveats, command envelopes, or
+other messages that entered the transcript as user-role content but should not
+be treated as the user's request by default. `search()` and `thread()` omit meta
+messages unless `includeMeta: true` is passed; `context()` and `trace()` preserve
+the original chain and expose `is_meta` on rows.
+
+Opts: `{ limit, sessionId, project, after, before, cwd, includeMeta }`.
 
 `project` is a SQL `LIKE` filter over `sessions.project`, not an exact project
 identity. Results are already ordered by FTS5 rank; lower rank sorts earlier.
@@ -159,9 +174,9 @@ tiny sample before relying on less common filters.
 - `fileHistory(filePath, opts?)` -- Read/Edit/Write tool calls for a file, oldest first; includes many `Read` rows.
 - `failures(opts?)` -- failed tool results with tool/session context, newest first.
 - `trace(uuid)` -- parent chain from root to message.
-- `thread(sessionId)` -- full session messages; last resort only.
+- `thread(sessionId, opts?)` -- session messages ordered by timestamp, omitting meta messages by default. Pass `{ includeMeta: true }` when investigating injected context or command envelopes.
 - `raw(uuid, opts?)` -- windowed access to the original JSONL line.
-- `memories(opts?)` -- recall memory layer, newest first. opts: `{ query, project, sessionId, sessions, after, before, branch, limit }`. `query` filters summary/path by English terms. Returns registered memory records (id, path, summary, project, session_id, created_at). Read the file at `path` for full content.
+- `memories(opts?)` -- recall memory layer. opts: `{ query, project, sessionId, sessions, after, before, branch, limit }`. Without `query`, returns active memory records newest first. With `query`, searches `summary`/`path` through safe FTS5 tokenization and returns `rank`; lower rank sorts earlier. Records may include nullable JSON `anchors` for explicit recall surfaces such as files. Read the file at `path` for full content.
 
 ## Retrieval Contract
 
@@ -173,7 +188,8 @@ Keep queries scoped, bounded, and structural.
 - Plan Before Probe: for conclusion, broad history, failure investigation, or file evolution, write a bounded retrieval script instead of spending turns on intermediate results.
 - Structure Before Text: compute counts, joins, grouping, dedupe, and projection in SQL or JS; keep runtime JSON compact, ideally under 10k-12k chars for synthesis tasks.
 - Evidence Before Conclusion: return compact evidence with stable IDs (`session_id`, `uuid`, `tool_call_id`, `run_id`, `agent_id`) and short snippets, then synthesize in the final answer.
-- Persist Durable Conclusions: after answering, if retrieval produced a durable conclusion that future sessions are likely to reuse and `memories()` does not already cover it, explicitly offer to write a memory. Keep the offer brief. Do not write the markdown file or run `--remember` until the user approves.
+- Exclude Meta By Default: `is_meta=1` rows are injected/control-plane transcript material. Helpers hide them by default; raw SQL for ordinary conversation evidence should include `COALESCE(m.is_meta,0)=0` unless meta rows are the investigation target.
+- Persist Durable Conclusions: after answering, if retrieval produced a durable conclusion that future sessions are likely to reuse and `memories()` does not already cover it, explicitly offer to write a memory. Keep the offer brief. Do not write the markdown file or run `--attune` until the user approves.
 
 If field, context, ordering, FTS, or helper semantics affect the query, read
 `references/retrieval-semantics.md` before coding. If a query errors, read
@@ -196,15 +212,27 @@ obvious CJK text in memory queries and summaries as a guardrail.
 
 **Recall:** query `memories({ query: 'English topic terms', project: '...' })`
 to find prior conclusions relevant to the current task. Translate non-English
-user requests into concise English query terms before calling `memories()`. Like
-other list helpers, passing a string is treated as `sessionId`, and passing a
-number is treated as `limit`. Read the file at `path` for full content.
+user requests into concise English query terms before calling `memories()`.
+Memory recall uses safe FTS5 tokenization over `summary` and `path`, so
+hyphens/punctuation are tokenized instead of causing raw `MATCH` syntax errors.
+Like other list helpers, passing a string is treated as `sessionId`, and passing
+a number is treated as `limit`. Read the file at `path` for full content.
+`memories()` returns active memories only. An archived memory is
+management/audit data, not recall data.
 
 Good memory candidates include design decisions, project conventions, abandoned
 alternatives, repeated failure causes, workflow patterns, and conclusions
 synthesized across multiple raw evidence points. Do not propose memory for
 one-off lookups, uncertain findings, or conclusions already covered by existing
 memories.
+
+**Mutation approvals:** judging whether to use a memory in the current answer is
+an agent decision and does not require approval. Persistent memory changes do.
+If the user explicitly says a memory is wrong, outdated, should be forgotten, or
+should now say something else, that request is the approval to archive or update
+the exact matching memory. Do not ask for a second confirmation unless multiple
+memories could match. If you notice a possible conflict yourself, explain it
+briefly and ask before changing memory state.
 
 **Writing memories:** after a retrieval produces a conclusion worth persisting,
 propose writing a memory file. The user must approve. Flow:
@@ -218,6 +246,7 @@ return remember({
   session_id: 'current-session-id',
   message_start: 'uuid-of-first-relevant-msg',
   message_end: 'uuid-of-last-relevant-msg',
+  anchors: [{ kind: 'file', path: 'src/path/to/file.ts' }],
   summary: 'Detailed summary: what was decided, why, what alternatives were considered, and what constraints drove the choice.'
 })
 ```
@@ -225,17 +254,21 @@ return remember({
 Run the registration script with:
 
 ```bash
-node $SKILL_DIR/scripts/runtime.mjs --remember /tmp/register-memory.mjs
+node $SKILL_DIR/scripts/runtime.mjs --attune /tmp/register-memory.mjs
 ```
 
-`--remember` exposes only `remember()`. It does not expose `search()`, `sql()`,
-`memories()`, or other retrieval helpers. If you need source IDs, find them
-first with a normal `--query` script.
+`--attune` exposes only memory mutation helpers: `remember()` and `forget()`.
+It does not expose `search()`, `sql()`, `memories()`, or other retrieval
+helpers. If you need source IDs or memory IDs, find them first with a normal
+`--query` script.
 
 `remember()` validates that `path` already exists and points to a file. Relative
 paths are resolved against the source session's `project_path` when
 `session_id` is provided, then stored as normalized absolute paths. Prefer
 project-relative paths such as `.obelisk/memories/...` plus `session_id`.
+Optional `anchors` must be an array of objects and is stored as nullable JSON
+text. Use it only for explicit recall surfaces, such as files associated with
+the memory.
 
 `summary` must be English and detailed enough that `memories()` results alone
 can judge relevance without reading the file. Include the decision, the
@@ -244,7 +277,29 @@ reasoning, and the key constraints — not just a title.
 The `message_start`/`message_end` range marks where in the conversation this
 conclusion was drawn. Use it later to trace back to the original evidence.
 
-Memory records survive index rebuilds. They are never auto-deleted.
+**Forgetting memories:** if the user says a memory is outdated, wrong, or should
+be forgotten, use normal recall first to identify the exact memory ID. If there
+is exactly one clear candidate, the user's request is approval to archive it. If
+multiple memories could match, ask which one to forget. Then run an `--attune`
+script:
+
+```js
+return forget({
+  id: 'mem-id-to-delete',
+  reason: 'Outdated by newer project guidance.',
+});
+```
+
+`forget()` archives the memory record by setting `deleted_at` and
+`deleted_reason`. It removes the record from active recall but does not delete
+the markdown file. Memory records survive index rebuilds and are never changed
+automatically.
+
+**Updating memories:** updating memory is one user-approved operation:
+archive the old memory with `forget()`, then write and register a replacement
+markdown memory with `remember()`. If the user explicitly corrected the memory,
+that correction is approval for the combined archive-plus-write flow. If you
+discovered the mismatch yourself, ask first.
 
 ## Minimal Patterns
 

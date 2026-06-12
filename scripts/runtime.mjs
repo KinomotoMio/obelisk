@@ -7,7 +7,7 @@ const vm = require('node:vm');
 
 import { DB_PATH, openDb } from './db.mjs';
 import { buildIndex } from './indexer.mjs';
-import { createQueryApi, createRememberApi } from './query.mjs';
+import { createQueryApi, createAttuneApi } from './query.mjs';
 
 function executeScript(api, scriptContent) {
   const sandbox = {
@@ -22,8 +22,8 @@ function executeQuery(db, scriptContent) {
   return executeScript(createQueryApi(db), scriptContent);
 }
 
-function executeRemember(db, scriptContent) {
-  return executeScript(createRememberApi(db), scriptContent);
+function executeAttune(db, scriptContent) {
+  return executeScript(createAttuneApi(db), scriptContent);
 }
 
 function main() {
@@ -49,16 +49,16 @@ function main() {
       .catch(e => { process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n'); db.close(); process.exitCode = 1; });
     return;
   }
-  if (args[0] === '--remember' && args[1]) {
+  if (args[0] === '--attune' && args[1]) {
     buildIndex();
     const db = openDb();
     const script = fs.readFileSync(path.resolve(args[1]), 'utf8');
-    executeRemember(db, script)
+    executeAttune(db, script)
       .then(r => { process.stdout.write(JSON.stringify(r, null, 2) + '\n'); db.close(); })
       .catch(e => { process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n'); db.close(); process.exitCode = 1; });
     return;
   }
-  process.stderr.write('Usage:\n  node runtime.mjs --build\n  node runtime.mjs --search "text"\n  node runtime.mjs --query <file.js>\n  node runtime.mjs --remember <file.js>\n');
+  process.stderr.write('Usage:\n  node runtime.mjs --build\n  node runtime.mjs --search "text"\n  node runtime.mjs --query <file.js>\n  node runtime.mjs --attune <file.js>\n');
   process.exitCode = 1;
 }
 

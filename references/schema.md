@@ -41,6 +41,8 @@ CREATE TABLE messages (
   timestamp     TEXT,               -- ISO 8601
   role          TEXT,               -- "user" or "assistant" (from message payload)
   text          TEXT,               -- extracted text content (thinking + text blocks, truncated to 10k chars)
+  content_type  TEXT,               -- "text", "thinking", "tool_use", "tool_result", or "unknown"
+  is_meta       INTEGER DEFAULT 0,  -- 1 for injected/control-plane transcript messages
   model         TEXT,               -- model name (e.g. "claude-opus-4-6-20250529"), NULL for user messages
   is_sidechain  INTEGER DEFAULT 0,  -- 1 if this message is on a sidechain (retry/branch)
   agent_id      TEXT,               -- subagent or workflow agent UUID (NULL for main conversation)
@@ -53,6 +55,22 @@ CREATE TABLE messages (
 ```
 
 Indexes: `idx_messages_session(session_id)`, `idx_messages_agent(agent_id)`, `idx_messages_ts(session_id, timestamp)`.
+
+`content_type` preserves the top-level Claude Code content block shape for the
+message row. Treat `text` as user/assistant visible language, `thinking` as
+trace/debug material, and `tool_use` as a marker that the assistant message
+contains tool calls. `tool_result` marks a tool-result message, but the
+structured payload remains in `tool_results`. Tool-call details remain in
+`tool_calls`. Messages whose top-level content is not one of these four raw
+message surfaces are `unknown`. Real user input is represented by `type='user'`
+and `content_type='text'`, not by a separate `user_message` content type.
+
+`is_meta` marks transcript control-plane content: injected caveats, command
+envelopes such as `<command-name>/exit</command-name>`, and similar messages
+that may appear as user-role text but are not ordinary user intent. It is
+separate from `type`, `role`, and `content_type`. Default helpers hide meta
+messages from ordinary recall; use `includeMeta: true` or explicit SQL when
+investigating injected context, command messages, or transcript structure.
 
 ### messages_fts
 
@@ -69,6 +87,26 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 ```
 
 Queried via `MATCH` syntax. Rebuilt on each index pass.
+
+### memories_fts
+
+FTS5 virtual table for ranked memory recall over registered memory summaries
+and paths.
+
+```sql
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  id UNINDEXED,         -- memory record ID, carried for inspection
+  path,                 -- searchable memory file path
+  summary,              -- searchable compact memory summary
+  content=memories,
+  content_rowid=rowid,
+  tokenize='unicode61 remove_diacritics 1'
+);
+```
+
+`memories({ query })` queries this table with safe tokenization and joins back to
+`memories`, omitting archived rows. It is rebuilt during index finalization;
+`remember()` also inserts the new memory row into FTS immediately.
 
 ### tool_calls
 
@@ -191,13 +229,21 @@ CREATE TABLE memories (
   message_start TEXT,               -- first relevant message UUID, if known
   message_end   TEXT,               -- last relevant message UUID, if known
   path          TEXT,               -- normalized absolute markdown memory file path
+  anchors       TEXT,               -- optional JSON array of recall anchors
   summary       TEXT,               -- retrieval summary of the memory
-  created_at    TEXT                -- ISO 8601 registration time
+  created_at    TEXT,               -- ISO 8601 registration time
+  deleted_at    TEXT,               -- ISO 8601 archive time, if forgotten
+  deleted_reason TEXT               -- human/agent deletion reason, if forgotten
 );
 ```
 
 Indexes: `idx_memories_project(project)`,
 `idx_memories_session(session_id)`, `idx_memories_created(created_at)`.
+
+Active memory means `deleted_at IS NULL`. Recall helpers return active memories
+only. Archived memories are management/audit data, not recall data. Query recall
+uses `memories_fts` joined back to `memories`; when using raw SQL for memory
+recall, include `deleted_at IS NULL`.
 
 ### Key Relationships
 
@@ -221,8 +267,8 @@ workflows.run_id   <--  workflow_agents.run_id
 
 ## 2. Query API Reference
 
-Read helpers are available as globals inside `--query` scripts. Memory write
-helpers are available only inside `--remember` scripts. Scripts run in an async
+Read helpers are available as globals inside `--query` scripts. Memory mutation
+helpers are available only inside `--attune` scripts. Scripts run in an async
 IIFE with a 30-second timeout.
 
 ### Simple Layer
@@ -240,6 +286,7 @@ Full-text search across all message text using FTS5.
 | `opts.after` | `string` | ISO 8601 lower bound on timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on timestamp |
 | `opts.cwd` | `string` | Filter by working directory (supports LIKE) |
+| `opts.includeMeta` | `boolean` | Include injected/control-plane messages (default `false`) |
 
 **Scope note:** `sessions.project` is the stored Claude Code project slug,
 `sessions.project_path` is the absolute session path derived from message `cwd`
@@ -248,15 +295,22 @@ Helper `project` filters are fuzzy `LIKE` filters over `sessions.project`. For
 exact project membership, use `sql()` with `s.project = ?` or
 `s.project_path = ?`.
 
-**Returns:** `Array<{ message, session, rank, context }>` where `context` is the
-6 nearest messages by timestamp in the same session. It is temporal neighbor
-context, not a parent chain. `rank` is the FTS5 relevance score used by
-`ORDER BY rank`; lower values sort earlier, so treat the returned order as the
-relevance order unless you are deliberately using FTS5 ranking details.
+**Returns:** `Array<{ message, session, rank, context }>` where `message`
+includes `{ uuid, text, content_type, is_meta, role, timestamp, model, cwd }`
+and `context` is the 6 nearest non-meta messages by timestamp in the same
+session unless `includeMeta: true` is passed. It is temporal neighbor context,
+not a parent chain. `rank` is the FTS5 relevance score used by `ORDER BY rank`;
+lower values sort earlier, so treat the returned order as the relevance order
+unless you are deliberately using FTS5 ranking details.
 
 ```js
 const hits = search('MCTS exploration');
-return hits.map(h => ({ title: h.session.title, text: h.message.text?.slice(0, 200) }));
+return hits.map(h => ({
+  title: h.session.title,
+  content_type: h.message.content_type,
+  is_meta: h.message.is_meta,
+  text: h.message.text?.slice(0, 200),
+}));
 ```
 
 #### `context(uuid)`
@@ -285,8 +339,8 @@ Read-only SQL with parameterized bindings. Returns an array of row objects.
 
 **Returns:** `Array<Object>` -- each row as `{ column: value }`.
 
-Write statements are rejected. Use `--remember` and `remember()` for memory
-registration after user approval.
+Write statements are rejected. Use `--attune` with `remember()` or `forget()`
+for memory mutation after user approval.
 
 ```js
 const rows = sql('SELECT id, title FROM sessions WHERE project = ? ORDER BY ended_at DESC LIMIT 5', 'Users-tomiya-Code-quiet-zero');
@@ -306,9 +360,11 @@ const chain = trace('some-uuid');
 return chain.map(m => ({ role: m.role, text: m.text?.slice(0, 100) }));
 ```
 
-#### `thread(sessionId)`
+#### `thread(sessionId, opts?)`
 
-All messages in a session, ordered by timestamp.
+Session messages ordered by timestamp. Meta messages are omitted by default;
+pass `{ includeMeta: true }` to include injected caveats, command envelopes, and
+other control-plane transcript rows.
 
 **Returns:** `Array<message>`.
 
@@ -457,7 +513,7 @@ from `process.cwd()` against `sessions.project_path`, then from exact
     ],
     memory_total,
     memories: [
-      { id, path, summary, session_id, project, created_at }
+      { id, path, anchors, summary, session_id, project, created_at }
     ]
   } | null,
   projects: [
@@ -491,6 +547,7 @@ return {
   memories: map.current_project?.memories.map(m => ({
     id: m.id,
     path: m.path,
+    anchors: m.anchors,
     summary: m.summary,
   })),
 };
@@ -522,12 +579,12 @@ return qz.map(s => ({ title: s.title, branch: s.git_branch, ended: s.ended_at })
 
 #### `memories(opts?)`
 
-Registered markdown memory records. Like other list helpers, passing a string
-is treated as `sessionId`, and passing a number is treated as `limit`.
+Active registered markdown memory records. Like other list helpers, passing a
+string is treated as `sessionId`, and passing a number is treated as `limit`.
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `opts.query` | `string` | English term filter over `summary` and `path`; hyphens/underscores are treated as spaces |
+| `opts.query` | `string` | English FTS recall query over `summary` and `path`; hyphens/underscores/punctuation are safely tokenized |
 | `opts.project` | `string` | SQL `LIKE` pattern over `memories.project` |
 | `opts.sessionId` | `string` | Restrict to one source session |
 | `opts.sessions` | `string[]` | Restrict to a set of source session IDs |
@@ -536,9 +593,13 @@ is treated as `sessionId`, and passing a number is treated as `limit`.
 | `opts.branch` | `string` | Filter by source session git branch (exact match) |
 | `opts.limit` | `number` | Max results (default 50) |
 
-**Returns:** `Array<memory_row>` ordered by `created_at` descending.
+**Returns:** `Array<memory_row & { rank?: number }>` with archived memories
+omitted. Without `query`, results are ordered by `created_at` descending. With
+`query`, results are ordered by FTS rank first, then `created_at` descending;
+lower rank sorts earlier.
 
-`query` is a lightweight English term filter, not FTS5 ranking. Translate
+`query` uses safe FTS5 tokenization rather than raw `MATCH`, so punctuation-only
+queries return no rows instead of broadening into all memories. Translate
 non-English user requests into concise English query terms before calling
 `memories()`. Use it to avoid pulling all recent memories, then read the
 markdown file at `path` when a memory looks relevant. The runtime rejects
@@ -553,6 +614,7 @@ const prior = memories({
 return prior.map(m => ({
   id: m.id,
   path: m.path,
+  anchors: m.anchors,
   session_id: m.session_id,
   summary: m.summary?.slice(0, 240),
 }));
@@ -562,11 +624,11 @@ return prior.map(m => ({
 
 Register a human-approved markdown memory file. This is a write helper, not a
 recall helper; use it only after the user has approved writing memory. It is
-available only in scripts run with `runtime.mjs --remember`.
+available only in scripts run with `runtime.mjs --attune`.
 
-`--remember` exposes only `remember()`, not `search()`, `sql()`, `memories()`,
-or other retrieval helpers. If source IDs are unknown, find them first with a
-normal `--query` script.
+`--attune` exposes only `remember()` and `forget()`, not `search()`, `sql()`,
+`memories()`, or other retrieval helpers. If source IDs or memory IDs are
+unknown, find them first with a normal `--query` script.
 
 | Param | Type | Description |
 |-------|------|-------------|
@@ -576,12 +638,14 @@ normal `--query` script.
 | `record.message_start` | `string` | First relevant source message UUID, if known |
 | `record.message_end` | `string` | Last relevant source message UUID, if known |
 | `record.project` | `string` | Project slug override. Defaults from `sessions.project` for `session_id` |
+| `record.anchors` | `array` or JSON `string` | Optional recall anchors stored as JSON text. Expected shape is an array of objects, such as `{ kind: 'file', path: 'src/index/builder.ts' }` |
 
 `remember()` validates that `path` exists and is a regular file, and rejects
 obvious CJK text in `summary`. It stores the normalized absolute path in
-`memories.path`.
+`memories.path`. `anchors` is nullable; omit it or pass an empty array when the
+memory has no explicit file or object anchors.
 
-**Returns:** `{ id, path, project, created_at }`.
+**Returns:** `{ id, path, project, anchors, created_at }`.
 
 ```js
 return remember({
@@ -589,9 +653,52 @@ return remember({
   session_id: 'source-session-id',
   message_start: 'first-message-uuid',
   message_end: 'last-message-uuid',
+  anchors: [{ kind: 'file', path: 'src/index/builder.ts' }],
   summary: 'Decision: keep Obelisk as one user-facing entry that queries both memory and raw session evidence. Memory is prior notes, not final authority.',
 });
 ```
+
+#### `forget(record)`
+
+Archive a human-approved memory record. Use it when the user says a memory is
+outdated, wrong, or should be forgotten. It is available only in scripts run
+with `runtime.mjs --attune`.
+
+`forget()` requires a precise memory ID. Do not pass a query string and let the
+helper choose. If the ID is unknown, first use a normal `--query` script with
+`memories()` to identify candidates. If exactly one candidate clearly matches
+the user's request, the request is approval to archive it. If multiple memories
+could match, ask the user which one to forget.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `record.id` | `string` | Memory record ID to archive |
+| `record.reason` | `string` | Required reason for audit and future management views |
+
+`forget()` sets `deleted_at` and `deleted_reason`. It does not delete the
+markdown file at `path`. Active recall helpers omit archived memories.
+
+**Returns:** `{ id, deleted_at, deleted_reason }`, or the same fields plus
+`already_deleted: true` if the record had already been forgotten.
+
+```js
+return forget({
+  id: 'mem-20260610-example',
+  reason: 'Outdated by newer project guidance.',
+});
+```
+
+#### Memory Mutation Approval
+
+Agents may decide whether to use, ignore, or verify memory in a single answer
+without approval. Approval is required only for persistent memory mutations.
+When the user explicitly says a memory is wrong, outdated, should be forgotten,
+or should say something else, that utterance is approval to mutate the exact
+matching memory. If multiple memories could match, ask the user to choose.
+
+Updating is not an in-place edit. Archive the old record with `forget()`, then
+write and register a replacement markdown file with `remember()` under the same
+approval.
 
 ---
 
