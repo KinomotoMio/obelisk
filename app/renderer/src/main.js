@@ -17,8 +17,19 @@ const app = createApp(App);
 
 app.use(router);
 
-// Load data before the first render completes
+// Load data on startup
 router.isReady().then(() => {
+  loadInitialData();
+});
+
+// Refresh data when window regains focus
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    loadInitialData();
+  }
+});
+
+window.obelisk?.onIndexUpdated?.(() => {
   loadInitialData();
 });
 

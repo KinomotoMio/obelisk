@@ -116,6 +116,10 @@
     content: ''; position: absolute; left: 0; top: 0; bottom: 0;
     width: 2px; background: var(--muted-2);
   }
+  .srow-obelisk {
+    position: absolute; left: 0; bottom: 0;
+    width: 3px; border-radius: 1.5px 1.5px 0 0;
+  }
   .srow-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .srow-title {
     font-size: var(--text-md); font-weight: 500; color: var(--fg);
@@ -146,7 +150,9 @@
     color: var(--fg-2); text-align: right;
     font-variant-numeric: tabular-nums;
     flex-shrink: 0; padding-top: 2px; white-space: nowrap;
+    display: flex; flex-direction: column; gap: 2px;
   }
+  .srow-right .srow-created { font-size: 10px; color: var(--muted); }
 
   .empty {
     flex: 1; display: flex; align-items: center; justify-content: center;

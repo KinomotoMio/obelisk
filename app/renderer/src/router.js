@@ -9,7 +9,7 @@ const SessionDetail = () => import('./views/SessionDetail.vue');
 const SubagentDetail = () => import('./views/SubagentDetail.vue');
 const MemoryList = () => import('./views/MemoryList.vue');
 const MemoryDetail = () => import('./views/MemoryDetail.vue');
-const Usage = () => import('./views/Usage.vue');
+const Activity = () => import('./views/Activity.vue');
 
 const routes = [
   {
@@ -42,9 +42,9 @@ const routes = [
     props: true
   },
   {
-    path: '/usage',
-    name: 'Usage',
-    component: Usage
+    path: '/activity',
+    name: 'Activity',
+    component: Activity
   },
   {
     path: '/',

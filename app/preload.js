@@ -19,4 +19,9 @@ contextBridge.exposeInMainWorld('obelisk', {
   getProjects: () => ipcRenderer.invoke('db:getProjects'),
   getStats: () => ipcRenderer.invoke('db:getStats'),
   getUsageStats: () => ipcRenderer.invoke('db:getUsageStats'),
+  onIndexUpdated: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('obelisk:index-updated', listener);
+    return () => ipcRenderer.removeListener('obelisk:index-updated', listener);
+  },
 });

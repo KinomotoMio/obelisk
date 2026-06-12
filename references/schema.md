@@ -3,6 +3,9 @@
 Advanced reference for the obelisk database.
 Read this when `search()`, `context()`, or `sql()` are not enough.
 
+Executable schema source: `scripts/schema.sql`. This document explains that
+contract for agents and humans; it is not the runtime source of truth.
+
 ---
 
 ## 1. Database Schema
@@ -214,6 +217,14 @@ CREATE TABLE index_state (
   lines_processed INTEGER             -- number of lines already processed
 );
 ```
+
+Sentinel rows use synthetic `jsonl_path` keys:
+`__last_build__` stores the last completed build time, `__app_heartbeat__`
+stores the optional app indexer's liveness heartbeat,
+`__app_last_successful_build__` stores the app's last successful index build,
+`__indexer_owner_app__` marks app ownership, and `__last_source_mtime__` records
+the newest indexed source mtime. Skill-side lazy builds skip work only while the
+app heartbeat and app successful-build marker are both fresh.
 
 ### memories
 

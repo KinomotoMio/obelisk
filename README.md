@@ -123,7 +123,11 @@ same SQLite data.
 
 - `references/schema.md` — full SQLite schema and API reference
 - `references/query-patterns.md` — copyable CodeAct recipes for common retrieval tasks
+- `references/retrieval-semantics.md` — query design frame for scoped and synthesis retrieval
 - `references/pitfalls.md` — scope, FTS, ordering, compact/raw, and field-name traps
+
+The executable SQLite schema lives in `scripts/schema.sql`; `references/schema.md`
+is the human/agent explanation of that contract.
 
 The design is progressive disclosure with guardrails: the main skill keeps the
 core contract and high-risk pitfalls visible, while longer recipes and the full
@@ -149,16 +153,22 @@ Full-text search via FTS5 covers message text across every session layer and ran
 .claude/skills/obelisk/
 ├── SKILL.md              # Skill definition + simple API + examples
 ├── scripts/
-│   └── runtime.mjs       # Indexer + query runtime (400 lines, zero deps)
+│   ├── schema.sql        # Executable SQLite schema
+│   └── runtime.mjs       # Indexer + query runtime (zero deps)
 └── references/
     ├── schema.md          # Full table schema + advanced API reference
     ├── query-patterns.md  # Copyable retrieval recipes
+    ├── retrieval-semantics.md # Query design frame for retrieval semantics
     └── pitfalls.md        # Scope, FTS, ordering, and compactness traps
 ```
 
 ## Implementation Notes
 
 The index rebuilds incrementally — only new or modified JSONL files are re-parsed.
+When the optional app is running, it is the active indexer: it watches Claude
+project files, builds in a worker thread, writes `__app_heartbeat__` plus
+`__app_last_successful_build__` into `index_state`, and the skill-side lazy
+build skips work only while both markers are fresh.
 
 Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire runtime is ~400 lines.
 

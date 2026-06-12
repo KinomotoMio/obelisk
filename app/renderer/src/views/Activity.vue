@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue';
 import { state, navigateToSession } from '../store.js';
 import { fmtTokens, fmtDuration, fmtTooltipDate, positionTooltip, escapeHTML, formatProjectLabel } from '../utils.js';
 
-defineOptions({ name: 'Usage' });
+defineOptions({ name: 'Activity' });
 
 // --- State ---
 const activeTab = ref('daily');

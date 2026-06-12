@@ -59,8 +59,8 @@ function isMemoryViewActive(view) {
   return state.route === 'memory' && state.view === view && state.projectFilter === 'all';
 }
 
-function isUsageActive() {
-  return state.route === 'usage';
+function isActivityActive() {
+  return state.route === 'activity';
 }
 
 function isProjectActive(slug) {
@@ -73,8 +73,8 @@ function handleSidebarRoute(routeName) {
   setRoute(routeName);
   if (routeName === 'sessions') {
     router.push('/sessions');
-  } else if (routeName === 'usage') {
-    router.push('/usage');
+  } else if (routeName === 'activity') {
+    router.push('/activity');
   } else {
     router.push('/memory');
   }
@@ -175,7 +175,7 @@ function handleProjectSearch(e) {
 
       <button
         class="sidebar-item"
-        :class="{ active: isUsageActive() }"
+        :class="{ active: isActivityActive() }"
         @click="handleSidebarRoute('usage')"
       >
         <span class="icon">
@@ -183,7 +183,7 @@ function handleProjectSearch(e) {
             <path d="M2 13h12M4 9v4M7 6v7M10 8v5M13 4v9"/>
           </svg>
         </span>
-        <span class="label">Usage</span>
+        <span class="label">Activity</span>
       </button>
     </div>
 

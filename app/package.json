@@ -20,15 +20,28 @@
     "files": [
       "main.js",
       "preload.js",
+      "indexer.js",
+      "indexer-service.js",
+      "indexer-worker.js",
+      "indexer-worker-client.js",
       "dist-renderer/**/*",
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/chokidar/**/*",
+      "node_modules/readdirp/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../scripts/schema.sql",
+        "to": "scripts/schema.sql"
+      }
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*"
     ]
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.0.0",
+    "chokidar": "^4.0.3"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

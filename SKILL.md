@@ -144,7 +144,9 @@ Read-only SQL SELECT/WITH with `?` placeholders. Returns array rows. SQL is an
 escape hatch for exact structured joins and aggregations after the helper-first
 surface is insufficient; it is not the default retrieval entry point.
 
-Before writing non-trivial SQL, read `references/schema.md`. Common safe joins:
+Before writing non-trivial SQL, read `references/schema.md`. The executable DDL
+lives in `scripts/schema.sql`; use the reference for query semantics and the SQL
+file for schema-source alignment. Common safe joins:
 
 - `tool_calls` does not have timestamps. Join `messages m ON m.uuid = tc.message_uuid`.
 - `tool_results` does not have timestamps. Join `messages m ON m.uuid = tr.message_uuid`.

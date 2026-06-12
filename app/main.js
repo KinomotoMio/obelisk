@@ -3,16 +3,42 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { writeHeartbeat } = require('./indexer');
+const { createIndexerService } = require('./indexer-service');
+const { createWorkerBuildIndex } = require('./indexer-worker-client');
 
 const DB_PATH = path.join(os.homedir(), '.claude', 'obelisk.sqlite');
 
 let db;
+let indexerService;
+let indexerWorker;
 
 function openDb() {
   if (!fs.existsSync(DB_PATH)) return null;
+  if (db) db.close();
   db = new Database(DB_PATH, { readonly: false });
   db.pragma('journal_mode = WAL');
   return db;
+}
+
+function notifyIndexUpdated() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('obelisk:index-updated');
+  }
+}
+
+function startIndexerService() {
+  indexerService = createIndexerService({
+    buildIndex: async ({ reason }) => {
+      const result = await indexerWorker.buildIndex({ reason });
+      openDb();
+      notifyIndexUpdated();
+      return result;
+    },
+    writeHeartbeat,
+  });
+  indexerService.start({ buildOnStart: false });
+  return indexerService;
 }
 
 function createWindow() {
@@ -41,12 +67,19 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  indexerWorker = createWorkerBuildIndex();
   openDb();
   createWindow();
+  startIndexerService().runBuildNow('startup');
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  if (indexerService) indexerService.stop();
+  if (indexerWorker) indexerWorker.stop();
 });
 
 app.on('window-all-closed', () => {
@@ -137,7 +170,7 @@ ipcMain.handle('db:getSessionSummaries', (_, sessionId) => {
 ipcMain.handle('db:getMemories', () => {
   if (!db) return [];
   return db.prepare(`
-    SELECT id, session_id, project, message_start, message_end, path, summary, created_at, deleted_at, deleted_reason
+    SELECT id, session_id, project, message_start, message_end, path, anchors, summary, created_at, deleted_at, deleted_reason
     FROM memories ORDER BY created_at DESC
   `).all();
 });

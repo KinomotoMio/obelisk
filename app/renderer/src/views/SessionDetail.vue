@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick, onActivated } from 'vue';
+import { ref, computed, onMounted, nextTick, onActivated, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
 import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
@@ -27,14 +27,20 @@ const showBackToTop = ref(false);
 const wrapRef = ref(null);
 const detailRef = ref(null);
 
-// --- Load session on mount ---
+// --- Load session on mount or when id changes ---
 onMounted(async () => {
   await loadMessages();
 });
 
-// When keep-alive re-activates, re-check if we need data
 onActivated(async () => {
   if (messages.value.length === 0 && props.id) {
+    await loadMessages();
+  }
+});
+
+watch(() => props.id, async (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    messages.value = [];
     await loadMessages();
   }
 });
@@ -181,7 +187,9 @@ function getToolCallParsedInput(tc) {
           </div>
           <div class="session-title">{{ session.title || '(untitled)' }}</div>
           <div class="session-meta-inline">
-            <span>{{ fmtRelative(new Date(session.started_at || 0).getTime()) }}</span>
+            <span>created {{ fmtRelative(new Date(session.started_at || 0).getTime()) }}</span>
+            <span class="dot"></span>
+            <span>last active {{ fmtRelative(new Date(session.ended_at || session.started_at || 0).getTime()) }}</span>
             <span class="dot"></span>
             <span>{{ session.message_count || 0 }} messages</span>
             <template v-if="session.git_branch">

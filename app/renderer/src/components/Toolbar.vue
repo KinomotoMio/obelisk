@@ -44,8 +44,8 @@ const breadcrumbs = computed(() => {
     const m = state.memories.find(x => x.id === route.params.id);
     const filename = (m?.path || '').split('/').pop();
     crumbs.push({ label: filename, terminal: true, filename: true });
-  } else if (name === 'Usage') {
-    crumbs.push({ label: 'Usage', terminal: true });
+  } else if (name === 'Activity') {
+    crumbs.push({ label: 'Activity', terminal: true });
   }
 
   return crumbs;

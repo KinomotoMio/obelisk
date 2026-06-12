@@ -25,16 +25,23 @@ const archivedCount = computed(() => state.memories.filter(m => m.archived).leng
 const totalMemoryCount = computed(() => state.memories.length);
 const sessionCount = computed(() => state.sessions.length);
 
+const currentRouteType = computed(() => {
+  const name = route.name;
+  if (name === 'SessionList' || name === 'SessionDetail' || name === 'SubagentDetail') return 'sessions';
+  if (name === 'Activity') return 'activity';
+  return 'memory';
+});
+
 const sidebarProjects = computed(() => {
-  const items = state.route === 'sessions' ? state.sessions : state.memories;
+  const items = currentRouteType.value === 'sessions' ? state.sessions : state.memories;
   const filtered = items.filter(item => {
-    if (state.route === 'sessions') return true;
+    if (currentRouteType.value === 'sessions') return true;
     return state.view === 'archived' ? item.archived : !item.archived;
   });
   let projects = [...new Set(filtered.map(item => item.project).filter(Boolean))];
   if (state.projectSearch) {
     const q = state.projectSearch.toLowerCase();
-    projects = projects.filter(p => p.toLowerCase().includes(q));
+    projects = projects.filter(p => formatProjectLabel(p).toLowerCase().includes(q));
   }
   projects.sort((a, b) => formatProjectLabel(a).localeCompare(formatProjectLabel(b)));
 
@@ -49,6 +56,11 @@ const sidebarProjects = computed(() => {
     label: formatProjectLabel(p),
     count: counts[p] || 0
   }));
+});
+
+const totalProjectCount = computed(() => {
+  const items = currentRouteType.value === 'sessions' ? state.sessions : state.memories;
+  return new Set(items.map(i => i.project).filter(Boolean)).size;
 });
 
 // --- Toolbar visibility ---
@@ -67,8 +79,8 @@ const showSearchMsgsToggle = computed(() => {
 const windowTitle = computed(() => {
   const appName = 'Obelisk';
   let scopeText = '';
-  if (route.name === 'Usage') {
-    scopeText = 'Usage';
+  if (route.name === 'Activity') {
+    scopeText = 'Activity';
   } else if (route.name?.startsWith('Session')) {
     if (route.name === 'SessionDetail' || route.name === 'SubagentDetail') {
       const s = state.sessions.find(x => x.id === route.params.id);
@@ -100,8 +112,8 @@ function handleSidebarRoute(routeName) {
   setRoute(routeName);
   if (routeName === 'sessions') {
     router.push('/sessions');
-  } else if (routeName === 'usage') {
-    router.push('/usage');
+  } else if (routeName === 'activity') {
+    router.push('/activity');
   } else {
     router.push('/memory');
   }
@@ -110,6 +122,10 @@ function handleSidebarRoute(routeName) {
 function handleSidebarView(view) {
   setView(view);
   router.push('/memory');
+}
+
+function handleClearProject() {
+  setProject('all');
 }
 
 function handleSidebarProject(slug) {
@@ -147,94 +163,125 @@ const keepAliveIncludes = ['SessionDetail'];
 </script>
 
 <template>
-  <div class="app-shell">
-    <!-- Titlebar (macOS traffic-light region) -->
-    <div class="titlebar" :class="{ mac: IS_MAC }">
-      <div class="titlebar-drag"></div>
-      <div id="titlebar-text" class="titlebar-text">
+  <div class="app">
+    <div class="titlebar">
+      <div class="titlebar-text" id="titlebar-text">
         <span class="app-name">{{ windowTitle.appName }}</span>
         <span class="sep">—</span>
         <span class="scope">{{ windowTitle.scopeText }}</span>
       </div>
     </div>
 
-    <!-- Columns: sidebar + main -->
     <div class="columns">
-      <!-- Sidebar -->
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <svg viewBox="0 0 20 20" fill="none">
-            <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>
-            <path d="M10 4 L10 16" stroke="url(#obelisk-grad)" stroke-width="2.5" stroke-linecap="round"/>
-            <defs><linearGradient id="obelisk-grad" x1="10" y1="4" x2="10" y2="16" gradientUnits="userSpaceOnUse"><stop stop-color="#a78bfa"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs>
+          <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <radialGradient id="icon-aurora" cx="50%" cy="62%" r="55%">
+                <stop offset="0%"  stop-color="#ec4899" stop-opacity="0.8"/>
+                <stop offset="45%" stop-color="#a855f7" stop-opacity="0.7"/>
+                <stop offset="100%" stop-color="#6366f1" stop-opacity="0"/>
+              </radialGradient>
+              <linearGradient id="icon-stone-lit" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"  stop-color="#cbd5e1"/>
+                <stop offset="100%" stop-color="#475569"/>
+              </linearGradient>
+            </defs>
+            <ellipse cx="20" cy="22" rx="15" ry="11" fill="url(#icon-aurora)"/>
+            <ellipse cx="20" cy="21" rx="9"  ry="7"  fill="url(#icon-aurora)" opacity="0.7"/>
+            <circle cx="8"  cy="13" r="0.7" fill="#fff" opacity="0.9"/>
+            <circle cx="32" cy="11" r="0.9" fill="#fff" opacity="0.95"/>
+            <circle cx="34" cy="22" r="0.5" fill="#fff" opacity="0.7"/>
+            <polygon points="20,7 16.5,12 23.5,12" fill="url(#icon-stone-lit)"/>
+            <polygon points="20,12 16.5,12 17.5,33 20,33" fill="url(#icon-stone-lit)"/>
+            <polygon points="20,12 23.5,12 22.5,33 20,33" fill="#1e293b"/>
+            <rect x="15.5" y="33" width="9" height="1.6" rx="0.3" fill="#0f172a"/>
           </svg>
           <span class="name">Obelisk</span>
         </div>
 
-        <!-- Navigation section -->
         <div class="sidebar-section">
+          <div class="sidebar-section-title"><span>Library</span></div>
           <button
             class="sidebar-item"
             :class="{ active: state.route === 'sessions' && state.projectFilter === 'all' }"
             @click="handleSidebarRoute('sessions')"
           >
-            <span class="icon">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 1v4M11 1v4"/></svg>
-            </span>
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M3 4h10v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4z" stroke-linejoin="round"/>
+              <path d="M5.5 7h5M5.5 9.5h3" stroke-linecap="round"/>
+            </svg>
             <span class="label">Sessions</span>
             <span class="badge">{{ sessionCount }}</span>
           </button>
-
+          <button
+            class="sidebar-item"
+            :class="{ active: state.route === 'memory' && state.view === 'active' && state.projectFilter === 'all' }"
+            @click="handleSidebarView('active')"
+          >
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2.5" y="2.5" width="11" height="11" rx="2"/>
+              <path d="M5 8h6M5 5.5h6M5 10.5h4" stroke-linecap="round"/>
+            </svg>
+            <span class="label">Memory</span>
+            <span class="badge">{{ totalMemoryCount }}</span>
+          </button>
           <button
             class="sidebar-item sub"
             :class="{ active: state.route === 'memory' && state.view === 'active' && state.projectFilter === 'all' }"
             @click="handleSidebarView('active')"
           >
-            <span class="icon">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5"/></svg>
-            </span>
+            <svg class="icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="6" cy="6" r="2" fill="currentColor"/>
+            </svg>
             <span class="label">Active</span>
             <span class="badge">{{ activeCount }}</span>
           </button>
-
           <button
             class="sidebar-item sub"
             :class="{ active: state.route === 'memory' && state.view === 'archived' && state.projectFilter === 'all' }"
             @click="handleSidebarView('archived')"
           >
-            <span class="icon">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5h11v7.5a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5V5z"/><path d="M1.5 3.5h13v2h-13z"/><path d="M6 8h4"/></svg>
-            </span>
+            <svg class="icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="6" cy="6" r="2"/>
+            </svg>
             <span class="label">Archived</span>
             <span class="badge">{{ archivedCount }}</span>
           </button>
+        </div>
 
+        <div class="sidebar-section">
+          <div class="sidebar-section-title"><span>Stats</span></div>
           <button
             class="sidebar-item"
-            :class="{ active: state.route === 'usage' }"
-            @click="handleSidebarRoute('usage')"
+            :class="{ active: route.name === 'Activity' }"
+            @click="handleSidebarRoute('activity')"
           >
-            <span class="icon">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 9v4M7 6v7M10 8v5M13 4v9"/></svg>
-            </span>
-            <span class="label">Usage</span>
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="10" width="2.5" height="4"/>
+              <rect x="6" y="6" width="2.5" height="8"/>
+              <rect x="10" y="3" width="2.5" height="11"/>
+            </svg>
+            <span class="label">Activity</span>
           </button>
         </div>
 
-        <!-- Projects section -->
         <div class="sidebar-section projects">
-          <div class="sidebar-section-title">
-            <span>Projects</span>
-          </div>
-          <div class="sidebar-search">
+          <div class="sidebar-section-title"><span>Projects</span></div>
+          <div class="sidebar-search" v-if="totalProjectCount >= 6">
+            <svg class="sidebar-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="7" cy="7" r="5"/>
+              <path d="M11 11l3 3" stroke-linecap="round"/>
+            </svg>
             <input
               type="text"
-              placeholder="Filter..."
+              placeholder="Filter projects…"
+              autocomplete="off"
               :value="state.projectSearch"
               @input="handleProjectSearch"
             />
           </div>
-          <div id="sidebar-projects" class="sidebar-projects-list">
+          <div class="sidebar-list" id="sidebar-projects">
             <button
               v-for="p in sidebarProjects"
               :key="p.slug"
@@ -242,199 +289,108 @@ const keepAliveIncludes = ['SessionDetail'];
               :class="{ active: state.projectFilter === p.slug }"
               @click="handleSidebarProject(p.slug)"
             >
-              <span class="icon" v-html="FOLDER_SVG"></span>
+              <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+                <path d="M2 5.5V12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 14 12V6.5A1.5 1.5 0 0 0 12.5 5H8.3L7 3.5H3.5A1.5 1.5 0 0 0 2 5z"/>
+              </svg>
               <span class="label">{{ p.label }}</span>
               <span class="badge">{{ p.count }}</span>
             </button>
-            <div v-if="!sidebarProjects.length" class="sidebar-empty">
-              No projects
-            </div>
           </div>
         </div>
       </aside>
 
-      <!-- Main content area -->
-      <div class="main">
-        <!-- Toolbar with search + sort (only on list views) -->
-        <div v-if="showToolbar" class="toolbar">
-          <div class="breadcrumb">
-            <span class="crumb terminal">
-              {{ state.route === 'sessions' ? 'Sessions' : 'Memory' }}
-            </span>
-            <template v-if="state.projectFilter !== 'all'">
-              <span class="crumb-sep">/</span>
-              <span class="crumb terminal">{{ formatProjectLabel(state.projectFilter) }}</span>
+      <main class="main">
+        <div class="toolbar">
+          <div class="breadcrumb" id="breadcrumb">
+            <template v-if="showToolbar">
+              <template v-if="state.projectFilter !== 'all'">
+                <button class="crumb" @click="handleClearProject">
+                  {{ state.route === 'sessions' ? 'Sessions' : 'Memory' }}
+                </button>
+                <span class="crumb-sep">/</span>
+                <span class="crumb terminal">{{ formatProjectLabel(state.projectFilter) }}</span>
+              </template>
+              <template v-else>
+                <span class="crumb terminal">
+                  {{ state.route === 'sessions' ? 'Sessions' : state.route === 'memory' ? 'Memory' : 'Activity' }}
+                </span>
+              </template>
+            </template>
+            <template v-else>
+              <router-link class="crumb" to="/sessions" v-if="route.name === 'SessionDetail' || route.name === 'SubagentDetail'">
+                Sessions
+              </router-link>
+              <template v-if="route.name === 'SubagentDetail'">
+                <span class="crumb-sep">/</span>
+                <router-link class="crumb" :to="`/sessions/${route.params.id}`">
+                  {{ (state.sessions.find(s => s.id === route.params.id)?.title || '').slice(0, 30) || route.params.id }}
+                </router-link>
+              </template>
+              <template v-if="route.name === 'SessionDetail'">
+                <span class="crumb-sep">/</span>
+                <span class="crumb terminal">
+                  {{ state.sessions.find(s => s.id === route.params.id)?.title || route.params.id }}
+                </span>
+              </template>
+              <template v-if="route.name === 'SubagentDetail'">
+                <span class="crumb-sep">/</span>
+                <span class="crumb terminal">{{ route.params.agentId }}</span>
+              </template>
+              <router-link class="crumb" to="/memory" v-if="route.name === 'MemoryDetail'">
+                Memory
+              </router-link>
+              <template v-if="route.name === 'MemoryDetail'">
+                <span class="crumb-sep">/</span>
+                <span class="crumb terminal filename">
+                  {{ (state.memories.find(m => m.id === route.params.id)?.path || '').split('/').pop() }}
+                </span>
+              </template>
+              <span v-if="route.name === 'Activity'" class="crumb terminal">Activity</span>
             </template>
           </div>
-          <div class="spacer"></div>
-          <div id="search-wrap" class="search-wrap">
+          <div class="toolbar-spacer"></div>
+          <div class="toolbar-search" id="search-wrap" v-if="showToolbar">
+            <svg class="toolbar-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="7" cy="7" r="5"/>
+              <path d="M11 11l3 3" stroke-linecap="round"/>
+            </svg>
             <input
               id="search"
               type="text"
-              class="search-input"
-              placeholder="Search..."
+              placeholder="Search…"
+              autocomplete="off"
+              :value="state.query"
               @input="handleSearch"
             />
-            <button
-              v-if="showSearchMsgsToggle"
-              class="filter-toggle"
-              :class="{ active: state.includeMessageBodies }"
-              @click="handleToggleSearchMsgs"
-              title="Include message bodies in search"
-            >
-              Msgs
-            </button>
+            <span class="toolbar-search-kbd">/</span>
           </div>
           <button
-            id="sort-toggle"
+            v-if="showToolbar"
             class="sort-group"
             :class="{ desc: state.sortDesc, asc: !state.sortDesc }"
             @click="handleToggleSort"
+            id="sort-toggle"
+            title="Toggle sort (S)"
           >
-            <span id="sort-label">{{ state.sortDesc ? 'newest' : 'oldest' }}</span>
+            <span class="label" id="sort-label">{{ state.sortDesc ? 'newest' : 'oldest' }}</span>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path class="arrow-up"   d="M5 6l3-3 3 3"/>
+              <path class="arrow-down" d="M5 10l3 3 3-3"/>
+            </svg>
           </button>
         </div>
 
-        <!-- Toolbar for detail views (breadcrumb only) -->
-        <div v-if="!showToolbar" class="toolbar">
-          <div class="breadcrumb">
-            <router-link class="crumb" to="/sessions" v-if="route.name === 'SessionDetail' || route.name === 'SubagentDetail'">
-              Sessions
-            </router-link>
-            <template v-if="route.name === 'SubagentDetail'">
-              <span class="crumb-sep">/</span>
-              <router-link class="crumb" :to="`/sessions/${route.params.id}`">
-                {{ (state.sessions.find(s => s.id === route.params.id)?.title || '').slice(0, 30) || route.params.id }}
-              </router-link>
-            </template>
-            <template v-if="route.name === 'SessionDetail'">
-              <span class="crumb-sep">/</span>
-              <span class="crumb terminal">
-                {{ state.sessions.find(s => s.id === route.params.id)?.title || route.params.id }}
-              </span>
-            </template>
-            <template v-if="route.name === 'SubagentDetail'">
-              <span class="crumb-sep">/</span>
-              <span class="crumb terminal">{{ route.params.agentId }}</span>
-            </template>
-            <router-link class="crumb" to="/memory" v-if="route.name === 'MemoryDetail'">
-              Memory
-            </router-link>
-            <template v-if="route.name === 'MemoryDetail'">
-              <span class="crumb-sep">/</span>
-              <span class="crumb terminal filename">
-                {{ (state.memories.find(m => m.id === route.params.id)?.path || '').split('/').pop() }}
-              </span>
-            </template>
-            <span v-if="route.name === 'Usage'" class="crumb terminal">Usage</span>
-          </div>
-        </div>
-
-        <!-- Router view with keep-alive for SessionDetail -->
         <router-view v-slot="{ Component }">
-          <keep-alive :include="keepAliveIncludes">
+          <keep-alive :include="['SessionDetail']">
             <component :is="Component" />
           </keep-alive>
         </router-view>
-      </div>
+      </main>
     </div>
 
-    <!-- Status bar -->
     <div class="statusbar">
-      <div id="status-left" class="status-left"></div>
-      <div id="status-right" class="status-right"></div>
+      <div class="status-left" id="status-left"></div>
+      <div class="status-right" id="status-right"></div>
     </div>
   </div>
 </template>
-
-<style>
-@import '../styles/base.css';
-@import '../styles/sidebar.css';
-@import '../styles/toolbar.css';
-@import '../styles/list.css';
-@import '../styles/detail.css';
-@import '../styles/statusbar.css';
-</style>
-
-<style scoped>
-.app-shell {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
-}
-
-.titlebar {
-  height: 38px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  -webkit-app-region: drag;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--hairline);
-}
-
-.titlebar.mac {
-  padding-left: 78px;
-}
-
-.titlebar-drag {
-  position: absolute;
-  inset: 0;
-}
-
-.titlebar-text {
-  font-size: 12px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  pointer-events: none;
-}
-
-.titlebar-text .app-name {
-  font-weight: 600;
-  color: var(--fg-2);
-}
-
-.titlebar-text .sep {
-  opacity: 0.4;
-}
-
-.columns {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.spacer {
-  flex: 1;
-}
-
-.statusbar {
-  height: 26px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 12px;
-  background: var(--bg-2);
-  border-top: 1px solid var(--hairline);
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.sidebar-empty {
-  padding: 8px 10px;
-  font-size: 11px;
-  color: var(--muted-2);
-}
-
-.sidebar-projects-list {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-}
-</style>

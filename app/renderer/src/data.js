@@ -22,16 +22,19 @@ export async function loadInitialData() {
     ts: m.created_at ? new Date(m.created_at).getTime() : 0,
     archived: !!m.deleted_at,
     archivedAt: m.deleted_at ? new Date(m.deleted_at).getTime() : null,
-    health: 'ok',
-    anchors: [],
+    anchors: m.anchors ? (typeof m.anchors === 'string' ? JSON.parse(m.anchors) : m.anchors) : [],
     markdown: null  // loaded on demand via loadMemoryMarkdown
   }));
 
-  // Sessions: keep DB shape, add empty messages array for on-demand loading
-  state.sessions = (rawSessions || []).map(s => ({
-    ...s,
-    messages: []
-  }));
+  // Sessions: merge with existing data to preserve already-loaded messages
+  const existingSessions = new Map(state.sessions.map(s => [s.id, s]));
+  state.sessions = (rawSessions || []).map(s => {
+    const existing = existingSessions.get(s.id);
+    return {
+      ...s,
+      messages: existing?.messages?.length ? existing.messages : []
+    };
+  });
 
   state.projects = projects || [];
   state.stats = stats || {};

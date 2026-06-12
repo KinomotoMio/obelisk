@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { state } from '../store.js';
-import { highlightPlain, escapeHTML, formatProjectLabel, fmtListTime } from '../utils.js';
+import { highlightPlain, escapeHTML, formatProjectLabel, fmtListTime, fmtRelative } from '../utils.js';
 
 defineOptions({ name: 'SessionList' });
 
@@ -22,8 +22,8 @@ const visibleSessions = computed(() => {
     })
     .filter(Boolean)
     .sort((a, b) => {
-      const ta = new Date(a.started_at || 0).getTime();
-      const tb = new Date(b.started_at || 0).getTime();
+      const ta = new Date(a.ended_at || a.started_at || 0).getTime();
+      const tb = new Date(b.ended_at || b.started_at || 0).getTime();
       return state.sortDesc ? tb - ta : ta - tb;
     });
 });
@@ -39,12 +39,43 @@ function projectLabel(session) {
 }
 
 function timeLabel(session) {
-  const ts = new Date(session.started_at || 0).getTime();
+  const ts = new Date(session.ended_at || session.started_at || 0).getTime();
   return fmtListTime(ts);
+}
+
+function lastActiveLabel(session) {
+  const ts = new Date(session.ended_at || session.started_at || 0).getTime();
+  return fmtListTime(ts);
+}
+
+function createdLabel(session) {
+  const ts = new Date(session.started_at || 0).getTime();
+  return fmtRelative(ts);
 }
 
 function openSession(session) {
   router.push({ name: 'SessionDetail', params: { id: session.id } });
+}
+
+function obeliskStyle(session) {
+  const created = new Date(session.started_at || 0).getTime();
+  const days = Math.max(0, (Date.now() - created) / 86400000);
+  const height = Math.min(1, Math.log(1 + days) / Math.log(1 + 365));
+
+  let color;
+  if (days < 7) color = '#a855f7';
+  else if (days < 30) color = '#6366f1';
+  else if (days < 90) color = '#64748b';
+  else color = '#475569';
+
+  const glow = days < 7 ? `0 0 4px ${color}` : 'none';
+  const maxHeight = 36; // px, roughly the row height minus padding
+
+  return {
+    height: `${Math.max(4, Math.round(height * maxHeight))}px`,
+    background: color,
+    boxShadow: glow,
+  };
 }
 </script>
 
@@ -63,6 +94,7 @@ function openSession(session) {
         :data-session-id="s.id"
         @click="openSession(s)"
       >
+        <div class="srow-obelisk" :style="obeliskStyle(s)"></div>
         <div class="srow-body">
           <div class="srow-title" v-html="titleHTML(s)"></div>
           <div class="srow-meta">
