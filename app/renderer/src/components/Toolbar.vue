@@ -46,6 +46,8 @@ const breadcrumbs = computed(() => {
     crumbs.push({ label: filename, terminal: true, filename: true });
   } else if (name === 'Activity') {
     crumbs.push({ label: 'Activity', terminal: true });
+  } else if (name === 'Recap') {
+    crumbs.push({ label: 'Recap', terminal: true });
   }
 
   return crumbs;

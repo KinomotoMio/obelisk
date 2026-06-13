@@ -84,7 +84,7 @@ function goToSession() {
       <div v-if="loading" style="color:var(--muted);padding:20px;text-align:center;">Loading…</div>
       <div v-else-if="markdown == null" style="color:var(--muted-2);font-style:italic;padding:20px;text-align:center;border:1px dashed var(--hairline);border-radius:6px;">File not found or empty.</div>
       <pre v-else-if="showSource" class="markdown-source">{{ markdown }}</pre>
-      <div v-else v-html="renderMarkdown(markdown, { variant: 'body' })"></div>
+      <div v-else class="markdown-msg" v-html="renderMarkdown(markdown, { variant: 'body' })"></div>
     </div>
 
     <div v-if="memory.anchors && memory.anchors.length" class="detail-section-divider" id="anchors-section">

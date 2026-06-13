@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -57,6 +57,13 @@ function createWindow() {
     },
   });
 
+  // Prevent Electron's built-in zoom so Cmd+=/- reaches the renderer
+  win.webContents.on('before-input-event', (event, input) => {
+    if ((input.meta || input.control) && ['+', '=', '-', '0'].includes(input.key)) {
+      win.webContents.setZoomLevel(0);
+    }
+  });
+
   const isDev = process.argv.includes('--dev');
   if (isDev) {
     win.loadURL('http://localhost:5173');
@@ -66,11 +73,43 @@ function createWindow() {
   }
 }
 
+const OBELISK_DIR = path.join(os.homedir(), '.obelisk');
+const RECAP_DIR = path.join(OBELISK_DIR, 'recap');
+let obeliskWatcher = null;
+
+function startObeliskWatcher() {
+  const chokidar = require('chokidar');
+  if (!fs.existsSync(OBELISK_DIR)) {
+    fs.mkdirSync(OBELISK_DIR, { recursive: true });
+  }
+  obeliskWatcher = chokidar.watch(OBELISK_DIR, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    ignored: (p, stats) => {
+      if (stats?.isDirectory()) return false;
+      if (!stats) return false;
+      return !p.endsWith('.md') && !p.endsWith('.json');
+    },
+  });
+  obeliskWatcher.on('add', onObeliskChange);
+  obeliskWatcher.on('change', onObeliskChange);
+  obeliskWatcher.on('unlink', onObeliskChange);
+}
+
+function onObeliskChange(filePath) {
+  if (filePath.startsWith(RECAP_DIR)) {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('obelisk:recap-updated', filePath);
+    }
+  }
+}
+
 app.whenReady().then(() => {
   indexerWorker = createWorkerBuildIndex();
   openDb();
   createWindow();
   startIndexerService().runBuildNow('startup');
+  startObeliskWatcher();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -80,6 +119,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   if (indexerService) indexerService.stop();
   if (indexerWorker) indexerWorker.stop();
+  if (obeliskWatcher) obeliskWatcher.close();
 });
 
 app.on('window-all-closed', () => {
@@ -299,4 +339,79 @@ ipcMain.handle('db:getUsageStats', () => {
   `).get() || null;
 
   return { daily, totalTokens, peakDay, longestTurn };
+});
+
+// --- Capture ---
+
+const EXPORT_WIDTH = 540;
+const EXPORT_HEIGHT = 675;
+
+async function createExportCapture(parentWin, query) {
+  const exportWin = new BrowserWindow({
+    width: EXPORT_WIDTH,
+    height: EXPORT_HEIGHT,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      offscreen: true,
+      deviceScaleFactor: 2,
+    },
+  });
+
+  const isDev = process.argv.includes('--dev');
+  const url = isDev
+    ? `http://localhost:5173/#/recap-export?${query}`
+    : `file://${path.join(__dirname, 'dist-renderer', 'index.html')}#/recap-export?${query}`;
+
+  await exportWin.loadURL(url);
+  await new Promise(r => setTimeout(r, 500));
+
+  const image = await exportWin.webContents.capturePage({
+    x: 0, y: 0, width: EXPORT_WIDTH, height: EXPORT_HEIGHT,
+  });
+  exportWin.close();
+  return image;
+}
+
+ipcMain.handle('capture:export', async (event, { cardIdx, archetype }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return null;
+  const query = `card=${cardIdx}&arch=${archetype}`;
+  const image = await createExportCapture(win, query);
+  const { filePath } = await dialog.showSaveDialog(win, {
+    defaultPath: `obelisk-recap-${cardIdx + 1}.png`,
+    filters: [{ name: 'PNG', extensions: ['png'] }],
+  });
+  if (!filePath) return null;
+  fs.writeFileSync(filePath, image.toPNG());
+  return filePath;
+});
+
+ipcMain.handle('capture:copy', async (event, { cardIdx, archetype }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return false;
+  const query = `card=${cardIdx}&arch=${archetype}`;
+  const image = await createExportCapture(win, query);
+  clipboard.writeImage(image);
+  return true;
+});
+
+// --- Recap files ---
+
+ipcMain.handle('recap:list', () => {
+  if (!fs.existsSync(RECAP_DIR)) return [];
+  return fs.readdirSync(RECAP_DIR)
+    .filter(f => f.endsWith('.json'))
+    .sort()
+    .reverse();
+});
+
+ipcMain.handle('recap:read', (_, filename) => {
+  const filePath = path.join(RECAP_DIR, path.basename(filename));
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch { return null; }
 });

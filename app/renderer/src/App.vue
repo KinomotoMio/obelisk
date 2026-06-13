@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from 'vue';
+import { computed, watch, ref, provide } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   state,
@@ -29,6 +29,7 @@ const currentRouteType = computed(() => {
   const name = route.name;
   if (name === 'SessionList' || name === 'SessionDetail' || name === 'SubagentDetail') return 'sessions';
   if (name === 'Activity') return 'activity';
+  if (name === 'Recap' || name === 'RecapDetail') return 'recap';
   return 'memory';
 });
 
@@ -81,6 +82,10 @@ const windowTitle = computed(() => {
   let scopeText = '';
   if (route.name === 'Activity') {
     scopeText = 'Activity';
+  } else if (route.name === 'Recap') {
+    scopeText = 'Recap';
+  } else if (route.name === 'RecapDetail') {
+    scopeText = `Recap · ${route.params.id}`;
   } else if (route.name?.startsWith('Session')) {
     if (route.name === 'SessionDetail' || route.name === 'SubagentDetail') {
       const s = state.sessions.find(x => x.id === route.params.id);
@@ -114,6 +119,8 @@ function handleSidebarRoute(routeName) {
     router.push('/sessions');
   } else if (routeName === 'activity') {
     router.push('/activity');
+  } else if (routeName === 'recap') {
+    router.push('/recap');
   } else {
     router.push('/memory');
   }
@@ -130,8 +137,7 @@ function handleClearProject() {
 
 function handleSidebarProject(slug) {
   setProject(slug);
-  // Stay on current list route
-  if (state.route === 'sessions') router.push('/sessions');
+  if (currentRouteType.value === 'sessions') router.push('/sessions');
   else router.push('/memory');
 }
 
@@ -160,10 +166,20 @@ function handleToggleSearchMsgs() {
 
 // --- Keep-alive includes ---
 const keepAliveIncludes = ['SessionDetail'];
+
+const isExportRoute = computed(() => route.name === 'RecapExport');
+
+// --- Recap ---
+const recapGenerateOpen = ref(false);
+function setRecapKind(k) {
+  router.replace({ path: '/recap', query: { kind: k } });
+}
+provide('recapGenerateOpen', recapGenerateOpen);
 </script>
 
 <template>
-  <div class="app">
+  <router-view v-if="isExportRoute" />
+  <div class="app" v-else>
     <div class="titlebar">
       <div class="titlebar-text" id="titlebar-text">
         <span class="app-name">{{ windowTitle.appName }}</span>
@@ -216,7 +232,7 @@ const keepAliveIncludes = ['SessionDetail'];
           </button>
           <button
             class="sidebar-item"
-            :class="{ active: state.route === 'memory' && state.view === 'active' && state.projectFilter === 'all' }"
+            :class="{ active: currentRouteType === 'memory' && state.view === 'active' && state.projectFilter === 'all' }"
             @click="handleSidebarView('active')"
           >
             <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -228,7 +244,7 @@ const keepAliveIncludes = ['SessionDetail'];
           </button>
           <button
             class="sidebar-item sub"
-            :class="{ active: state.route === 'memory' && state.view === 'active' && state.projectFilter === 'all' }"
+            :class="{ active: currentRouteType === 'memory' && state.view === 'active' && state.projectFilter === 'all' }"
             @click="handleSidebarView('active')"
           >
             <svg class="icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -239,7 +255,7 @@ const keepAliveIncludes = ['SessionDetail'];
           </button>
           <button
             class="sidebar-item sub"
-            :class="{ active: state.route === 'memory' && state.view === 'archived' && state.projectFilter === 'all' }"
+            :class="{ active: currentRouteType === 'memory' && state.view === 'archived' && state.projectFilter === 'all' }"
             @click="handleSidebarView('archived')"
           >
             <svg class="icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -264,9 +280,20 @@ const keepAliveIncludes = ['SessionDetail'];
             </svg>
             <span class="label">Activity</span>
           </button>
+          <button
+            class="sidebar-item"
+            :class="{ active: route.name === 'Recap' }"
+            @click="handleSidebarRoute('recap')"
+          >
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 2h10v12H3z"/>
+              <path d="M6 5h4M6 8h4M6 11h2"/>
+            </svg>
+            <span class="label">Recap</span>
+          </button>
         </div>
 
-        <div class="sidebar-section projects">
+        <div class="sidebar-section projects" v-if="currentRouteType === 'sessions' || currentRouteType === 'memory'">
           <div class="sidebar-section-title"><span>Projects</span></div>
           <div class="sidebar-search" v-if="totalProjectCount >= 6">
             <svg class="sidebar-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -346,9 +373,28 @@ const keepAliveIncludes = ['SessionDetail'];
                 </span>
               </template>
               <span v-if="route.name === 'Activity'" class="crumb terminal">Activity</span>
+              <span v-if="route.name === 'Recap'" class="crumb terminal">Recap</span>
+              <router-link v-if="route.name === 'RecapDetail'" class="crumb" to="/recap">Recap</router-link>
+              <template v-if="route.name === 'RecapDetail'">
+                <span class="crumb-sep">/</span>
+                <span class="crumb terminal">{{ route.params.id }}</span>
+              </template>
             </template>
           </div>
           <div class="toolbar-spacer"></div>
+
+          <!-- Recap toolbar actions -->
+          <template v-if="route.name === 'Recap'">
+            <div class="tab-group">
+              <button :class="{ active: (route.query.kind || 'weekly') === 'weekly' }" @click="setRecapKind('weekly')">Weekly</button>
+              <button :class="{ active: route.query.kind === 'monthly' }" @click="setRecapKind('monthly')">Monthly</button>
+            </div>
+            <button class="toolbar-action-primary" @click="recapGenerateOpen = true">
+              <span class="plus">+</span>
+              <span>Generate</span>
+            </button>
+          </template>
+
           <div class="toolbar-search" id="search-wrap" v-if="showToolbar">
             <svg class="toolbar-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
               <circle cx="7" cy="7" r="5"/>

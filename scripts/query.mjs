@@ -511,10 +511,6 @@ function createAttuneApi(db) {
     const created_at = new Date().toISOString();
     db.prepare('INSERT OR REPLACE INTO memories (id, session_id, project, message_start, message_end, path, anchors, summary, created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(
       id, session_id || null, proj, message_start || null, message_end || null, normalizedPath, normalizedAnchors, summary, created_at);
-    db.prepare(`
-      INSERT INTO memories_fts(rowid, id, path, summary)
-      SELECT rowid, id, path, summary FROM memories WHERE id = ?
-    `).run(id);
     return { id, path: normalizedPath, project: proj, anchors: normalizedAnchors, created_at };
   };
 

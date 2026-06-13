@@ -79,3 +79,33 @@
   .sort-group.desc .arrow-down { opacity: 1; }
   .sort-group.asc .arrow-up { opacity: 1; }
   .sort-group.asc .arrow-down { opacity: 0.25; }
+
+  .tab-group {
+    display: inline-flex;
+    border: 1px solid var(--hairline-strong); border-radius: 5px;
+    overflow: hidden; height: 26px;
+  }
+  .tab-group button {
+    padding: 0 12px; font-size: 12px; color: var(--muted);
+    border: none; background: none; cursor: pointer;
+    border-right: 1px solid var(--hairline-strong);
+    display: inline-flex; align-items: center; transition: all 0.1s;
+    font-family: inherit;
+  }
+  .tab-group button:last-child { border-right: 0; }
+  .tab-group button:hover { background: var(--surface); color: var(--fg-2); }
+  .tab-group button.active { background: var(--accent-soft); color: var(--accent-2); }
+
+  .toolbar-action-primary {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 26px; padding: 0 12px;
+    border: 1px solid rgba(167,139,250,0.35); border-radius: 5px;
+    background: var(--accent-soft); color: var(--accent-2);
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    transition: all 0.12s;
+  }
+  .toolbar-action-primary:hover {
+    background: rgba(167,139,250,0.18); border-color: var(--accent);
+    color: var(--fg); box-shadow: 0 0 12px rgba(167,139,250,0.20);
+  }
+  .toolbar-action-primary .plus { font-size: 14px; line-height: 1; opacity: 0.8; font-weight: 400; }

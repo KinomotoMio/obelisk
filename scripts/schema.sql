@@ -34,6 +34,20 @@ CREATE TABLE IF NOT EXISTS summaries (
   source TEXT, content TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
   uuid UNINDEXED, session_id UNINDEXED, text, content=messages, content_rowid=rowid);
+CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, uuid, session_id, text)
+  VALUES (new.rowid, new.uuid, new.session_id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, uuid, session_id, text)
+  VALUES ('delete', old.rowid, old.uuid, old.session_id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, uuid, session_id, text)
+  VALUES ('delete', old.rowid, old.uuid, old.session_id, old.text);
+  INSERT INTO messages_fts(rowid, uuid, session_id, text)
+  VALUES (new.rowid, new.uuid, new.session_id, new.text);
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(session_id, timestamp);
@@ -52,6 +66,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   id UNINDEXED, path, summary,
   content=memories, content_rowid=rowid,
   tokenize='unicode61 remove_diacritics 1');
+CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, id, path, summary)
+  VALUES (new.rowid, new.id, new.path, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, id, path, summary)
+  VALUES ('delete', old.rowid, old.id, old.path, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, id, path, summary)
+  VALUES ('delete', old.rowid, old.id, old.path, old.summary);
+  INSERT INTO memories_fts(rowid, id, path, summary)
+  VALUES (new.rowid, new.id, new.path, new.summary);
+END;
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);

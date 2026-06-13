@@ -64,9 +64,27 @@ function createIndexerService({
   let running = false;
   let pending = false;
   let lastReason = null;
+  let changedPaths = new Set();
   let idlePromise = Promise.resolve();
 
-  const runBuildNow = (reason = 'manual') => {
+  const addChangedPath = (changedPath) => {
+    if (Array.isArray(changedPath)) {
+      for (const p of changedPath) addChangedPath(p);
+      return;
+    }
+    const name = changedPath ? String(changedPath) : '';
+    if (name) changedPaths.add(name);
+  };
+
+  const takeChangedPaths = () => {
+    if (!changedPaths.size) return undefined;
+    const paths = [...changedPaths];
+    changedPaths = new Set();
+    return paths;
+  };
+
+  const runBuildNow = (reason = 'manual', paths = undefined) => {
+    addChangedPath(paths);
     if (stopped) return idlePromise;
     if (running) {
       pending = true;
@@ -74,8 +92,9 @@ function createIndexerService({
     }
     running = true;
     pending = false;
+    const buildChangedPaths = takeChangedPaths();
     idlePromise = (async () => {
-      await buildIndex({ reason });
+      await buildIndex({ reason, changedPaths: buildChangedPaths });
       writeHeartbeat();
     })()
       .catch((error) => {
@@ -91,8 +110,9 @@ function createIndexerService({
     return idlePromise;
   };
 
-  const scheduleBuild = (reason = 'change') => {
+  const scheduleBuild = (reason = 'change', changedPath = undefined) => {
     if (stopped) return;
+    addChangedPath(changedPath);
     lastReason = reason;
     if (running) pending = true;
     if (buildTimer) timers.clearTimeout(buildTimer);
@@ -112,7 +132,7 @@ function createIndexerService({
 
   const startWatching = () => {
     if (stopped || watcher) return;
-    watcher = watch(() => scheduleBuild('watch'));
+    watcher = watch((changedPath) => scheduleBuild('watch', changedPath));
     if (!watcher) {
       watchRetryTimer = timers.setTimeout(() => {
         watchRetryTimer = null;

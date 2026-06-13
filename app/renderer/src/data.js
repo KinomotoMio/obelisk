@@ -133,6 +133,7 @@ export async function loadSessionDetail(sessionId) {
   }));
 
   // Assemble messages with tool_calls inline
+  const META_RE = /^\s*<(task-notification|command-name|local-command|system-reminder)/;
   const rawAssembled = (messages || []).map(msg => {
     const assembled = {
       uuid: msg.uuid,
@@ -140,7 +141,7 @@ export async function loadSessionDetail(sessionId) {
       timestamp: msg.timestamp,
       text: msg.text,
       content_type: msg.content_type || null,
-      is_meta: msg.is_meta || 0
+      is_meta: msg.is_meta || (msg.text && META_RE.test(msg.text) ? 1 : 0)
     };
 
     const calls = callsByMessageUuid[msg.uuid];
@@ -180,15 +181,25 @@ export async function loadSessionDetail(sessionId) {
       continue;
     }
 
-    // For tool_use assistant messages, absorb subsequent tool_use (skipping tool_results)
+    // For tool_use assistant messages, absorb subsequent tool_use (skipping tool_results and skill meta)
     if (msg.type === 'assistant' && msg.content_type === 'tool_use') {
       const merged = { ...msg, tool_calls: [...(msg.tool_calls || [])] };
       if (msg._thinking) merged._thinking = msg._thinking;
+
+      // If this is a Skill-only message, don't merge with subsequent tool_use — keep it standalone
+      const isSkillOnly = merged.tool_calls.length === 1 && merged.tool_calls[0].name === 'Skill';
+
       let j = i + 1;
       while (j < rawAssembled.length) {
         const next = rawAssembled[j];
         if (next.content_type === 'tool_result') { j++; continue; }
-        if (next.type === 'assistant' && next.content_type === 'tool_use') {
+        // Absorb skill.md meta message into the skill tool call
+        if (next.is_meta && next.text && next.text.includes('Base directory for this skill')) {
+          merged._skillMd = next.text;
+          j++;
+          continue;
+        }
+        if (!isSkillOnly && next.type === 'assistant' && next.content_type === 'tool_use') {
           if (next.tool_calls) merged.tool_calls.push(...next.tool_calls);
           if (next.text && !merged.text) merged.text = next.text;
           j++;

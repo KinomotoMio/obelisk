@@ -72,12 +72,36 @@ Use `sql()` only as an escalation path for exact joins, aggregations, or schema
 questions that helpers cannot express cleanly. Do not use raw SQL as a generic
 fallback for broad retrieval.
 
+## Intent Routing
+
+Obelisk supports a small intent prefix layer after `/obelisk`. This is for
+output intent, not retrieval architecture.
+
+| Intent | Description | Reference |
+|---|---|---|
+| `recap [target]` | Generate weekly/monthly recap card content for app handoff or share-style output. | `references/recap-patterns.md` |
+
+Routing rules:
+
+1. If the first word is `recap`, read `references/recap-patterns.md` before the
+   first query. Everything after `recap` is the recap target.
+   Common app-generated prompts include `/obelisk recap this week`,
+   `/obelisk recap last week`, `/obelisk recap this month`, and
+   `/obelisk recap last month`; interpret these as natural period targets
+   relative to the current date and timezone.
+2. `recap` does not create a separate retrieval layer. It still uses
+   `overview()`, `memories()`, helpers, and `sql()` only when needed.
+3. If the first word is not `recap`, do not load
+   `references/recap-patterns.md`. Continue with Query Routing below. Do not
+   infer recap from broad requests for weekly/monthly summaries, charts,
+   rankings, shareable cards, or playlist-style metaphors.
+
 ## Query Routing
 
 Before writing a query, classify the task. Progressive disclosure is useful, but
 skipping the relevant reference usually costs extra query rounds.
 
-- Read `references/query-patterns.md` before the first query for broad synthesis, progress summaries, design history, weekly/monthly reviews, or questions that ask what the user did, learned, decided, tried, or abandoned. Start from the first-pass or one-shot synthesis pattern, then run a faceted detail pass if needed.
+- Read `references/query-patterns.md` before the first query for broad synthesis, progress summaries, design history, ordinary weekly/monthly reviews, or questions that ask what the user did, learned, decided, tried, or abandoned. Start from the first-pass or one-shot synthesis pattern, then run a faceted detail pass if needed.
 - Read `references/retrieval-semantics.md` before multi-step retrieval, scoped project/file/session searches, or synthesis/conclusion/history questions. It defines the query design frame.
 - Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. Do this before running the SQL, not after a missing-column error. Do not start with raw SQL for broad synthesis unless helpers cannot express the needed aggregation or join.
 - Read `references/pitfalls.md` after an error or when helper fields, FTS syntax, aliases, or row shapes are unclear.

@@ -24,4 +24,13 @@ contextBridge.exposeInMainWorld('obelisk', {
     ipcRenderer.on('obelisk:index-updated', listener);
     return () => ipcRenderer.removeListener('obelisk:index-updated', listener);
   },
+  captureExport: (opts) => ipcRenderer.invoke('capture:export', opts),
+  copyImage: (opts) => ipcRenderer.invoke('capture:copy', opts),
+  recapList: () => ipcRenderer.invoke('recap:list'),
+  recapRead: (filename) => ipcRenderer.invoke('recap:read', filename),
+  onRecapUpdated: (callback) => {
+    const listener = (_, filePath) => callback(filePath);
+    ipcRenderer.on('obelisk:recap-updated', listener);
+    return () => ipcRenderer.removeListener('obelisk:recap-updated', listener);
+  },
 });

@@ -124,6 +124,7 @@ same SQLite data.
 - `references/schema.md` — full SQLite schema and API reference
 - `references/query-patterns.md` — copyable CodeAct recipes for common retrieval tasks
 - `references/retrieval-semantics.md` — query design frame for scoped and synthesis retrieval
+- `references/recap-patterns.md` — optional `/obelisk recap` card content contract
 - `references/pitfalls.md` — scope, FTS, ordering, compact/raw, and field-name traps
 
 The executable SQLite schema lives in `scripts/schema.sql`; `references/schema.md`
@@ -132,6 +133,8 @@ is the human/agent explanation of that contract.
 The design is progressive disclosure with guardrails: the main skill keeps the
 core contract and high-risk pitfalls visible, while longer recipes and the full
 schema stay out of the first prompt until the agent needs them.
+The optional recap reference is only for the explicit `/obelisk recap` intent;
+it is not part of the ordinary retrieval path.
 
 ## What gets indexed
 
@@ -159,6 +162,7 @@ Full-text search via FTS5 covers message text across every session layer and ran
     ├── schema.md          # Full table schema + advanced API reference
     ├── query-patterns.md  # Copyable retrieval recipes
     ├── retrieval-semantics.md # Query design frame for retrieval semantics
+    ├── recap-patterns.md  # Optional /obelisk recap card content contract
     └── pitfalls.md        # Scope, FTS, ordering, and compactness traps
 ```
 
