@@ -18,6 +18,13 @@ const tooltip = reactive({ text: '', show: false, x: 0, y: 0 });
 
 // --- Constants ---
 const DAY_MS = 86400000;
+
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -111,10 +118,13 @@ const longestStreak = computed(() => {
 // --- Computed: weekly chart ---
 const weeklyBars = computed(() => {
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
   let startDate = new Date(today.getTime() - 364 * DAY_MS);
   startDate.setHours(0, 0, 0, 0);
-  const daysUntilSunday = (7 - startDate.getDay()) % 7;
-  startDate = new Date(startDate.getTime() + daysUntilSunday * DAY_MS);
+  // Align to Monday (ISO week start)
+  const dayOfWeek = startDate.getDay(); // 0=Sun, 1=Mon...
+  const daysUntilMonday = dayOfWeek === 0 ? 1 : (dayOfWeek === 1 ? 0 : 8 - dayOfWeek);
+  startDate = new Date(startDate.getTime() + daysUntilMonday * DAY_MS);
 
   const dailyMap = {};
   for (const d of usageData.daily) dailyMap[d.day] = d.tokens;
@@ -130,7 +140,7 @@ const weeklyBars = computed(() => {
       const key = date.toISOString().slice(0, 10);
       tokens += dailyMap[key] || 0;
     }
-    weeks.push({ weekStart, tokens, weekKey: weekStart.toISOString().slice(0, 10) });
+    weeks.push({ weekStart, tokens, weekKey: localDateStr(weekStart) });
   }
 
   const maxVal = Math.max(...weeks.map(w => w.tokens), 1);

@@ -6,6 +6,7 @@ const props = defineProps({
   archKey: String,
   badge: String,
   title: String,
+  claim: String,
   subtitle: String,
   activity: Array,
   footer: String,
@@ -28,7 +29,7 @@ const sealSvg = computed(() => CORNER_SEALS[props.archKey] || '');
     <div class="cover-seal-corner" v-html="sealSvg"></div>
     <div class="cover-body">
       <div class="cover-archetype">{{ title }}</div>
-      <div class="cover-subtitle">{{ subtitle }}</div>
+      <div class="cover-subtitle">{{ claim || subtitle }}</div>
 
       <div class="cover-activity">
         <div class="cover-activity-row">

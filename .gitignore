@@ -4,3 +4,4 @@ plans/
 tests/
 node_modules/
 dist-renderer/
+release/

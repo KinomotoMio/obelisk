@@ -1,6 +1,7 @@
 <script setup>
 defineProps({
   title: String,
+  voiceLines: Array,
   observations: Array,
   meter: Object,
   quote: Object,
@@ -23,7 +24,7 @@ defineProps({
       <div class="vibe-section">
         <div class="section-label">Things you kept saying</div>
         <div class="vibe-observations">
-          <div v-for="(obs, i) in observations" :key="i" class="vibe-obs">
+          <div v-for="(obs, i) in (voiceLines || observations || [])" :key="i" class="vibe-obs">
             <div class="vibe-obs-text">{{ obs.text }}</div>
             <div class="vibe-obs-meta">
               <template v-if="obs.count">×{{ obs.count }} · </template>

@@ -1,6 +1,7 @@
 <script setup>
 defineProps({
   headline: String,
+  receipts: Array,
   stats: Array,
   mostSaidPhrase: String,
   signoff: String,
@@ -21,8 +22,8 @@ defineProps({
     <div class="closing-body">
       <div class="closing-headline">{{ headline }}</div>
 
-      <div class="closing-stats" v-if="stats">
-        <div v-for="(line, i) in stats" :key="i">{{ line }}</div>
+      <div class="closing-stats" v-if="receipts || stats">
+        <div v-for="(line, i) in (receipts || stats || [])" :key="i">{{ line }}</div>
       </div>
 
       <div class="closing-quote" v-if="mostSaidPhrase">

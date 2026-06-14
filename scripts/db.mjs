@@ -82,7 +82,7 @@ function extractContentType(content) {
   return !sawUnknown && types.size === 1 ? [...types][0] : 'unknown';
 }
 
-const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<task-notification>|<local-command-caveat>|<local-command-stdout>)/;
+const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<(?:task-notification|system-reminder)\b|<local-command(?:\b|-))/;
 
 function extractMessageIsMeta(record, text = extractText(record?.message?.content)) {
   const msg = record?.message || {};

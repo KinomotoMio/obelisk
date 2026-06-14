@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, inject } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { PALETTES, ARCH_KEYS } from '../components/recap/archetypes.js';
-import { MINI_SEALS } from '../components/recap/seals.js';
+import { CORNER_SEALS } from '../components/recap/seals.js';
 
 defineOptions({ name: 'RecapList' });
 
@@ -27,7 +27,7 @@ function glowColor(arch) {
   return PALETTES[arch]?.glow || PALETTES.architect.glow;
 }
 function sealSvg(arch) {
-  return MINI_SEALS[arch] || MINI_SEALS.architect;
+  return CORNER_SEALS[arch] || CORNER_SEALS.architect;
 }
 function formatDateRange(r) {
   if (!r.period) return '';
@@ -116,7 +116,7 @@ onUnmounted(() => { unsub?.(); });
                     <span>{{ formatDateRange(r) }}</span>
                   </div>
                   <div class="recap-archetype">{{ r.persona?.title }}</div>
-                  <div class="recap-subtitle">{{ r.persona?.subtitle }}</div>
+                  <div class="recap-subtitle">{{ r.persona?.claim || r.persona?.subtitle }}</div>
                   <div class="recap-stats">
                     <span>{{ r.metrics?.sessions || 0 }} sessions</span>
                     <span class="sep">·</span>
@@ -266,7 +266,7 @@ onUnmounted(() => { unsub?.(); });
 .timeline { position: relative; }
 .timeline::before {
   content: ''; position: absolute;
-  left: 15px; top: 15px; bottom: 15px;
+  left: 32px; top: 32px; bottom: 32px;
   width: 1px; margin-left: -0.5px;
   background: linear-gradient(to bottom,
     rgba(167,139,250,0.55) 0%, rgba(167,139,250,0.35) 8%,
@@ -276,19 +276,19 @@ onUnmounted(() => { unsub?.(); });
 
 .recap-row {
   position: relative; display: grid;
-  grid-template-columns: 30px 1fr;
-  column-gap: 28px; align-items: center;
+  grid-template-columns: 64px 1fr;
+  column-gap: 18px; align-items: center;
   padding: 12px 0; cursor: pointer;
   transition: transform 0.12s;
 }
 .recap-row:hover { transform: translateX(2px); }
 
 .recap-node {
-  width: 30px; height: 30px;
+  width: 64px; height: 64px;
   position: relative; z-index: 2;
 }
 .recap-node::before {
-  content: ''; position: absolute; inset: -3px;
+  content: ''; position: absolute; inset: -2px;
   border-radius: 50%; background: var(--bg); z-index: -1;
 }
 .recap-node :deep(svg) {

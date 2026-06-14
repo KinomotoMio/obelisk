@@ -24,7 +24,7 @@ defineProps({
           <div class="tl-day">{{ item.day }}</div>
           <div class="tl-prompt">{{ item.prompt }}</div>
           <div class="tl-outcome">
-            <span>{{ item.outcome }}</span>
+            <span>{{ item.turn || item.outcome }}</span>
           </div>
         </div>
       </div>

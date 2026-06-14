@@ -6,42 +6,133 @@ const Database = require('better-sqlite3');
 const { writeHeartbeat } = require('./indexer');
 const { createIndexerService } = require('./indexer-service');
 const { createWorkerBuildIndex } = require('./indexer-worker-client');
+const { buildRecapExportQuery } = require('./recap-capture-query');
 
-const DB_PATH = path.join(os.homedir(), '.claude', 'obelisk.sqlite');
+function detectClaudeDir() {
+  // macOS / Linux: ~/.claude
+  if (process.platform !== 'win32') {
+    return path.join(os.homedir(), '.claude');
+  }
+  // Windows: Claude Code runs in WSL, data lives at \\wsl.localhost\<distro>\home\<user>\.claude
+  const distros = ['Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian', 'openSUSE-Leap', 'kali-linux'];
+  for (const distro of distros) {
+    const homePath = path.join('\\\\wsl.localhost', distro, 'home');
+    if (!fs.existsSync(homePath)) continue;
+    try {
+      const users = fs.readdirSync(homePath);
+      for (const user of users) {
+        const claudeDir = path.join(homePath, user, '.claude');
+        if (fs.existsSync(claudeDir)) return claudeDir;
+      }
+    } catch {}
+  }
+  // Fallback: native Windows path (for future native Claude Code on Windows)
+  return path.join(os.homedir(), '.claude');
+}
+
+const DEFAULT_CLAUDE_DIR = detectClaudeDir();
 
 let db;
 let indexerService;
 let indexerWorker;
 
-function openDb() {
-  if (!fs.existsSync(DB_PATH)) return null;
+function getConfiguredClaudeDir() {
+  const persisted = loadPersistedSettings();
+  return persisted.claudeDir || DEFAULT_CLAUDE_DIR;
+}
+
+function getPathsForClaudeDir(claudeDir = getConfiguredClaudeDir()) {
+  return {
+    claudeDir,
+    dbPath: path.join(claudeDir, 'obelisk.sqlite'),
+    projectsDir: path.join(claudeDir, 'projects'),
+  };
+}
+
+function closeDb() {
   if (db) db.close();
-  db = new Database(DB_PATH, { readonly: false });
+  db = null;
+}
+
+function openDb(dbPath = getPathsForClaudeDir().dbPath) {
+  closeDb();
+  if (!fs.existsSync(dbPath)) return null;
+  db = new Database(dbPath, { readonly: false });
   db.pragma('journal_mode = WAL');
   return db;
 }
 
-function notifyIndexUpdated() {
+function notifyIndexUpdated(result = {}) {
+  const affectedSessionIds = Array.isArray(result.affectedSessionIds)
+    ? [...new Set(result.affectedSessionIds.filter(Boolean))]
+    : [];
+  const payload = { affectedSessionIds };
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('obelisk:index-updated');
+    win.webContents.send('obelisk:index-updated', payload);
+    for (const sessionId of affectedSessionIds) {
+      win.webContents.send('obelisk:session-updated', { sessionId });
+    }
   }
 }
 
-function startIndexerService() {
+function startIndexerService({ buildOnStart = false } = {}) {
+  const paths = getPathsForClaudeDir();
   indexerService = createIndexerService({
-    buildIndex: async ({ reason }) => {
-      const result = await indexerWorker.buildIndex({ reason });
-      openDb();
-      notifyIndexUpdated();
+    projectsDir: paths.projectsDir,
+    buildIndex: async ({ reason, changedPaths }) => {
+      const result = await indexerWorker.buildIndex({
+        reason,
+        changedPaths,
+        claudeDir: paths.claudeDir,
+        projectsDir: paths.projectsDir,
+        dbPath: paths.dbPath,
+      });
+      openDb(paths.dbPath);
+      notifyIndexUpdated(result);
       return result;
     },
-    writeHeartbeat,
+    writeHeartbeat: () => writeHeartbeat({ dbPath: paths.dbPath }),
   });
-  indexerService.start({ buildOnStart: false });
+  indexerService.start({ buildOnStart });
   return indexerService;
 }
 
+function startBackgroundResources({ runStartupBuild = false } = {}) {
+  if (!indexerWorker) indexerWorker = createWorkerBuildIndex();
+  openDb();
+  if (!indexerService) {
+    const service = startIndexerService({ buildOnStart: false });
+    if (runStartupBuild) service.runBuildNow('startup');
+  }
+  if (!obeliskWatcher) startObeliskWatcher();
+}
+
+async function stopIndexerServiceAndWait() {
+  const service = indexerService;
+  if (!service) return;
+  service.stop();
+  if (typeof service.idle === 'function') await service.idle();
+  if (indexerService === service) indexerService = null;
+}
+
+async function stopBackgroundResources({ stopWorker = false } = {}) {
+  await stopIndexerServiceAndWait();
+  if (stopWorker && indexerWorker) {
+    indexerWorker.stop();
+    indexerWorker = null;
+  }
+  if (obeliskWatcher) {
+    const watcher = obeliskWatcher;
+    obeliskWatcher = null;
+    if (typeof watcher.close === 'function') await Promise.resolve(watcher.close());
+  }
+  closeDb();
+}
+
 function createWindow() {
+  const isDev = process.argv.includes('--dev');
+  const shouldOpenDevTools = process.argv.includes('--devtools');
+
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -54,6 +145,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      devTools: isDev || shouldOpenDevTools,
     },
   });
 
@@ -64,10 +156,11 @@ function createWindow() {
     }
   });
 
-  const isDev = process.argv.includes('--dev');
   if (isDev) {
     win.loadURL('http://localhost:5173');
-    win.webContents.openDevTools();
+    if (shouldOpenDevTools) {
+      win.webContents.openDevTools();
+    }
   } else {
     win.loadFile(path.join(__dirname, 'dist-renderer', 'index.html'));
   }
@@ -78,6 +171,7 @@ const RECAP_DIR = path.join(OBELISK_DIR, 'recap');
 let obeliskWatcher = null;
 
 function startObeliskWatcher() {
+  if (obeliskWatcher) return obeliskWatcher;
   const chokidar = require('chokidar');
   if (!fs.existsSync(OBELISK_DIR)) {
     fs.mkdirSync(OBELISK_DIR, { recursive: true });
@@ -94,6 +188,7 @@ function startObeliskWatcher() {
   obeliskWatcher.on('add', onObeliskChange);
   obeliskWatcher.on('change', onObeliskChange);
   obeliskWatcher.on('unlink', onObeliskChange);
+  return obeliskWatcher;
 }
 
 function onObeliskChange(filePath) {
@@ -105,25 +200,23 @@ function onObeliskChange(filePath) {
 }
 
 app.whenReady().then(() => {
-  indexerWorker = createWorkerBuildIndex();
-  openDb();
+  startBackgroundResources({ runStartupBuild: true });
   createWindow();
-  startIndexerService().runBuildNow('startup');
-  startObeliskWatcher();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      startBackgroundResources({ runStartupBuild: true });
+      createWindow();
+    }
   });
 });
 
 app.on('before-quit', () => {
-  if (indexerService) indexerService.stop();
-  if (indexerWorker) indexerWorker.stop();
-  if (obeliskWatcher) obeliskWatcher.close();
+  void stopBackgroundResources({ stopWorker: true });
 });
 
 app.on('window-all-closed', () => {
-  if (db) db.close();
+  void stopBackgroundResources({ stopWorker: true });
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -366,7 +459,7 @@ async function createExportCapture(parentWin, query) {
     : `file://${path.join(__dirname, 'dist-renderer', 'index.html')}#/recap-export?${query}`;
 
   await exportWin.loadURL(url);
-  await new Promise(r => setTimeout(r, 500));
+  await waitForExportReady(exportWin.webContents);
 
   const image = await exportWin.webContents.capturePage({
     x: 0, y: 0, width: EXPORT_WIDTH, height: EXPORT_HEIGHT,
@@ -375,10 +468,22 @@ async function createExportCapture(parentWin, query) {
   return image;
 }
 
-ipcMain.handle('capture:export', async (event, { cardIdx, archetype }) => {
+async function waitForExportReady(webContents, timeoutMs = 2500) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const ready = await webContents.executeJavaScript('window.__OBELISK_RECAP_EXPORT_READY__ === true', true);
+      if (ready) return true;
+    } catch {}
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return false;
+}
+
+ipcMain.handle('capture:export', async (event, { cardIdx, archetype, filename } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win) return null;
-  const query = `card=${cardIdx}&arch=${archetype}`;
+  const query = buildRecapExportQuery({ cardIdx, archetype, filename });
   const image = await createExportCapture(win, query);
   const { filePath } = await dialog.showSaveDialog(win, {
     defaultPath: `obelisk-recap-${cardIdx + 1}.png`,
@@ -389,10 +494,10 @@ ipcMain.handle('capture:export', async (event, { cardIdx, archetype }) => {
   return filePath;
 });
 
-ipcMain.handle('capture:copy', async (event, { cardIdx, archetype }) => {
+ipcMain.handle('capture:copy', async (event, { cardIdx, archetype, filename } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win) return false;
-  const query = `card=${cardIdx}&arch=${archetype}`;
+  const query = buildRecapExportQuery({ cardIdx, archetype, filename });
   const image = await createExportCapture(win, query);
   clipboard.writeImage(image);
   return true;
@@ -414,4 +519,118 @@ ipcMain.handle('recap:read', (_, filename) => {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch { return null; }
+});
+
+// --- Settings ---
+
+const SETTINGS_PATH = path.join(OBELISK_DIR, 'settings.json');
+
+function loadPersistedSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_PATH)) return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
+  } catch {}
+  return {};
+}
+
+function savePersistedSettings(settings) {
+  if (!fs.existsSync(OBELISK_DIR)) fs.mkdirSync(OBELISK_DIR, { recursive: true });
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+}
+
+ipcMain.handle('settings:get', () => {
+  const persisted = loadPersistedSettings();
+  const { claudeDir, dbPath: dbFile } = getPathsForClaudeDir(persisted.claudeDir || DEFAULT_CLAUDE_DIR);
+  const recapDir = persisted.recapDir || RECAP_DIR;
+  const exists = fs.existsSync(claudeDir);
+  let sessionCount = 0;
+  let memoryCount = 0;
+  let lastIndexed = '';
+
+  if (db) {
+    try {
+      sessionCount = db.prepare('SELECT COUNT(*) as c FROM sessions').get()?.c || 0;
+      memoryCount = db.prepare('SELECT COUNT(*) as c FROM memories WHERE deleted_at IS NULL').get()?.c || 0;
+      const latest = db.prepare('SELECT MAX(started_at) as t FROM sessions').get();
+      lastIndexed = latest?.t || '';
+    } catch {}
+  }
+
+  return {
+    claudeDir,
+    dbPath: dbFile,
+    recapDir,
+    autoRefresh: persisted.autoRefresh !== false,
+    sessionCount,
+    memoryCount,
+    lastIndexed,
+    status: exists ? 'ok' : 'error',
+    statusText: exists ? 'Connected' : 'Folder not found',
+  };
+});
+
+ipcMain.handle('settings:set', async (_, key, value) => {
+  const persisted = loadPersistedSettings();
+  if (value === null) {
+    delete persisted[key];
+  } else {
+    persisted[key] = value;
+  }
+  savePersistedSettings(persisted);
+
+  if (key === 'autoRefresh') {
+    if (value === false && indexerService) {
+      await stopIndexerServiceAndWait();
+    } else if (value !== false && indexerService) {
+      await stopIndexerServiceAndWait();
+      startIndexerService({ buildOnStart: false });
+    }
+  }
+
+  if (key === 'claudeDir') {
+    await stopIndexerServiceAndWait();
+    openDb();
+    if (persisted.autoRefresh !== false) {
+      startIndexerService({ buildOnStart: true });
+    }
+    notifyIndexUpdated();
+  }
+  return true;
+});
+
+ipcMain.handle('settings:browseFolder', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const { filePaths } = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory'],
+    title: 'Select Claude Code data folder',
+  });
+  if (filePaths && filePaths[0]) return filePaths[0];
+  return null;
+});
+
+ipcMain.handle('settings:revealPath', (_, p) => {
+  const { shell } = require('electron');
+  if (fs.existsSync(p)) shell.showItemInFolder(p);
+});
+
+ipcMain.handle('settings:rebuildIndex', async () => {
+  if (!indexerWorker) return null;
+  const persisted = loadPersistedSettings();
+  const paths = getPathsForClaudeDir(persisted.claudeDir || DEFAULT_CLAUDE_DIR);
+  const shouldRestartWatcher = persisted.autoRefresh !== false;
+  await stopIndexerServiceAndWait();
+  closeDb();
+  try {
+    const result = await indexerWorker.buildIndex({
+      reason: 'manual-rebuild',
+      force: true,
+      claudeDir: paths.claudeDir,
+      projectsDir: paths.projectsDir,
+      dbPath: paths.dbPath,
+    });
+    openDb(paths.dbPath);
+    notifyIndexUpdated(result);
+    return result;
+  } finally {
+    if (shouldRestartWatcher) startIndexerService({ buildOnStart: false });
+  }
 });

@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, onActivated, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
 import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
+import { clearSessionDirty, consumeGlobalSessionDirty } from '../session-live.mjs';
 import {
   escapeHTML,
   fmtRelative,
@@ -21,6 +22,9 @@ const session = computed(() => state.sessions.find(s => s.id === props.id));
 const messages = ref([]);
 const loading = ref(false);
 const progressPct = ref(0);
+const active = ref(false);
+let removeSessionUpdated = null;
+let keydownAttached = false;
 
 // DOM refs
 const wrapRef = ref(null);
@@ -58,50 +62,90 @@ function handleZoom(e) {
   }
 }
 
+function attachKeydown() {
+  if (keydownAttached) return;
+  window.addEventListener('keydown', handleZoom);
+  keydownAttached = true;
+}
+
+function detachKeydown() {
+  if (!keydownAttached) return;
+  window.removeEventListener('keydown', handleZoom);
+  keydownAttached = false;
+}
+
 const HINT_KEY = 'obelisk:font-hint-shown';
 const showFontHint = ref(false);
 
 onMounted(async () => {
-  window.addEventListener('keydown', handleZoom);
+  active.value = true;
+  attachKeydown();
+  removeSessionUpdated = window.obelisk?.onSessionUpdated?.(async ({ sessionId } = {}) => {
+    if (!active.value || !props.id || sessionId !== props.id) return;
+    clearSessionDirty(props.id);
+    await loadMessages({ force: true });
+  }) || null;
   if (!localStorage.getItem(HINT_KEY)) {
     showFontHint.value = true;
     localStorage.setItem(HINT_KEY, '1');
     setTimeout(() => { showFontHint.value = false; }, 4000);
   }
-  await loadMessages();
+  await loadMessages({ force: consumeGlobalSessionDirty(props.id) });
 });
 
 onActivated(async () => {
-  window.addEventListener('keydown', handleZoom);
-  if (messages.value.length === 0 && props.id) {
-    await loadMessages();
+  active.value = true;
+  attachKeydown();
+  if (props.id && (messages.value.length === 0 || consumeGlobalSessionDirty(props.id))) {
+    await loadMessages({ force: true });
   }
 });
 
+onDeactivated(() => {
+  active.value = false;
+  detachKeydown();
+});
+
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleZoom);
+  active.value = false;
+  detachKeydown();
+  removeSessionUpdated?.();
+  removeSessionUpdated = null;
 });
 
 watch(() => props.id, async (newId, oldId) => {
   if (newId && newId !== oldId) {
     messages.value = [];
-    await loadMessages();
+    await loadMessages({ force: consumeGlobalSessionDirty(newId) });
   }
 });
 
-async function loadMessages() {
+async function loadMessages({ force = false } = {}) {
   if (!props.id) return;
+  const wasAtBottom = wrapRef.value && (wrapRef.value.scrollHeight - wrapRef.value.scrollTop - wrapRef.value.clientHeight) < 50;
+  const prevScrollTop = wrapRef.value?.scrollTop || 0;
+
   loading.value = true;
   try {
     const s = state.sessions.find(x => x.id === props.id);
-    if (s && (!s.messages || s.messages.length === 0)) {
+    if (s && (force || !s.messages || s.messages.length === 0)) {
       const loaded = await loadSessionDetail(props.id);
       if (loaded) Object.assign(s, loaded);
     }
-    messages.value = s?.messages || [];
+    const latest = state.sessions.find(x => x.id === props.id);
+    messages.value = latest?.messages || [];
   } finally {
     loading.value = false;
   }
+
+  nextTick(() => {
+    if (!wrapRef.value) return;
+    if (wasAtBottom) {
+      wrapRef.value.scrollTop = wrapRef.value.scrollHeight;
+    } else {
+      wrapRef.value.scrollTop = prevScrollTop;
+    }
+  });
 
   // Focus pending uuid if any
   if (state.pendingFocusUuid) {
@@ -120,20 +164,25 @@ async function loadMessages() {
 // --- Scroll / progress tracking ---
 const currentMsgIdx = ref(0);
 const totalMsgs = ref(0);
+let navLock = false;
 
 function onScroll() {
+  if (navLock) return;
   if (!wrapRef.value || !detailRef.value) return;
   const msgs = detailRef.value.querySelectorAll('.msg, .wf-card, .skill-card');
   if (!msgs.length) return;
   totalMsgs.value = msgs.length;
-  const wrapTop = wrapRef.value.getBoundingClientRect().top;
-  let topMsgIdx = 0;
+
+  const el = wrapRef.value;
+  const navHeight = 52;
+  const bottomLine = el.getBoundingClientRect().bottom - navHeight;
+  let bottomMsgIdx = 0;
   for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].getBoundingClientRect().top <= wrapTop + 50) topMsgIdx = i;
+    if (msgs[i].getBoundingClientRect().bottom <= bottomLine) bottomMsgIdx = i;
     else break;
   }
-  currentMsgIdx.value = topMsgIdx;
-  const pct = msgs.length <= 1 ? 100 : Math.round((topMsgIdx / (msgs.length - 1)) * 100);
+  currentMsgIdx.value = bottomMsgIdx;
+  const pct = msgs.length <= 1 ? 100 : Math.round((bottomMsgIdx / (msgs.length - 1)) * 100);
   progressPct.value = pct;
 }
 
@@ -147,8 +196,16 @@ function navTo(target) {
   else if (target === 'prev') idx = Math.max(0, currentMsgIdx.value - 1);
   else if (target === 'next') idx = Math.min(msgs.length - 1, currentMsgIdx.value + 1);
   else return;
-  const isClose = Math.abs(idx - currentMsgIdx.value) <= 3;
-  msgs[idx]?.scrollIntoView({ behavior: isClose ? 'smooth' : 'instant', block: 'start' });
+  currentMsgIdx.value = idx;
+  navLock = true;
+  const navHeight = 52;
+  const el = wrapRef.value;
+  const msgEl = msgs[idx];
+  if (!msgEl) return;
+  const msgBottom = msgEl.offsetTop + msgEl.offsetHeight;
+  const scrollTarget = msgBottom - el.clientHeight + navHeight;
+  el.scrollTo({ top: Math.max(0, scrollTarget), behavior: 'instant' });
+  setTimeout(() => { navLock = false; }, 50);
 }
 
 // --- Toggle helpers ---

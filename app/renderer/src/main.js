@@ -4,6 +4,7 @@ import { createApp } from 'vue';
 import App from './App.vue';
 import router from './router.js';
 import { loadInitialData } from './data.js';
+import { noteSessionUpdated, sessionLiveState } from './session-live.mjs';
 
 // Import all original CSS globally
 import '../styles/base.css';
@@ -11,7 +12,6 @@ import '../styles/sidebar.css';
 import '../styles/toolbar.css';
 import '../styles/list.css';
 import '../styles/detail.css';
-import '../styles/statusbar.css';
 
 const app = createApp(App);
 
@@ -31,6 +31,12 @@ document.addEventListener('visibilitychange', () => {
 
 window.obelisk?.onIndexUpdated?.(() => {
   loadInitialData();
+});
+
+window.obelisk?.onSessionUpdated?.(({ sessionId } = {}) => {
+  const route = router.currentRoute.value;
+  const currentSessionId = route.name === 'SessionDetail' ? String(route.params.id || '') : null;
+  noteSessionUpdated(sessionLiveState, sessionId, currentSessionId);
 });
 
 app.mount('#app');

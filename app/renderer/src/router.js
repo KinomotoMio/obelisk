@@ -13,6 +13,7 @@ const Activity = () => import('./views/Activity.vue');
 const Recap = () => import('./views/RecapList.vue');
 const RecapDetail = () => import('./views/RecapDetail.vue');
 const RecapExport = () => import('./views/RecapExport.vue');
+const Settings = () => import('./views/Settings.vue');
 
 const routes = [
   {
@@ -64,6 +65,11 @@ const routes = [
     path: '/recap-export',
     name: 'RecapExport',
     component: RecapExport
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: Settings
   },
   {
     path: '/',

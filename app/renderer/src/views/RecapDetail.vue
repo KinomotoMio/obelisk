@@ -15,6 +15,7 @@ const route = useRoute();
 const recapData = ref(mockJson);
 const currentArch = ref(mockJson.persona.archetype);
 const currentIdx = ref(0);
+const recapFilename = computed(() => String(route.params.id || ''));
 
 const palette = computed(() => PALETTES[currentArch.value] || PALETTES.architect);
 const CARD_LABELS = ['Cover', 'Path', 'Vibe', 'Workflow', 'Closing'];
@@ -59,10 +60,18 @@ onUnmounted(() => { unsubRecap?.(); });
 watch(() => route.params.id, (id) => { if (id) loadRecap(id); });
 
 async function exportImage() {
-  await window.obelisk.captureExport({ cardIdx: currentIdx.value, archetype: currentArch.value });
+  await window.obelisk.captureExport({
+    cardIdx: currentIdx.value,
+    archetype: currentArch.value,
+    filename: recapFilename.value,
+  });
 }
 async function copyImage() {
-  await window.obelisk.copyImage({ cardIdx: currentIdx.value, archetype: currentArch.value });
+  await window.obelisk.copyImage({
+    cardIdx: currentIdx.value,
+    archetype: currentArch.value,
+    filename: recapFilename.value,
+  });
 }
 
 function goTo(idx) {
@@ -91,6 +100,7 @@ function onKeydown(e) {
             :arch-key="currentArch"
             :badge="cover.badge"
             :title="cover.title"
+            :claim="cover.claim || cover.subtitle"
             :subtitle="cover.subtitle"
             :activity="cover.activity"
             :footer="cover.footer"
@@ -107,6 +117,7 @@ function onKeydown(e) {
         <div class="card-slot" :class="{ active: currentIdx === 2, prev: currentIdx > 2 }">
           <VibeCard
             :title="vibe.title"
+            :voice-lines="vibe.voice_lines || vibe.observations"
             :observations="vibe.observations"
             :meter="vibe.meter"
             :quote="vibe.quote"
@@ -116,6 +127,7 @@ function onKeydown(e) {
         <div class="card-slot" :class="{ active: currentIdx === 3, prev: currentIdx > 3 }">
           <WorkflowCard
             :title="workflow.title"
+            :deck="workflow.deck || workflow.summary"
             :summary="workflow.summary"
             :stats="workflow.stats"
             :items="workflow.items"
@@ -126,6 +138,7 @@ function onKeydown(e) {
         <div class="card-slot" :class="{ active: currentIdx === 4, prev: currentIdx > 4 }">
           <ClosingCard
             :headline="closing.headline"
+            :receipts="closing.receipts || closing.stats"
             :stats="closing.stats"
             :most-said-phrase="closing.most_said_phrase"
             :signoff="closing.signoff"

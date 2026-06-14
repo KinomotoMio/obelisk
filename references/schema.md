@@ -89,7 +89,8 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 );
 ```
 
-Queried via `MATCH` syntax. Rebuilt on each index pass.
+Queried via `MATCH` syntax. The table is kept in sync by the `messages_fts_*`
+triggers above; rebuild it manually only when repairing FTS state.
 
 ### memories_fts
 
@@ -384,6 +385,31 @@ const msgs = thread('session-uuid');
 return { count: msgs.length, first: msgs[0]?.text?.slice(0, 100) };
 ```
 
+#### `raw(uuid, opts?)`
+
+Windowed access to the original JSONL line for a message. Use this when indexed
+text, tool inputs, or tool results were truncated and you need the raw source.
+It resolves main-session, subagent, and workflow-agent JSONL paths from the
+indexed message metadata.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `uuid` | `string` | Message UUID |
+| `opts.offset` | `number` | Character offset into the JSONL line (default 0) |
+| `opts.limit` | `number` | Max characters to return (default 10000) |
+
+**Returns:** `{ text, totalLength, offset, limit, hasMore }` or `null` if the
+source line cannot be found.
+
+```js
+const line = raw('message-uuid', { offset: 0, limit: 4000 });
+return {
+  preview: line?.text,
+  has_more: line?.hasMore,
+  total: line?.totalLength,
+};
+```
+
 #### `subagents(opts?)`
 
 All subagent spawns, with message counts. For backward compatibility, passing a string is treated as `sessionId`.
@@ -482,6 +508,34 @@ Shorthand for `sessions({ limit: n })`. Last `n` sessions (default 10), ordered 
 ```js
 const last5 = recent(5);
 return last5.map(s => ({ title: s.title, project: s.project_path, ended: s.ended_at }));
+```
+
+#### `summaries(opts?)`
+
+Session summary rows, newest first. For backward compatibility, passing a
+string is treated as `sessionId`, and passing a number is treated as `limit`.
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `opts.sessionId` | `string` | Restrict to one session |
+| `opts.sessions` | `string[]` | Restrict to a set of session IDs |
+| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
+| `opts.after` | `string` | ISO 8601 lower bound on summary timestamp |
+| `opts.before` | `string` | ISO 8601 upper bound on summary timestamp |
+| `opts.branch` | `string` | Filter by source session git branch (exact match) |
+| `opts.limit` | `number` | Max results (default 100) |
+
+**Returns:** `Array<summary_row & { session_title, project }>` ordered by
+`timestamp` descending.
+
+```js
+const rows = summaries({ project: '%quiet-zero%', limit: 5 });
+return rows.map(s => ({
+  session: s.session_title,
+  source: s.source,
+  summary: s.content?.slice(0, 240),
+  timestamp: s.timestamp,
+}));
 ```
 
 #### `overview(opts?)`
@@ -785,7 +839,7 @@ const wfs = workflows();
 for (const wf of wfs.slice(0, 3)) {
   const tree = workflowTree(wf.run_id);
   wf.agent_details = tree?.agents.map(a => ({
-    type: a.agent_type, desc: a.description, msgs: a.messages.length,
+    type: a.agent_type, desc: a.description, msgs: a.messageCount,
   }));
 }
 return wfs.slice(0, 3);

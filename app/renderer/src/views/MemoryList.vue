@@ -56,7 +56,19 @@ function statusGlyphs(status) {
 }
 
 function pathHTML(m) {
-  return highlightPlain(m.path || '', state.query.trim());
+  const full = m.path || '';
+  const filename = full.split('/').pop() || full;
+  return highlightPlain(filename, state.query.trim());
+}
+
+function relativePath(m) {
+  const full = m.path || '';
+  if (!m.project) return full;
+  const projectDir = '/' + m.project.replace(/^-/, '').replace(/-/g, '/');
+  if (full.startsWith(projectDir)) {
+    return full.slice(projectDir.length + 1);
+  }
+  return full.split('/').slice(-3).join('/');
 }
 
 function summaryHTML(m) {
@@ -301,7 +313,7 @@ onUnmounted(() => {
           <span class="project-name">{{ formatProjectLabel(detailMemory.project) }}</span>
           <span v-if="detailMemory.archived" class="archived-tag">archived</span>
         </div>
-        <div class="detail-path">{{ detailMemory.path }}</div>
+        <div class="detail-path">{{ relativePath(detailMemory) }}</div>
         <div class="detail-summary">{{ detailMemory.summary }}</div>
         <div class="detail-meta">
           <span>{{ fmtRelative(detailMemory.ts) }}</span>

@@ -89,7 +89,7 @@ function extractContentType(content) {
   return !sawUnknown && types.size === 1 ? [...types][0] : 'unknown';
 }
 
-const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<task-notification>|<local-command-caveat>|<local-command-stdout>)/;
+const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<(?:task-notification|system-reminder)\b|<local-command(?:\b|-))/;
 
 function extractMessageIsMeta(record, text = extractText(record?.message?.content)) {
   const msg = record?.message || {};
@@ -141,7 +141,77 @@ function inferProjectPath(project, observedCwds = []) {
   return best?.path || legacyProjectPathFromSlug(project);
 }
 
-function discoverJsonlFiles({ projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
+function discoverJsonlFiles({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = undefined } = {}) {
+  if (Array.isArray(changedPaths) && changedPaths.length) {
+    const changedFiles = discoverJsonlFilesForChanges({ projectsDir, changedPaths });
+    if (changedFiles.length) return changedFiles;
+  }
+  return discoverJsonlFilesFull({ projectsDir });
+}
+
+function normalizeChangedPath(projectsDir, changedPath) {
+  if (!changedPath) return null;
+  const raw = String(changedPath);
+  return path.isAbsolute(raw) ? path.normalize(raw) : path.normalize(path.join(projectsDir, raw));
+}
+
+function jsonlFileInfoFromPath(projectsDir, changedPath) {
+  const fp = normalizeChangedPath(projectsDir, changedPath);
+  if (!fp || !fp.endsWith('.jsonl')) return null;
+  const rel = path.relative(projectsDir, fp);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const parts = rel.split(path.sep);
+  const project = parts[0];
+  if (!project) return null;
+  if (parts.length === 2) {
+    const filename = parts[1];
+    return { path: fp, sessionId: filename.slice(0, -6), project, isSubagent: false };
+  }
+  if (parts.length === 4 && parts[2] === 'subagents') {
+    const filename = parts[3];
+    return { path: fp, sessionId: parts[1], project, isSubagent: true, agentId: filename.slice(0, -6) };
+  }
+  if (parts.length === 6 && parts[2] === 'subagents' && parts[3] === 'workflows') {
+    const filename = parts[5];
+    return {
+      path: fp,
+      sessionId: parts[1],
+      project,
+      isSubagent: true,
+      agentId: filename.slice(0, -6),
+      workflowRunId: parts[4],
+    };
+  }
+  return null;
+}
+
+function sessionIdFromChangedPath(projectsDir, changedPath) {
+  const fp = normalizeChangedPath(projectsDir, changedPath);
+  if (!fp) return null;
+  const rel = path.relative(projectsDir, fp);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const parts = rel.split(path.sep);
+  if (parts.length === 2 && parts[1].endsWith('.jsonl')) return parts[1].slice(0, -6);
+  if (parts.length >= 3) return parts[1] || null;
+  return null;
+}
+
+function dedupeFileInfos(files) {
+  const byPath = new Map();
+  for (const file of files) byPath.set(file.path, file);
+  return [...byPath.values()];
+}
+
+function discoverJsonlFilesForChanges({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = [] } = {}) {
+  const files = [];
+  for (const changedPath of changedPaths) {
+    const info = jsonlFileInfoFromPath(projectsDir, changedPath);
+    if (info) files.push(info);
+  }
+  return dedupeFileInfos(files);
+}
+
+function discoverJsonlFilesFull({ projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
   const files = [];
   if (!fs.existsSync(projectsDir)) return files;
   let projects;
@@ -195,7 +265,26 @@ function indexJsonl(db, fi) {
   if (!needed) return;
   const ins = {
     ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path) VALUES (?,?,?,?,?,?,?,?,?,?)'),
-    msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),
+    msg: db.prepare(`
+      INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(uuid) DO UPDATE SET
+        session_id=excluded.session_id,
+        type=excluded.type,
+        parent_uuid=excluded.parent_uuid,
+        timestamp=excluded.timestamp,
+        role=excluded.role,
+        text=excluded.text,
+        content_type=excluded.content_type,
+        is_meta=excluded.is_meta,
+        model=excluded.model,
+        is_sidechain=excluded.is_sidechain,
+        agent_id=excluded.agent_id,
+        input_tokens=excluded.input_tokens,
+        output_tokens=excluded.output_tokens,
+        cwd=excluded.cwd,
+        skill=excluded.skill
+    `),
     tc:  db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
     tr:  db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
     sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
@@ -208,7 +297,7 @@ function indexJsonl(db, fi) {
     git_branch: existing?.git_branch || null,
     version: existing?.version || null,
     title: existing?.title || null,
-    n: existing?.message_count || 0,
+    n: skip > 0 ? (existing?.message_count || 0) : 0,
     cwds: [],
   };
 
@@ -270,6 +359,7 @@ function indexJsonl(db, fi) {
     ins.ses.run(fi.sessionId, sm.title, fi.project, pp, sm.started_at, sm.ended_at, sm.git_branch, sm.version, sm.n, fi.path);
   }
   ins.idx.run(fi.path, mtime, lineNum);
+  return { sessionId: fi.sessionId, path: fi.path };
 }
 
 function refreshSessionProjectPaths(db) {
@@ -362,6 +452,15 @@ function rebuildFts(db) {
   db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
 }
 
+function ensureFtsReady(db, { force = false } = {}) {
+  const marker = '__fts_triggers_ready__';
+  const ready = db.prepare('SELECT jsonl_path FROM index_state WHERE jsonl_path = ?').get(marker);
+  if (ready && !force) return false;
+  rebuildFts(db);
+  writeIndexMarker(db, marker);
+  return true;
+}
+
 function writeIndexMarker(db, key, value = Date.now()) {
   db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES (?, ?, 0)').run(key, value);
 }
@@ -384,9 +483,10 @@ function buildIndex({
   schemaPath = resolveSchemaPath(),
   DatabaseImpl = Database,
   force = false,
+  changedPaths = undefined,
 } = {}) {
   const db = openIndexDb({ dbPath, schemaPath, DatabaseImpl });
-  const files = discoverJsonlFiles({ projectsDir });
+  const files = discoverJsonlFiles({ projectsDir, changedPaths: force ? undefined : changedPaths });
   const latestSourceMtime = files.reduce((latest, file) => {
     try {
       return Math.max(latest, fs.statSync(file.path).mtimeMs);
@@ -396,11 +496,29 @@ function buildIndex({
   }, 0);
 
   try {
-    if (force) db.prepare("DELETE FROM index_state WHERE jsonl_path NOT LIKE '__%'").run();
+    if (force) {
+      db.prepare("DELETE FROM index_state WHERE substr(jsonl_path, 1, 2) != '__'").run();
+      db.prepare("DELETE FROM messages").run();
+      db.prepare("DELETE FROM tool_calls").run();
+      db.prepare("DELETE FROM tool_results").run();
+      db.prepare("DELETE FROM sessions").run();
+      db.prepare("DELETE FROM summaries").run();
+      db.prepare("DELETE FROM subagents").run();
+      db.prepare("DELETE FROM workflows").run();
+      db.prepare("DELETE FROM workflow_agents").run();
+    }
+    const affectedSessionIds = new Set();
+    if (Array.isArray(changedPaths)) {
+      for (const changedPath of changedPaths) {
+        const sessionId = sessionIdFromChangedPath(projectsDir, changedPath);
+        if (sessionId) affectedSessionIds.add(sessionId);
+      }
+    }
     for (const file of files) {
       db.exec('BEGIN');
       try {
-        indexJsonl(db, file);
+        const indexed = indexJsonl(db, file);
+        if (indexed?.sessionId) affectedSessionIds.add(indexed.sessionId);
         indexSubagentMeta(db, file);
         db.exec('COMMIT');
       } catch (error) {
@@ -409,11 +527,12 @@ function buildIndex({
       }
     }
     db.exec('BEGIN');
+    let ftsRebuilt = false;
     try {
       indexWorkflows(db, { projectsDir });
       refreshSessionProjectPaths(db);
       indexHistory(db, { historyPath });
-      rebuildFts(db);
+      ftsRebuilt = ensureFtsReady(db, { force });
       writeIndexMarker(db, '__last_build__');
       writeIndexMarker(db, '__app_heartbeat__');
       writeIndexMarker(db, '__app_last_successful_build__');
@@ -424,7 +543,7 @@ function buildIndex({
       db.exec('ROLLBACK');
       throw error;
     }
-    return { files: files.length, latestSourceMtime };
+    return { files: files.length, latestSourceMtime, affectedSessionIds: [...affectedSessionIds], ftsRebuilt };
   } finally {
     db.close();
   }

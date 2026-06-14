@@ -124,7 +124,12 @@ same SQLite data.
 - `references/schema.md` — full SQLite schema and API reference
 - `references/query-patterns.md` — copyable CodeAct recipes for common retrieval tasks
 - `references/retrieval-semantics.md` — query design frame for scoped and synthesis retrieval
-- `references/recap-patterns.md` — optional `/obelisk recap` card content contract
+- `references/recap/overview.md` — optional `/obelisk recap` card-by-card entrypoint
+- `references/recap/pattern1-cover.md` and `references/recap/writing1-cover.md`
+- `references/recap/pattern2-thinking.md` and `references/recap/writing2-thinking.md`
+- `references/recap/pattern3-vibe.md` and `references/recap/writing3-vibe.md`
+- `references/recap/pattern4-workflow.md` and `references/recap/writing4-workflow.md`
+- `references/recap/pattern5-closing.md` and `references/recap/writing5-closing.md`
 - `references/pitfalls.md` — scope, FTS, ordering, compact/raw, and field-name traps
 
 The executable SQLite schema lives in `scripts/schema.sql`; `references/schema.md`
@@ -133,8 +138,11 @@ is the human/agent explanation of that contract.
 The design is progressive disclosure with guardrails: the main skill keeps the
 core contract and high-risk pitfalls visible, while longer recipes and the full
 schema stay out of the first prompt until the agent needs them.
-The optional recap reference is only for the explicit `/obelisk recap` intent;
-it is not part of the ordinary retrieval path.
+The optional recap references are only for the explicit `/obelisk recap` intent;
+they are not part of the ordinary retrieval path. `references/recap/overview.md`
+drives a card-by-card loop: read one card's retrieval pattern, gather that
+card's evidence, read its writing reference, update the JSON, then continue.
+This keeps schema, taste, and query planning from competing in one large prompt.
 
 ## What gets indexed
 
@@ -162,7 +170,20 @@ Full-text search via FTS5 covers message text across every session layer and ran
     ├── schema.md          # Full table schema + advanced API reference
     ├── query-patterns.md  # Copyable retrieval recipes
     ├── retrieval-semantics.md # Query design frame for retrieval semantics
-    ├── recap-patterns.md  # Optional /obelisk recap card content contract
+    ├── recap-patterns.md  # Compatibility pointer to references/recap/overview.md
+    ├── recap-writing.md   # Compatibility pointer to per-card recap writing docs
+    ├── recap/
+    │   ├── overview.md
+    │   ├── pattern1-cover.md
+    │   ├── writing1-cover.md
+    │   ├── pattern2-thinking.md
+    │   ├── writing2-thinking.md
+    │   ├── pattern3-vibe.md
+    │   ├── writing3-vibe.md
+    │   ├── pattern4-workflow.md
+    │   ├── writing4-workflow.md
+    │   ├── pattern5-closing.md
+    │   └── writing5-closing.md
     └── pitfalls.md        # Scope, FTS, ordering, and compactness traps
 ```
 

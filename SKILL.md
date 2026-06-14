@@ -79,11 +79,11 @@ output intent, not retrieval architecture.
 
 | Intent | Description | Reference |
 |---|---|---|
-| `recap [target]` | Generate weekly/monthly recap card content for app handoff or share-style output. | `references/recap-patterns.md` |
+| `recap [target]` | Generate weekly/monthly recap card content for app handoff or share-style output. | `references/recap/overview.md` |
 
 Routing rules:
 
-1. If the first word is `recap`, read `references/recap-patterns.md` before the
+1. If the first word is `recap`, read `references/recap/overview.md` before the
    first query. Everything after `recap` is the recap target.
    Common app-generated prompts include `/obelisk recap this week`,
    `/obelisk recap last week`, `/obelisk recap this month`, and
@@ -91,8 +91,12 @@ Routing rules:
    relative to the current date and timezone.
 2. `recap` does not create a separate retrieval layer. It still uses
    `overview()`, `memories()`, helpers, and `sql()` only when needed.
-3. If the first word is not `recap`, do not load
-   `references/recap-patterns.md`. Continue with Query Routing below. Do not
+3. Follow the overview's card-by-card sequence. Each card has its own retrieval
+   pattern and writing file; retrieve that card's evidence, read that card's
+   writing file, update the JSON, then move to the next card. Do not preload all
+   recap references before the current card is written.
+4. If the first word is not `recap`, do not load
+   `references/recap/overview.md`. Continue with Query Routing below. Do not
    infer recap from broad requests for weekly/monthly summaries, charts,
    rankings, shareable cards, or playlist-style metaphors.
 

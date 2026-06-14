@@ -1,6 +1,7 @@
 <script setup>
 defineProps({
   title: String,
+  deck: String,
   summary: String,
   stats: String,
   items: Array,
@@ -19,7 +20,7 @@ defineProps({
       <span class="slot">{{ String(idx).padStart(2, '0') }} · {{ String(total).padStart(2, '0') }}</span>
     </div>
     <div class="card-title">{{ title }}</div>
-    <div class="card-deck-text" v-if="summary">{{ summary }}</div>
+    <div class="card-deck-text" v-if="deck || summary">{{ deck || summary }}</div>
 
     <div class="wf-content">
       <div class="wf-stats" v-if="stats">{{ stats }}</div>
@@ -27,7 +28,7 @@ defineProps({
       <div class="wf-list">
         <div v-for="(item, i) in items" :key="i" class="wf-item">
           <div class="wf-item-name">{{ item.name }}</div>
-          <div class="wf-item-outcome">{{ item.outcome }}</div>
+          <div class="wf-item-reaction">{{ item.reaction || item.outcome }}</div>
         </div>
       </div>
 
@@ -67,12 +68,12 @@ defineProps({
   font-family: var(--font-mono); font-size: 13px; font-weight: 500;
   color: var(--fg); letter-spacing: -0.005em;
 }
-.wf-item-outcome {
+.wf-item-reaction {
   font-family: var(--font-serif); font-style: italic;
   font-size: 16px; color: var(--fg-2); line-height: 1.4;
 }
-.wf-item-outcome::before { content: '\201C'; color: var(--muted-2); }
-.wf-item-outcome::after { content: '\201D'; color: var(--muted-2); }
+.wf-item-reaction::before { content: '\201C'; color: var(--muted-2); }
+.wf-item-reaction::after { content: '\201D'; color: var(--muted-2); }
 
 .wf-verdict {
   margin-top: auto; padding: 16px 18px;

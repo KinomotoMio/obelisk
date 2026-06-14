@@ -14,6 +14,7 @@ import {
   toggleIncludeMessageBodies
 } from './store.js';
 import { formatProjectLabel } from './utils.js';
+import { buildSidebarProjects } from './sidebar-projects.mjs';
 
 const router = useRouter();
 const route = useRoute();
@@ -30,38 +31,24 @@ const currentRouteType = computed(() => {
   if (name === 'SessionList' || name === 'SessionDetail' || name === 'SubagentDetail') return 'sessions';
   if (name === 'Activity') return 'activity';
   if (name === 'Recap' || name === 'RecapDetail') return 'recap';
+  if (name === 'Settings') return 'settings';
   return 'memory';
 });
 
-const sidebarProjects = computed(() => {
-  const items = currentRouteType.value === 'sessions' ? state.sessions : state.memories;
-  const filtered = items.filter(item => {
-    if (currentRouteType.value === 'sessions') return true;
-    return state.view === 'archived' ? item.archived : !item.archived;
-  });
-  let projects = [...new Set(filtered.map(item => item.project).filter(Boolean))];
-  if (state.projectSearch) {
-    const q = state.projectSearch.toLowerCase();
-    projects = projects.filter(p => formatProjectLabel(p).toLowerCase().includes(q));
-  }
-  projects.sort((a, b) => formatProjectLabel(a).localeCompare(formatProjectLabel(b)));
-
-  // Count per project
-  const counts = {};
-  for (const item of filtered) {
-    if (item.project) counts[item.project] = (counts[item.project] || 0) + 1;
-  }
-
-  return projects.map(p => ({
-    slug: p,
-    label: formatProjectLabel(p),
-    count: counts[p] || 0
-  }));
+const sidebarProjectsForCurrentScope = (search = state.projectSearch) => buildSidebarProjects({
+  routeType: currentRouteType.value,
+  sessions: state.sessions,
+  memories: state.memories,
+  projects: state.projects,
+  view: state.view,
+  search,
+  formatProjectLabel,
 });
 
+const sidebarProjects = computed(() => sidebarProjectsForCurrentScope());
+
 const totalProjectCount = computed(() => {
-  const items = currentRouteType.value === 'sessions' ? state.sessions : state.memories;
-  return new Set(items.map(i => i.project).filter(Boolean)).size;
+  return sidebarProjectsForCurrentScope('').length;
 });
 
 // --- Toolbar visibility ---
@@ -86,6 +73,8 @@ const windowTitle = computed(() => {
     scopeText = 'Recap';
   } else if (route.name === 'RecapDetail') {
     scopeText = `Recap · ${route.params.id}`;
+  } else if (route.name === 'Settings') {
+    scopeText = 'Settings';
   } else if (route.name?.startsWith('Session')) {
     if (route.name === 'SessionDetail' || route.name === 'SubagentDetail') {
       const s = state.sessions.find(x => x.id === route.params.id);
@@ -220,7 +209,7 @@ provide('recapGenerateOpen', recapGenerateOpen);
           <div class="sidebar-section-title"><span>Library</span></div>
           <button
             class="sidebar-item"
-            :class="{ active: state.route === 'sessions' && state.projectFilter === 'all' }"
+            :class="{ active: currentRouteType === 'sessions' && state.projectFilter === 'all' }"
             @click="handleSidebarRoute('sessions')"
           >
             <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -324,6 +313,24 @@ provide('recapGenerateOpen', recapGenerateOpen);
             </button>
           </div>
         </div>
+
+        <div class="sidebar-section sidebar-bottom">
+          <button
+            class="sidebar-item"
+            :class="{ active: route.name === 'Settings' }"
+            @click="router.push('/settings')"
+          >
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <line x1="3" y1="4" x2="13" y2="4"/>
+              <line x1="3" y1="8" x2="13" y2="8"/>
+              <line x1="3" y1="12" x2="13" y2="12"/>
+              <circle cx="9.5" cy="4" r="1.7" fill="var(--bg)"/>
+              <circle cx="5.5" cy="8" r="1.7" fill="var(--bg)"/>
+              <circle cx="11" cy="12" r="1.7" fill="var(--bg)"/>
+            </svg>
+            <span class="label">Settings</span>
+          </button>
+        </div>
       </aside>
 
       <main class="main">
@@ -374,6 +381,7 @@ provide('recapGenerateOpen', recapGenerateOpen);
               </template>
               <span v-if="route.name === 'Activity'" class="crumb terminal">Activity</span>
               <span v-if="route.name === 'Recap'" class="crumb terminal">Recap</span>
+              <span v-if="route.name === 'Settings'" class="crumb terminal">Settings</span>
               <router-link v-if="route.name === 'RecapDetail'" class="crumb" to="/recap">Recap</router-link>
               <template v-if="route.name === 'RecapDetail'">
                 <span class="crumb-sep">/</span>
@@ -432,11 +440,6 @@ provide('recapGenerateOpen', recapGenerateOpen);
           </keep-alive>
         </router-view>
       </main>
-    </div>
-
-    <div class="statusbar">
-      <div class="status-left" id="status-left"></div>
-      <div class="status-right" id="status-right"></div>
     </div>
   </div>
 </template>

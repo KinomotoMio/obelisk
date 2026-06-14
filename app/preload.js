@@ -20,9 +20,14 @@ contextBridge.exposeInMainWorld('obelisk', {
   getStats: () => ipcRenderer.invoke('db:getStats'),
   getUsageStats: () => ipcRenderer.invoke('db:getUsageStats'),
   onIndexUpdated: (callback) => {
-    const listener = () => callback();
+    const listener = (_, payload) => callback(payload);
     ipcRenderer.on('obelisk:index-updated', listener);
     return () => ipcRenderer.removeListener('obelisk:index-updated', listener);
+  },
+  onSessionUpdated: (callback) => {
+    const listener = (_, payload) => callback(payload);
+    ipcRenderer.on('obelisk:session-updated', listener);
+    return () => ipcRenderer.removeListener('obelisk:session-updated', listener);
   },
   captureExport: (opts) => ipcRenderer.invoke('capture:export', opts),
   copyImage: (opts) => ipcRenderer.invoke('capture:copy', opts),
@@ -33,4 +38,9 @@ contextBridge.exposeInMainWorld('obelisk', {
     ipcRenderer.on('obelisk:recap-updated', listener);
     return () => ipcRenderer.removeListener('obelisk:recap-updated', listener);
   },
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  browseFolder: () => ipcRenderer.invoke('settings:browseFolder'),
+  setSetting: (key, value) => ipcRenderer.invoke('settings:set', key, value),
+  revealPath: (p) => ipcRenderer.invoke('settings:revealPath', p),
+  rebuildIndex: () => ipcRenderer.invoke('settings:rebuildIndex'),
 });
