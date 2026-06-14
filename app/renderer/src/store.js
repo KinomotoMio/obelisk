@@ -25,7 +25,8 @@ export const state = reactive({
   showSource: false,
   lastArchiveSnapshot: null,
   undoTimer: null,
-  undoExpires: 0
+  undoExpires: 0,
+  loaded: false
 });
 
 // Platform detection

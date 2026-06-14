@@ -38,6 +38,7 @@ export async function loadInitialData() {
 
   state.projects = projects || [];
   state.stats = stats || {};
+  state.loaded = true;
 }
 
 /**

@@ -9,6 +9,7 @@ defineOptions({ name: 'RecapList' });
 const router = useRouter();
 const route = useRoute();
 const recaps = ref([]);
+const recapsLoaded = ref(false);
 const kind = computed(() => route.query.kind || 'weekly');
 const showGenerate = inject('recapGenerateOpen', ref(false));
 
@@ -79,6 +80,7 @@ async function loadRecaps() {
     if (data?.cards) results.push({ ...data, _filename: f });
   }
   recaps.value = results;
+  recapsLoaded.value = true;
 }
 
 let unsub;
@@ -134,7 +136,7 @@ onUnmounted(() => { unsub?.(); });
         </section>
       </div>
 
-      <div class="content empty-content" v-else>
+      <div class="content empty-content" v-else-if="recapsLoaded">
         <section class="tl-section">
           <div class="tl-section-head">
             <span class="year">No {{ kind }} recaps yet</span>
