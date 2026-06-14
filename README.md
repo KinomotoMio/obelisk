@@ -7,7 +7,7 @@
 
 [![stars](https://img.shields.io/github/stars/tommy0103/obelisk?style=flat-square)](https://github.com/tommy0103/obelisk/stargazers)
 [![version](https://img.shields.io/github/v/tag/tommy0103/obelisk?label=version&style=flat-square)](https://github.com/tommy0103/obelisk/releases)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
 Every past session, subagent, and workflow -- queryable by your agent, browsable by you.
 
@@ -27,6 +27,12 @@ Both read from the same `~/.claude/obelisk.sqlite` database. The skill indexes; 
 
 ## Skill: agent-first retrieval
 
+<div align="center">
+  <img src=".github/assets/demo.png" alt="Obelisk App" width="720">
+</div>
+
+You can use obelisk like:
+
 ```
 /obelisk 上次 auth bug 最后到底改了哪些文件，为什么这么改
 /obelisk 这个文件最近在哪些 sessions 里被反复修改
@@ -36,6 +42,8 @@ Both read from the same `~/.claude/obelisk.sqlite` database. The skill indexes; 
 ```
 
 ### Install
+
+
 
 ```bash
 npx skills add tommy0103/obelisk
@@ -122,4 +130,4 @@ SKILL.md              # Skill definition + API + retrieval strategy
 
 ## License
 
-MIT @tommy0103
+AGPL-3.0 @tommy0103
