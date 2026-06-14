@@ -1,7 +1,7 @@
 # Obelisk Query Patterns
 
-These are copyable CodeAct patterns for `runtime.mjs --query` scripts, plus one
-`--remember` registration pattern. They are not new APIs. Adapt them to the
+These are copyable CodeAct patterns for `runtime.mjs --query` scripts plus
+`--attune` memory mutation patterns. They are not new APIs. Adapt them to the
 user's scope and return compact evidence.
 
 Read this before the first query for broad synthesis, progress summaries,
@@ -43,14 +43,17 @@ return {
     memories: map.current_project.memories.map(m => ({
       id: m.id,
       path: m.path,
+      anchors: m.anchors,
       summary: m.summary?.slice(0, 240),
     })),
   },
   prior_memories: memories({ ...scoped, query: topic, limit: 5 }).map(m => ({
     id: m.id,
     path: m.path,
+    anchors: m.anchors,
     session_id: m.session_id,
     created_at: m.created_at,
+    rank: m.rank,
     summary: m.summary?.slice(0, 260),
   })),
   session_evidence: search(topic.replace(/[-_]/g, ' '), { ...scoped, limit: 8 })
@@ -88,6 +91,7 @@ return {
     memories: map.current_project.memories.map(m => ({
       id: m.id,
       path: m.path,
+      anchors: m.anchors,
       summary: m.summary?.slice(0, 240),
     })),
   },
@@ -138,11 +142,13 @@ const prior_memories = memories({
 }).map(m => ({
   id: m.id,
   path: m.path,
+  anchors: m.anchors,
   session_id: m.session_id,
   message_start: m.message_start,
   message_end: m.message_end,
   created_at: m.created_at,
   summary: m.summary?.slice(0, 260),
+  rank: m.rank,
 }));
 
 const session_evidence = search(ftsTopic, { project, limit: 8 })
@@ -167,14 +173,14 @@ return {
 };
 ```
 
-## Register Approved Memory
+## Attune Approved Memory
 
 Use this only after the user approves writing memory and the markdown file
 already exists. `remember()` validates the file and stores a normalized absolute
 path, so keep the script small and return the registered record.
 
-Run this script with `runtime.mjs --remember <script>`. The `--remember` runtime
-exposes only `remember()`, not retrieval helpers.
+Run this script with `runtime.mjs --attune <script>`. The `--attune` runtime
+exposes only `remember()` and `forget()`, not retrieval helpers.
 
 ```js
 return remember({
@@ -182,6 +188,7 @@ return remember({
   session_id: 'source-session-id',
   message_start: 'first-message-uuid',
   message_end: 'last-message-uuid',
+  anchors: [{ kind: 'file', path: 'SKILL.md' }],
   summary: [
     'Decision: Obelisk uses one user-facing entry that queries both memory and raw sessions.',
     'Memory records are prior notes and must be identified naturally when they influence an answer.',
@@ -189,6 +196,53 @@ return remember({
   ].join(' '),
 });
 ```
+
+## Forget Approved Memory
+
+Use this only after the user asks to archive an outdated or wrong memory. Identify
+the exact memory ID in a normal `--query` script first. If one candidate clearly
+matches the user's request, that request is approval to archive it; if several
+candidates match, ask which one to forget.
+
+Run the mutation with `runtime.mjs --attune <script>`:
+
+```js
+return forget({
+  id: 'mem-id-to-delete',
+  reason: 'Outdated by newer project guidance.',
+});
+```
+
+`forget()` archives the record. Active recall through `memories()` will omit it,
+and the markdown file at `path` is left in place.
+
+## Update Approved Memory
+
+Use this when the user explicitly corrects an existing memory, or after the
+agent proposes a replacement and the user approves. An update is one combined
+operation: archive the old record and register the replacement markdown file.
+The new markdown file must already exist before running `--attune`.
+
+```js
+const archived = forget({
+  id: 'old-memory-id',
+  reason: 'Replaced by updated memory from the current session.',
+});
+
+const created = remember({
+  path: '.obelisk/memories/updated-memory.md',
+  session_id: 'current-session-id',
+  message_start: 'first-message-uuid',
+  message_end: 'last-message-uuid',
+  anchors: [{ kind: 'file', path: 'src/path/to/file.ts' }],
+  summary: 'Updated summary: concise English retrieval surface for the replacement memory.',
+});
+
+return { archived, created };
+```
+
+If the agent only suspects a memory is stale, do not run this pattern yet.
+Answer from current evidence and ask whether to archive or replace the memory.
 
 ## One-Shot Retrieval For Synthesis
 

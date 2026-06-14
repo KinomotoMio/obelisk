@@ -1,4 +1,4 @@
-import { openDb, readLines, fs, path } from './db.mjs';
+import { readLines, fs, path } from './db.mjs';
 
 function normalizeOpts(optsOrScalar, scalarKey = 'sessionId') {
   if (optsOrScalar == null) return {};
@@ -45,6 +45,14 @@ function assertEnglishMemoryText(value, label) {
   }
 }
 
+function buildSafeFtsQuery(text) {
+  const tokens = String(text || '').match(/[\p{Letter}\p{Number}]+/gu) || [];
+  return tokens
+    .slice(0, 12)
+    .map(token => `"${token}"`)
+    .join(' ');
+}
+
 function createQueryApi(db) {
   const q = (sql, ...p) => {
     assertReadOnlySql(sql);
@@ -59,7 +67,7 @@ function createQueryApi(db) {
   };
 
   const search = (text, opts = {}) => {
-    const { limit = 20, sessionId, project, after, before, cwd } = opts;
+    const { limit = 20, sessionId, project, after, before, cwd, includeMeta = false } = opts;
     let where = 'WHERE mf.text MATCH ?';
     const p = [text];
     if (sessionId) { where += ' AND mf.session_id=?'; p.push(sessionId); }
@@ -67,19 +75,21 @@ function createQueryApi(db) {
     if (after)     { where += ' AND m.timestamp>?';    p.push(after); }
     if (before)    { where += ' AND m.timestamp<?';    p.push(before); }
     if (cwd)       { where += ' AND m.cwd LIKE ?';     p.push(cwd); }
+    if (!includeMeta) where += ' AND COALESCE(m.is_meta,0)=0';
     p.push(limit);
     const rows = db.prepare(`
-      SELECT m.uuid,m.session_id,m.text,m.role,m.timestamp,m.model,m.cwd,
+      SELECT m.uuid,m.session_id,m.text,m.content_type,m.is_meta,m.role,m.timestamp,m.model,m.cwd,
              s.id as s_id,s.title as s_title,s.project as s_project,s.started_at as s_started,
              rank
       FROM messages_fts mf JOIN messages m ON m.uuid=mf.uuid LEFT JOIN sessions s ON s.id=m.session_id
       ${where} ORDER BY rank LIMIT ?`).all(...p);
     return rows.map(r => {
+      const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
       const ctx = db.prepare(
-        'SELECT uuid,text,role,timestamp,model FROM messages WHERE session_id=? AND uuid!=? ORDER BY ABS(JULIANDAY(timestamp)-JULIANDAY(?)) LIMIT 6'
+        `SELECT uuid,text,content_type,is_meta,role,timestamp,model FROM messages WHERE session_id=? AND uuid!=? ${metaClause} ORDER BY ABS(JULIANDAY(timestamp)-JULIANDAY(?)) LIMIT 6`
       ).all(r.session_id, r.uuid, r.timestamp).sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
       return {
-        message: { uuid: r.uuid, text: r.text, role: r.role, timestamp: r.timestamp, model: r.model, cwd: r.cwd },
+        message: { uuid: r.uuid, text: r.text, content_type: r.content_type, is_meta: r.is_meta || 0, role: r.role, timestamp: r.timestamp, model: r.model, cwd: r.cwd },
         session: { id: r.s_id, title: r.s_title, project: r.s_project, started_at: r.s_started },
         rank: r.rank,
         context: ctx,
@@ -110,7 +120,11 @@ function createQueryApi(db) {
     return chain;
   };
 
-  const thread = (sid) => db.prepare('SELECT * FROM messages WHERE session_id=? ORDER BY timestamp').all(sid);
+  const thread = (sid, opts = {}) => {
+    const includeMeta = opts?.includeMeta === true;
+    const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
+    return db.prepare(`SELECT * FROM messages WHERE session_id=? ${metaClause} ORDER BY timestamp`).all(sid);
+  };
 
   const subagents = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
@@ -267,7 +281,7 @@ function createQueryApi(db) {
       WITH names AS (
         SELECT project FROM sessions WHERE project IS NOT NULL GROUP BY project
         UNION
-        SELECT project FROM memories WHERE project IS NOT NULL GROUP BY project
+        SELECT project FROM memories WHERE project IS NOT NULL AND deleted_at IS NULL GROUP BY project
       ),
       session_stats AS (
         SELECT project, COUNT(*) AS session_count, MAX(COALESCE(ended_at, started_at)) AS last_session_at
@@ -278,7 +292,7 @@ function createQueryApi(db) {
       memory_stats AS (
         SELECT project, COUNT(*) AS memory_count, MAX(created_at) AS last_memory_at
         FROM memories
-        WHERE project IS NOT NULL
+        WHERE project IS NOT NULL AND deleted_at IS NULL
         GROUP BY project
       )
       SELECT
@@ -322,11 +336,11 @@ function createQueryApi(db) {
         ORDER BY COALESCE(ended_at, started_at) DESC
         LIMIT ?
       `).all(currentProject.project, sessionLimit);
-      const memoryTotal = db.prepare('SELECT COUNT(*) AS c FROM memories WHERE project = ?').get(currentProject.project)?.c || 0;
+      const memoryTotal = db.prepare('SELECT COUNT(*) AS c FROM memories WHERE project = ? AND deleted_at IS NULL').get(currentProject.project)?.c || 0;
       const memoriesForProject = db.prepare(`
-        SELECT id, path, summary, session_id, project, created_at
+        SELECT id, path, anchors, summary, session_id, project, created_at
         FROM memories
-        WHERE project = ?
+        WHERE project = ? AND deleted_at IS NULL
         ORDER BY created_at DESC
         LIMIT ?
       `).all(currentProject.project, memoryLimit);
@@ -345,11 +359,11 @@ function createQueryApi(db) {
       FROM (
         SELECT project FROM sessions WHERE project IS NOT NULL GROUP BY project
         UNION
-        SELECT project FROM memories WHERE project IS NOT NULL GROUP BY project
+        SELECT project FROM memories WHERE project IS NOT NULL AND deleted_at IS NULL GROUP BY project
       )
     `).get()?.c || 0;
     const totalSessions = db.prepare('SELECT COUNT(*) AS c FROM sessions').get()?.c || 0;
-    const totalMemories = db.prepare('SELECT COUNT(*) AS c FROM memories').get()?.c || 0;
+    const totalMemories = db.prepare('SELECT COUNT(*) AS c FROM memories WHERE deleted_at IS NULL').get()?.c || 0;
 
     return {
       current: {
@@ -422,25 +436,32 @@ function createQueryApi(db) {
       timestamp: 'mem.created_at',
       branch: 's.git_branch',
     });
-    const terms = String(query || '')
-      .trim()
-      .replace(/[-_]/g, ' ')
-      .split(/\s+/)
-      .filter(Boolean);
-    let where = baseWhere;
-    for (const term of terms) {
-      where += " AND lower(coalesce(mem.summary,'') || ' ' || coalesce(mem.path,'')) LIKE ?";
-      params.push(`%${term.toLowerCase()}%`);
-    }
-    params.push(limit);
+    let where = baseWhere + ' AND mem.deleted_at IS NULL';
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=mem.session_id' : '';
-    return db.prepare(`SELECT mem.* FROM memories mem ${join} WHERE ${where} ORDER BY mem.created_at DESC LIMIT ?`).all(...params);
+    const hasQuery = String(query || '').trim().length > 0;
+    const ftsQuery = buildSafeFtsQuery(query);
+    if (!hasQuery) {
+      params.push(limit);
+      return db.prepare(`SELECT mem.* FROM memories mem ${join} WHERE ${where} ORDER BY mem.created_at DESC LIMIT ?`).all(...params);
+    }
+    if (!ftsQuery) return [];
+    params.unshift(ftsQuery);
+    params.push(limit);
+    return db.prepare(`
+      SELECT mem.*, mf.rank AS rank
+      FROM memories_fts mf
+      JOIN memories mem ON mem.rowid = mf.rowid
+      ${join}
+      WHERE memories_fts MATCH ? AND ${where}
+      ORDER BY mf.rank, mem.created_at DESC
+      LIMIT ?
+    `).all(...params);
   };
 
   return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw, memories, overview };
 }
 
-function createRememberApi(db) {
+function createAttuneApi(db) {
   const resolveMemoryPath = (memoryPath, sessionId) => {
     let base = null;
     if (sessionId) {
@@ -459,19 +480,54 @@ function createRememberApi(db) {
     return resolved;
   };
 
-  const remember = ({ path: memoryPath, session_id, message_start, message_end, summary, project }) => {
+  const normalizeAnchors = (anchors) => {
+    if (anchors == null) return null;
+    let parsed = anchors;
+    if (typeof anchors === 'string') {
+      const trimmed = anchors.trim();
+      if (!trimmed) return null;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        throw new Error('remember() anchors must be a JSON array');
+      }
+    }
+    if (!Array.isArray(parsed)) throw new Error('remember() anchors must be an array');
+    for (const anchor of parsed) {
+      if (!anchor || typeof anchor !== 'object' || Array.isArray(anchor)) {
+        throw new Error('remember() anchors entries must be objects');
+      }
+    }
+    return parsed.length ? JSON.stringify(parsed) : null;
+  };
+
+  const remember = ({ path: memoryPath, session_id, message_start, message_end, summary, project, anchors }) => {
     if (!memoryPath || !summary) throw new Error('remember() requires path and summary');
     assertEnglishMemoryText(summary, 'remember() summary');
     const normalizedPath = resolveMemoryPath(memoryPath, session_id);
+    const normalizedAnchors = normalizeAnchors(anchors);
     const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const proj = project || db.prepare('SELECT project FROM sessions WHERE id=?').get(session_id)?.project || null;
     const created_at = new Date().toISOString();
-    db.prepare('INSERT OR REPLACE INTO memories (id, session_id, project, message_start, message_end, path, summary, created_at) VALUES (?,?,?,?,?,?,?,?)').run(
-      id, session_id || null, proj, message_start || null, message_end || null, normalizedPath, summary, created_at);
-    return { id, path: normalizedPath, project: proj, created_at };
+    db.prepare('INSERT OR REPLACE INTO memories (id, session_id, project, message_start, message_end, path, anchors, summary, created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(
+      id, session_id || null, proj, message_start || null, message_end || null, normalizedPath, normalizedAnchors, summary, created_at);
+    return { id, path: normalizedPath, project: proj, anchors: normalizedAnchors, created_at };
   };
 
-  return { remember };
+  const forget = ({ id, reason }) => {
+    const deletionReason = String(reason || '').trim();
+    if (!id || !deletionReason) throw new Error('forget() requires id and reason');
+    const row = db.prepare('SELECT id, deleted_at, deleted_reason FROM memories WHERE id=?').get(id);
+    if (!row) throw new Error(`forget() memory not found: ${id}`);
+    if (row.deleted_at) {
+      return { id, deleted_at: row.deleted_at, deleted_reason: row.deleted_reason, already_deleted: true };
+    }
+    const deleted_at = new Date().toISOString();
+    db.prepare('UPDATE memories SET deleted_at=?, deleted_reason=? WHERE id=?').run(deleted_at, deletionReason, id);
+    return { id, deleted_at, deleted_reason: deletionReason };
+  };
+
+  return { remember, forget };
 }
 
-export { createQueryApi, createRememberApi };
+export { createQueryApi, createAttuneApi };

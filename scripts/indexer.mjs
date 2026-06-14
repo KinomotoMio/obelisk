@@ -1,4 +1,4 @@
-import { CLAUDE_DIR, openDb, trunc, truncJson, extractText, filePath, isDir, readLines, fs, path } from './db.mjs';
+import { CLAUDE_DIR, openDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path } from './db.mjs';
 
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -82,7 +82,7 @@ function indexJsonl(db, fi) {
 
   const ins = {
     ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path) VALUES (?,?,?,?,?,?,?,?,?,?)'),
-    msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),
+    msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),
     tc:  db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
     tr:  db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
     sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
@@ -129,12 +129,14 @@ function indexJsonl(db, fi) {
 
     const msg = obj.message || {};
     const text = extractText(msg.content);
+    const contentType = extractContentType(msg.content);
+    const isMeta = extractMessageIsMeta(obj, text);
     const usage = msg.usage || {};
     const aid = fi.isSubagent ? fi.agentId : (obj.agentId || null);
 
     if (obj.uuid) {
       ins.msg.run(obj.uuid, sid, obj.type, obj.parentUuid || null, ts,
-        msg.role || obj.type, text, msg.model || null,
+        msg.role || obj.type, text, contentType, isMeta, msg.model || null,
         obj.isSidechain ? 1 : 0, aid, usage.input_tokens || null, usage.output_tokens || null,
         obj.cwd || null, obj.attributionSkill || null);
     }
@@ -244,12 +246,33 @@ function indexHistory(db) {
 }
 
 const BUILD_DEBOUNCE_MS = 30000;
+const APP_HEARTBEAT_FRESH_MS = 60000;
+
+function shouldSkipBuild(db, { now = Date.now() } = {}) {
+  const appHeartbeat = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__app_heartbeat__'").get();
+  const appSuccessfulBuild = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__app_last_successful_build__'").get();
+  if (
+    appHeartbeat && now - appHeartbeat.mtime < APP_HEARTBEAT_FRESH_MS &&
+    appSuccessfulBuild && now - appSuccessfulBuild.mtime < APP_HEARTBEAT_FRESH_MS
+  ) {
+    return { skip: true, reason: 'app_successful_build' };
+  }
+  const last = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__last_build__'").get();
+  if (last && now - last.mtime < BUILD_DEBOUNCE_MS) {
+    return { skip: true, reason: 'recent_build' };
+  }
+  return { skip: false };
+}
 
 function buildIndex({ force = false } = {}) {
   const db = openDb();
   if (!force) {
-    const last = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__last_build__'").get();
-    if (last && Date.now() - last.mtime < BUILD_DEBOUNCE_MS) { db.close(); return; }
+    const skip = shouldSkipBuild(db);
+    if (skip.skip) { db.close(); return; }
+  }
+
+  if (force) {
+    db.prepare("DELETE FROM index_state WHERE jsonl_path != '__last_build__'").run();
   }
 
   const files = discoverJsonlFiles();
@@ -270,6 +293,7 @@ function buildIndex({ force = false } = {}) {
     refreshSessionProjectPaths(db);
     indexHistory(db);
     db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
+    rebuildMemoryFts(db);
     db.prepare("INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES ('__last_build__', ?, 0)").run(Date.now());
     db.exec('COMMIT');
   } catch (e) {
@@ -279,4 +303,4 @@ function buildIndex({ force = false } = {}) {
   db.close();
 }
 
-export { buildIndex, inferProjectPath, refreshSessionProjectPaths };
+export { buildIndex, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };

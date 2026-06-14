@@ -2,3 +2,6 @@
 plans/
 .skillopt-backups
 tests/
+node_modules/
+dist-renderer/
+release/

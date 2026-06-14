@@ -8,67 +8,32 @@ const { DatabaseSync } = require('node:sqlite');
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const DB_PATH = path.join(CLAUDE_DIR, 'obelisk.sqlite');
 const TEXT_LIMIT = 10000;
-
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY, title TEXT, project TEXT, project_path TEXT,
-  started_at TEXT, ended_at TEXT, git_branch TEXT, version TEXT,
-  message_count INTEGER DEFAULT 0, jsonl_path TEXT);
-CREATE TABLE IF NOT EXISTS messages (
-  uuid TEXT PRIMARY KEY, session_id TEXT, type TEXT, parent_uuid TEXT,
-  timestamp TEXT, role TEXT, text TEXT, model TEXT,
-  is_sidechain INTEGER DEFAULT 0, agent_id TEXT,
-  input_tokens INTEGER, output_tokens INTEGER,
-  cwd TEXT, skill TEXT, turn_duration_ms INTEGER);
-CREATE TABLE IF NOT EXISTS tool_calls (
-  id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
-  name TEXT, input_json TEXT, file_path TEXT);
-CREATE TABLE IF NOT EXISTS tool_results (
-  tool_use_id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
-  content TEXT, file_path TEXT, is_error INTEGER DEFAULT 0);
-CREATE TABLE IF NOT EXISTS subagents (
-  agent_id TEXT PRIMARY KEY, session_id TEXT, parent_tool_use_id TEXT,
-  agent_type TEXT, description TEXT, duration_ms INTEGER, total_tokens INTEGER);
-CREATE TABLE IF NOT EXISTS workflows (
-  run_id TEXT PRIMARY KEY, session_id TEXT, task_id TEXT,
-  script TEXT, result_json TEXT, timestamp TEXT, agent_count INTEGER DEFAULT 0,
-  duration_ms INTEGER, total_tokens INTEGER, status TEXT, workflow_name TEXT);
-CREATE TABLE IF NOT EXISTS workflow_agents (
-  agent_id TEXT PRIMARY KEY, run_id TEXT, session_id TEXT,
-  agent_type TEXT, description TEXT,
-  phase TEXT, label TEXT, model TEXT, state TEXT,
-  duration_ms INTEGER, tokens INTEGER, tool_calls INTEGER);
-CREATE TABLE IF NOT EXISTS index_state (
-  jsonl_path TEXT PRIMARY KEY, mtime REAL, lines_processed INTEGER);
-CREATE TABLE IF NOT EXISTS summaries (
-  id TEXT PRIMARY KEY, session_id TEXT, timestamp TEXT,
-  source TEXT, content TEXT);
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-  uuid UNINDEXED, session_id UNINDEXED, text, content=messages, content_rowid=rowid);
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
-CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(session_id, timestamp);
-CREATE INDEX IF NOT EXISTS idx_tc_session_name ON tool_calls(session_id, name);
-CREATE INDEX IF NOT EXISTS idx_tc_file ON tool_calls(file_path);
-CREATE INDEX IF NOT EXISTS idx_sa_session ON subagents(session_id);
-CREATE INDEX IF NOT EXISTS idx_wf_session ON workflows(session_id);
-CREATE INDEX IF NOT EXISTS idx_wa_run ON workflow_agents(run_id);
-CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
-CREATE TABLE IF NOT EXISTS memories (
-  id TEXT PRIMARY KEY, session_id TEXT, project TEXT,
-  message_start TEXT, message_end TEXT,
-  path TEXT, summary TEXT, created_at TEXT);
-CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
-CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
-CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
-`;
+const SCHEMA = fs.readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 
 function openDb() {
   const db = new DatabaseSync(DB_PATH);
   db.exec('PRAGMA journal_mode=WAL');
   db.exec('PRAGMA synchronous=NORMAL');
   db.exec(SCHEMA);
+  migrateDb(db);
   return db;
+}
+
+function ensureColumn(db, table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function migrateDb(db) {
+  ensureColumn(db, 'messages', 'content_type', 'TEXT');
+  ensureColumn(db, 'messages', 'is_meta', 'INTEGER DEFAULT 0');
+  ensureColumn(db, 'memories', 'anchors', 'TEXT');
+  ensureColumn(db, 'memories', 'deleted_at', 'TEXT');
+  ensureColumn(db, 'memories', 'deleted_reason', 'TEXT');
+}
+
+function rebuildMemoryFts(db) {
+  db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
 }
 
 function trunc(s) {
@@ -101,6 +66,30 @@ function extractText(content) {
   return parts.length ? trunc(parts.join('\n')) : null;
 }
 
+function extractContentType(content) {
+  if (typeof content === 'string') return 'text';
+  if (!Array.isArray(content) || !content.length) return 'unknown';
+  const types = new Set();
+  let sawUnknown = false;
+  for (const b of content) {
+    if (!b || typeof b !== 'object') { sawUnknown = true; continue; }
+    if (b.type === 'text') types.add('text');
+    else if (b.type === 'thinking') types.add('thinking');
+    else if (b.type === 'tool_use') types.add('tool_use');
+    else if (b.type === 'tool_result') types.add('tool_result');
+    else sawUnknown = true;
+  }
+  return !sawUnknown && types.size === 1 ? [...types][0] : 'unknown';
+}
+
+const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<(?:task-notification|system-reminder)\b|<local-command(?:\b|-))/;
+
+function extractMessageIsMeta(record, text = extractText(record?.message?.content)) {
+  const msg = record?.message || {};
+  if (record?.isMeta === true || msg.isMeta === true) return 1;
+  return typeof text === 'string' && COMMAND_ENVELOPE_RE.test(text) ? 1 : 0;
+}
+
 function filePath(name, input) {
   if (!input) return null;
   return ['Read', 'Edit', 'Write', 'NotebookEdit'].includes(name) ? (input.file_path || null) : null;
@@ -129,4 +118,4 @@ function readLines(filePath, callback) {
   }
 }
 
-export { CLAUDE_DIR, DB_PATH, TEXT_LIMIT, openDb, trunc, truncJson, extractText, filePath, isDir, readLines, fs, path, os };
+export { CLAUDE_DIR, DB_PATH, TEXT_LIMIT, openDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path, os };

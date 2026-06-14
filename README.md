@@ -91,7 +91,14 @@ Reads the JSON result, answers you in natural language
 
 When a retrieval produces a memory worth keeping, the agent proposes a markdown
 memory file. After user approval, it registers that file with the narrow
-`runtime.mjs --remember <script>` runtime, which exposes only `remember()`.
+`runtime.mjs --attune <script>` runtime, which exposes only memory mutation
+helpers such as `remember()` and `forget()`.
+
+Memory is a synthesis cache, not a replacement for raw sessions. The agent can
+decide whether to use, ignore, or verify a memory during an answer. Persistent
+changes still require human approval, but explicit corrections count: if you say
+a memory is wrong, outdated, or should be replaced, the agent can archive or
+update the exact matching record without a second confirmation.
 
 **The core idea: don't make humans browse, tag, or organize sessions.**
 Don't invent a rigid query DSL either.
@@ -104,7 +111,7 @@ references only when the question needs them:
 
 **Core primitives** — the main CodeAct surface:
 
-- `search(text)` — FTS5 full-text search, returns matches with surrounding context
+- `search(text)` — FTS5 full-text search, returns matches with surrounding context plus message `content_type` and `is_meta`
 - `context(uuid)` — full story around a message (parent chain, subagent/workflow metadata)
 - `sql(query, ...params)` — read-only SQL for structured queries
 
@@ -116,11 +123,26 @@ same SQLite data.
 
 - `references/schema.md` — full SQLite schema and API reference
 - `references/query-patterns.md` — copyable CodeAct recipes for common retrieval tasks
+- `references/retrieval-semantics.md` — query design frame for scoped and synthesis retrieval
+- `references/recap/overview.md` — optional `/obelisk recap` card-by-card entrypoint
+- `references/recap/pattern1-cover.md` and `references/recap/writing1-cover.md`
+- `references/recap/pattern2-thinking.md` and `references/recap/writing2-thinking.md`
+- `references/recap/pattern3-vibe.md` and `references/recap/writing3-vibe.md`
+- `references/recap/pattern4-workflow.md` and `references/recap/writing4-workflow.md`
+- `references/recap/pattern5-closing.md` and `references/recap/writing5-closing.md`
 - `references/pitfalls.md` — scope, FTS, ordering, compact/raw, and field-name traps
+
+The executable SQLite schema lives in `scripts/schema.sql`; `references/schema.md`
+is the human/agent explanation of that contract.
 
 The design is progressive disclosure with guardrails: the main skill keeps the
 core contract and high-risk pitfalls visible, while longer recipes and the full
 schema stay out of the first prompt until the agent needs them.
+The optional recap references are only for the explicit `/obelisk recap` intent;
+they are not part of the ordinary retrieval path. `references/recap/overview.md`
+drives a card-by-card loop: read one card's retrieval pattern, gather that
+card's evidence, read its writing reference, update the JSON, then continue.
+This keeps schema, taste, and query planning from competing in one large prompt.
 
 ## What gets indexed
 
@@ -132,9 +154,9 @@ schema stay out of the first prompt until the agent needs them.
 | **Subagents** | `subagents/agent-<id>.jsonl` | Agent type, description, full conversation |
 | **Workflows** | `workflows/wf_<runId>.json` | Script, structured result, agent count |
 | **Workflow agents** | `subagents/workflows/wf_<runId>/` | Per-agent transcripts linked to workflow |
-| **Memories** | markdown files registered by the agent after user approval | Prior conclusions linked to source sessions/messages |
+| **Memories** | markdown files registered by the agent after user approval | Prior conclusions linked to source sessions/messages and optional anchors |
 
-Full-text search via FTS5 covers message text across every layer, while the SQLite tables preserve the structure agents need for investigation.
+Full-text search via FTS5 covers message text across every session layer and ranked memory recall over registered memory summaries, while the SQLite tables preserve the structure agents need for investigation.
 
 ## Structure
 
@@ -142,16 +164,36 @@ Full-text search via FTS5 covers message text across every layer, while the SQLi
 .claude/skills/obelisk/
 ├── SKILL.md              # Skill definition + simple API + examples
 ├── scripts/
-│   └── runtime.mjs       # Indexer + query runtime (400 lines, zero deps)
+│   ├── schema.sql        # Executable SQLite schema
+│   └── runtime.mjs       # Indexer + query runtime (zero deps)
 └── references/
     ├── schema.md          # Full table schema + advanced API reference
     ├── query-patterns.md  # Copyable retrieval recipes
+    ├── retrieval-semantics.md # Query design frame for retrieval semantics
+    ├── recap-patterns.md  # Compatibility pointer to references/recap/overview.md
+    ├── recap-writing.md   # Compatibility pointer to per-card recap writing docs
+    ├── recap/
+    │   ├── overview.md
+    │   ├── pattern1-cover.md
+    │   ├── writing1-cover.md
+    │   ├── pattern2-thinking.md
+    │   ├── writing2-thinking.md
+    │   ├── pattern3-vibe.md
+    │   ├── writing3-vibe.md
+    │   ├── pattern4-workflow.md
+    │   ├── writing4-workflow.md
+    │   ├── pattern5-closing.md
+    │   └── writing5-closing.md
     └── pitfalls.md        # Scope, FTS, ordering, and compactness traps
 ```
 
 ## Implementation Notes
 
 The index rebuilds incrementally — only new or modified JSONL files are re-parsed.
+When the optional app is running, it is the active indexer: it watches Claude
+project files, builds in a worker thread, writes `__app_heartbeat__` plus
+`__app_last_successful_build__` into `index_state`, and the skill-side lazy
+build skips work only while both markers are fresh.
 
 Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire runtime is ~400 lines.
 
