@@ -448,6 +448,12 @@
 .msg.is-focused {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 0 22px var(--accent-glow);
+  animation: focus-pulse 2s ease-out forwards;
+}
+@keyframes focus-pulse {
+  0% { box-shadow: 0 0 0 2px var(--accent), 0 0 30px var(--accent-glow); }
+  70% { box-shadow: 0 0 0 1px var(--accent), 0 0 15px var(--accent-glow); }
+  100% { box-shadow: none; border-color: var(--asst-bubble-border); }
 }
 .msg-head {
   display: flex; align-items: center; gap: 8px;

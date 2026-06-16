@@ -75,6 +75,21 @@ function summaryHTML(m) {
   return highlightPlain(m.summary || '', state.query.trim());
 }
 
+function sourceSessionTitle(m) {
+  if (!m.session_id) return '';
+  const s = state.sessions.find(x => x.id === m.session_id);
+  return s?.title || m.session_id.slice(0, 8);
+}
+
+function openSourceSession(m) {
+  if (!m.session_id) return;
+  if (m.message_start) {
+    router.push({ path: `/sessions/${m.session_id}`, query: { focus: m.message_start } });
+  } else {
+    router.push(`/sessions/${m.session_id}`);
+  }
+}
+
 function timeLabel(m) {
   return fmtListTime(m.ts);
 }
@@ -316,6 +331,18 @@ onUnmounted(() => {
         <div class="detail-path">{{ relativePath(detailMemory) }}</div>
         <div class="detail-summary">{{ detailMemory.summary }}</div>
         <div class="detail-meta">
+          <button
+            v-if="detailMemory.session_id"
+            class="session-link"
+            @click="openSourceSession(detailMemory)"
+          >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+              <path d="M3 4h10v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4z"/>
+              <path d="M5.5 7h5M5.5 9.5h3" stroke-linecap="round"/>
+            </svg>
+            <span>{{ sourceSessionTitle(detailMemory) }}</span>
+          </button>
+          <span v-if="detailMemory.session_id" class="dot"></span>
           <span>{{ fmtRelative(detailMemory.ts) }}</span>
         </div>
       </div>
@@ -659,6 +686,17 @@ onUnmounted(() => {
   color: var(--muted); font-variant-numeric: tabular-nums;
   padding-bottom: 16px; border-bottom: 1px solid var(--hairline);
 }
+.detail-meta .dot { width: 2px; height: 2px; background: var(--muted-2); border-radius: 50%; flex-shrink: 0; }
+.session-link {
+  color: var(--accent-2); border: 0; background: transparent;
+  padding: 2px 5px; margin: -2px 0; border-radius: 3px;
+  font: inherit; cursor: pointer; transition: all 0.1s;
+  text-decoration: underline; text-decoration-color: rgba(167,139,250,0.25);
+  text-underline-offset: 3px;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.session-link:hover { background: rgba(167,139,250,0.12); color: var(--accent-2); text-decoration-color: var(--accent-2); }
+.session-link svg { width: 11px; height: 11px; }
 
 .markdown-section { margin: 28px 0 8px; }
 .markdown-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }

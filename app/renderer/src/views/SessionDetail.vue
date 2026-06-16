@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRouter, useRoute } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
 import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
 import { clearSessionDirty, consumeGlobalSessionDirty } from '../session-live.mjs';
@@ -16,6 +16,7 @@ defineOptions({ name: 'SessionDetail' });
 const props = defineProps({ id: String });
 
 const router = useRouter();
+const route = useRoute();
 
 // --- Reactive state ---
 const session = computed(() => state.sessions.find(s => s.id === props.id));
@@ -80,6 +81,9 @@ const showFontHint = ref(false);
 onMounted(async () => {
   active.value = true;
   attachKeydown();
+  if (route.query.focus) {
+    state.pendingFocusUuid = route.query.focus;
+  }
   removeSessionUpdated = window.obelisk?.onSessionUpdated?.(async ({ sessionId } = {}) => {
     if (!active.value || !props.id || sessionId !== props.id) return;
     clearSessionDirty(props.id);
@@ -96,8 +100,13 @@ onMounted(async () => {
 onActivated(async () => {
   active.value = true;
   attachKeydown();
+  if (route.query.focus) {
+    state.pendingFocusUuid = route.query.focus;
+  }
   if (props.id && (messages.value.length === 0 || consumeGlobalSessionDirty(props.id))) {
     await loadMessages({ force: true });
+  } else if (state.pendingFocusUuid) {
+    await focusPendingMessage();
   }
 });
 
@@ -116,13 +125,16 @@ onUnmounted(() => {
 watch(() => props.id, async (newId, oldId) => {
   if (newId && newId !== oldId) {
     messages.value = [];
+    progressPct.value = 0;
+    currentMsgIdx.value = 0;
     await loadMessages({ force: consumeGlobalSessionDirty(newId) });
   }
 });
 
 async function loadMessages({ force = false } = {}) {
   if (!props.id) return;
-  const wasAtBottom = wrapRef.value && (wrapRef.value.scrollHeight - wrapRef.value.scrollTop - wrapRef.value.clientHeight) < 50;
+  const hadContent = messages.value.length > 0;
+  const wasAtBottom = hadContent && wrapRef.value && (wrapRef.value.scrollHeight - wrapRef.value.scrollTop - wrapRef.value.clientHeight) < 50;
   const prevScrollTop = wrapRef.value?.scrollTop || 0;
 
   loading.value = true;
@@ -140,24 +152,38 @@ async function loadMessages({ force = false } = {}) {
 
   nextTick(() => {
     if (!wrapRef.value) return;
-    if (wasAtBottom) {
-      wrapRef.value.scrollTop = wrapRef.value.scrollHeight;
-    } else {
-      wrapRef.value.scrollTop = prevScrollTop;
+    if (!state.pendingFocusUuid) {
+      if (wasAtBottom) {
+        wrapRef.value.scrollTop = wrapRef.value.scrollHeight;
+      } else {
+        wrapRef.value.scrollTop = prevScrollTop;
+      }
     }
+    onScroll();
   });
 
   // Focus pending uuid if any
   if (state.pendingFocusUuid) {
-    const targetUuid = state.pendingFocusUuid;
-    state.pendingFocusUuid = null;
+    await focusPendingMessage();
+  }
+}
+
+async function focusPendingMessage() {
+  const targetUuid = state.pendingFocusUuid;
+  if (!targetUuid) return;
+  state.pendingFocusUuid = null;
+  await nextTick();
+  const target = detailRef.value?.querySelector(`.msg[data-uuid="${targetUuid}"], .skill-card[data-uuid="${targetUuid}"], .wf-card[data-uuid="${targetUuid}"]`);
+  if (target && wrapRef.value) {
+    const navHeight = 52;
+    const msgBottom = target.offsetTop + target.offsetHeight;
+    const scrollTarget = msgBottom - wrapRef.value.clientHeight + navHeight;
+    wrapRef.value.scrollTo({ top: Math.max(0, scrollTarget), behavior: 'instant' });
+    target.classList.add('is-focused');
+    setTimeout(() => target.classList.remove('is-focused'), 2000);
+    // Update nav position
     await nextTick();
-    const target = detailRef.value?.querySelector(`.msg[data-uuid="${targetUuid}"]`);
-    if (target) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      target.classList.add('is-focused');
-      setTimeout(() => target.classList.remove('is-focused'), 1200);
-    }
+    onScroll();
   }
 }
 
