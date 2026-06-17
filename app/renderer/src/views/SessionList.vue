@@ -23,6 +23,7 @@ const visibleSessions = computed(() => {
   const q = state.query.trim().toLowerCase();
   return state.sessions
     .filter(s => state.projectFilter === 'all' || s.project === state.projectFilter)
+    .filter(s => state.sourceFilter === 'all' || (s.source || 'claude') === state.sourceFilter)
     .map(s => {
       if (!q) return { ...s, messageHit: null };
       const topMatch = (s.title || '').toLowerCase().includes(q) ||
@@ -40,6 +41,14 @@ const visibleSessions = computed(() => {
 });
 
 const showProjectPrefix = computed(() => state.projectFilter === 'all');
+const showNoise = ref(false);
+
+function isNoise(s) {
+  return !s.title;
+}
+
+const normalSessions = computed(() => visibleSessions.value.filter(s => !isNoise(s)));
+const noiseSessions = computed(() => visibleSessions.value.filter(s => isNoise(s)));
 
 function titleHTML(session) {
   return highlightPlain(session.title || '(untitled)', state.query.trim());
@@ -135,7 +144,7 @@ function obeliskStyle(session) {
 
     <div v-else class="session-list">
       <div
-        v-for="s in visibleSessions"
+        v-for="s in normalSessions"
         :key="s.id"
         class="srow"
         :class="{ cursor: state.cursorId === s.id }"
@@ -154,6 +163,48 @@ function obeliskStyle(session) {
           </div>
         </div>
         <div class="srow-right">{{ timeLabel(s) }}</div>
+      </div>
+
+      <!-- Noise fold banner -->
+      <div v-if="noiseSessions.length && !state.query" class="fold-banner" :class="{ expanded: showNoise }" @click="showNoise = !showNoise">
+        <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <path d="M4 2.5l3 3.5-3 3.5"/>
+        </svg>
+        <div class="body">
+          <strong>{{ noiseSessions.length }}</strong> quiet sessions hidden — untitled, likely tests or incomplete runs.
+        </div>
+        <span v-if="!showNoise" class="reveal-link">Show all</span>
+      </div>
+
+      <!-- Noise sessions (collapsed by default) -->
+      <div v-if="showNoise && noiseSessions.length" class="noise-group">
+        <div class="noise-group-head">
+          {{ noiseSessions.length }} sessions · untitled
+        </div>
+        <div
+          v-for="s in noiseSessions"
+          :key="s.id"
+          class="srow noise"
+          @click="openSession(s)"
+        >
+          <div class="srow-body">
+            <div class="srow-title">(untitled)</div>
+            <div class="srow-meta">
+              <template v-if="showProjectPrefix">
+                <span class="project-tag" v-html="projectLabel(s)"></span>
+                <span class="dot"></span>
+              </template>
+              <span>{{ s.message_count || 0 }} msg</span>
+            </div>
+          </div>
+          <div class="srow-right">{{ timeLabel(s) }}</div>
+        </div>
+        <button class="noise-fold-bottom" @click.stop="showNoise = false">
+          <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M4 2.5l3 3.5-3 3.5"/>
+          </svg>
+          Collapse
+        </button>
       </div>
     </div>
   </div>
@@ -332,5 +383,66 @@ function obeliskStyle(session) {
 .empty-help code {
   font-family: var(--font-mono); color: var(--fg-2);
   background: rgba(0,0,0,0.3); padding: 1px 6px; border-radius: 3px;
+}
+
+/* Noise fold */
+.fold-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 22px;
+  background: rgba(255,255,255,0.015);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 12.5px; color: var(--muted);
+  cursor: pointer; transition: all 0.1s;
+}
+.fold-banner:hover { background: rgba(255,255,255,0.03); color: var(--fg-2); }
+.fold-banner.expanded { color: var(--fg-3); background: rgba(255,255,255,0.02); }
+.fold-banner .chev {
+  width: 10px; height: 10px; color: var(--muted-2);
+  transition: transform 0.15s; flex-shrink: 0;
+}
+.fold-banner.expanded .chev { transform: rotate(90deg); color: var(--accent-2); }
+.fold-banner .body { flex: 1; }
+.fold-banner .body strong {
+  color: var(--fg-2); font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono); font-size: 11.5px;
+}
+.fold-banner .reveal-link {
+  font-size: 11.5px; color: var(--accent-2);
+  text-decoration: none; border-bottom: 1px solid rgba(167,139,250,0.4);
+  padding-bottom: 1px; transition: all 0.12s; flex-shrink: 0;
+}
+.fold-banner:hover .reveal-link { color: var(--accent); border-bottom-color: var(--accent); }
+
+.noise-group {
+  border-bottom: 1px solid var(--hairline-strong);
+  background: rgba(0,0,0,0.15);
+}
+.noise-group-head {
+  padding: 6px 22px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--muted-2);
+  letter-spacing: 0.06em; text-transform: uppercase;
+  background: rgba(0,0,0,0.1); border-bottom: 1px solid var(--hairline);
+}
+.srow.noise { padding: 8px 22px 8px 18px; }
+.srow.noise .srow-title {
+  color: var(--muted); font-style: italic;
+  font-size: 13px; font-weight: 400;
+}
+.srow.noise .srow-meta { color: var(--muted-2); }
+
+.noise-fold-bottom {
+  padding: 8px 22px; background: rgba(0,0,0,0.2);
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  cursor: pointer; transition: all 0.1s;
+  display: flex; align-items: center; gap: 8px;
+  border-top: 1px solid var(--hairline);
+  border: none; width: 100%; text-align: left;
+}
+.noise-fold-bottom:hover { background: rgba(0,0,0,0.3); color: var(--fg-2); }
+.noise-fold-bottom .chev {
+  width: 9px; height: 9px; color: var(--muted-2);
+  transform: rotate(-90deg);
 }
 </style>

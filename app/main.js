@@ -31,6 +31,7 @@ function detectClaudeDir() {
 }
 
 const DEFAULT_CLAUDE_DIR = detectClaudeDir();
+const DEFAULT_CODEX_DIR = path.join(os.homedir(), '.codex');
 
 let db;
 let indexerService;
@@ -41,12 +42,104 @@ function getConfiguredClaudeDir() {
   return persisted.claudeDir || DEFAULT_CLAUDE_DIR;
 }
 
-function getPathsForClaudeDir(claudeDir = getConfiguredClaudeDir()) {
+function getConfiguredCodexDir() {
+  const persisted = loadPersistedSettings();
+  return persisted.codexDir || DEFAULT_CODEX_DIR;
+}
+
+function getPathsForClaudeDir(claudeDir = getConfiguredClaudeDir(), codexDir = getConfiguredCodexDir()) {
   return {
     claudeDir,
-    dbPath: path.join(claudeDir, 'obelisk.sqlite'),
+    codexDir,
+    dbPath: path.join(OBELISK_DIR, 'obelisk.sqlite'),
     projectsDir: path.join(claudeDir, 'projects'),
   };
+}
+
+function migrateLegacyDbIfNeeded(paths = getPathsForClaudeDir()) {
+  if (fs.existsSync(paths.dbPath)) return;
+  const legacyDbPath = path.join(paths.claudeDir, 'obelisk.sqlite');
+  if (!fs.existsSync(legacyDbPath)) return;
+  try {
+    fs.mkdirSync(path.dirname(paths.dbPath), { recursive: true });
+    fs.copyFileSync(legacyDbPath, paths.dbPath);
+  } catch (error) {
+    console.warn?.(`Obelisk legacy DB migration skipped: ${error.message}`);
+  }
+}
+
+function rebuildTempDbPath(dbPath) {
+  return path.join(
+    path.dirname(dbPath),
+    `${path.basename(dbPath)}.rebuild-${process.pid}-${Date.now()}.tmp`,
+  );
+}
+
+function dbFileSet(dbPath) {
+  return [dbPath, `${dbPath}-wal`, `${dbPath}-shm`];
+}
+
+function cleanupDbFiles(dbPath) {
+  for (const filePath of dbFileSet(dbPath)) {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch {}
+  }
+}
+
+function replaceDbWithTemp(tempDbPath, dbPath) {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      fs.rmSync(sidecar, { force: true });
+    } catch {}
+  }
+  fs.renameSync(tempDbPath, dbPath);
+  for (const suffix of ['-wal', '-shm']) {
+    const tempSidecar = `${tempDbPath}${suffix}`;
+    if (!fs.existsSync(tempSidecar)) continue;
+    fs.renameSync(tempSidecar, `${dbPath}${suffix}`);
+  }
+}
+
+function resolveSchemaPath() {
+  const candidates = [
+    path.join(__dirname, 'schema.sql'),
+    path.join(__dirname, '..', 'scripts', 'schema.sql'),
+    process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'schema.sql') : null,
+  ].filter(Boolean);
+  return candidates.find(p => fs.existsSync(p));
+}
+
+function ensureColumn(db, table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function tableExists(db, table) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table));
+}
+
+function migrateExistingColumns(db) {
+  if (tableExists(db, 'sessions')) ensureColumn(db, 'sessions', 'source', "TEXT DEFAULT 'claude'");
+  if (tableExists(db, 'messages')) {
+    ensureColumn(db, 'messages', 'content_type', 'TEXT');
+    ensureColumn(db, 'messages', 'is_meta', 'INTEGER DEFAULT 0');
+    ensureColumn(db, 'messages', 'source', "TEXT DEFAULT 'claude'");
+  }
+  if (tableExists(db, 'memories')) {
+    ensureColumn(db, 'memories', 'anchors', 'TEXT');
+    ensureColumn(db, 'memories', 'deleted_at', 'TEXT');
+    ensureColumn(db, 'memories', 'deleted_reason', 'TEXT');
+  }
+}
+
+function migrateDb(db) {
+  if (typeof db.exec !== 'function' || typeof db.prepare !== 'function') return;
+  migrateExistingColumns(db);
+  const schemaPath = resolveSchemaPath();
+  if (schemaPath) db.exec(fs.readFileSync(schemaPath, 'utf8'));
+  migrateExistingColumns(db);
 }
 
 function closeDb() {
@@ -59,6 +152,7 @@ function openDb(dbPath = getPathsForClaudeDir().dbPath) {
   if (!fs.existsSync(dbPath)) return null;
   db = new Database(dbPath, { readonly: false });
   db.pragma('journal_mode = WAL');
+  migrateDb(db);
   return db;
 }
 
@@ -75,15 +169,30 @@ function notifyIndexUpdated(result = {}) {
   }
 }
 
+function sourceWhereClause(opts = {}, column = 'source') {
+  if (opts.includeCodex || opts.source === 'all') return { sql: '', params: [] };
+  if (opts.source) return { sql: `COALESCE(${column}, 'claude') = ?`, params: [opts.source] };
+  return { sql: `COALESCE(${column}, 'claude') = 'claude'`, params: [] };
+}
+
+function appendWhere(sql, params, clause) {
+  if (!clause) return sql;
+  return `${sql}${sql.includes(' WHERE ') ? ' AND ' : ' WHERE '}${clause}`;
+}
+
 function startIndexerService({ buildOnStart = false } = {}) {
   const paths = getPathsForClaudeDir();
+  migrateLegacyDbIfNeeded(paths);
+  const codexSessionsDir = path.join(paths.codexDir, 'sessions');
   indexerService = createIndexerService({
     projectsDir: paths.projectsDir,
+    watchDirs: [paths.projectsDir, codexSessionsDir],
     buildIndex: async ({ reason, changedPaths }) => {
       const result = await indexerWorker.buildIndex({
         reason,
         changedPaths,
         claudeDir: paths.claudeDir,
+        codexDir: paths.codexDir,
         projectsDir: paths.projectsDir,
         dbPath: paths.dbPath,
       });
@@ -99,7 +208,9 @@ function startIndexerService({ buildOnStart = false } = {}) {
 
 function startBackgroundResources({ runStartupBuild = false } = {}) {
   if (!indexerWorker) indexerWorker = createWorkerBuildIndex();
-  openDb();
+  const paths = getPathsForClaudeDir();
+  migrateLegacyDbIfNeeded(paths);
+  openDb(paths.dbPath);
   if (!indexerService) {
     const service = startIndexerService({ buildOnStart: false });
     if (runStartupBuild) service.runBuildNow('startup');
@@ -107,11 +218,11 @@ function startBackgroundResources({ runStartupBuild = false } = {}) {
   if (!obeliskWatcher) startObeliskWatcher();
 }
 
-async function stopIndexerServiceAndWait() {
+async function stopIndexerServiceAndWait({ waitForIdle = true } = {}) {
   const service = indexerService;
   if (!service) return;
   service.stop();
-  if (typeof service.idle === 'function') await service.idle();
+  if (waitForIdle && typeof service.idle === 'function') await service.idle();
   if (indexerService === service) indexerService = null;
 }
 
@@ -157,7 +268,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    win.loadURL('http://localhost:5173');
+    win.loadURL(process.env.OBELISK_DEV_SERVER_URL || 'http://localhost:5173');
     if (shouldOpenDevTools) {
       win.webContents.openDevTools();
     }
@@ -225,9 +336,14 @@ app.on('window-all-closed', () => {
 ipcMain.handle('db:getSessions', (_, opts = {}) => {
   if (!db) return [];
   const { project, limit = 200 } = opts;
-  let sql = `SELECT id, title, project, project_path, started_at, ended_at, git_branch, version, message_count, jsonl_path FROM sessions`;
+  let sql = `SELECT id, title, project, project_path, started_at, ended_at, git_branch, version, message_count, jsonl_path, source FROM sessions`;
   const params = [];
-  if (project) { sql += ` WHERE project LIKE ?`; params.push(project); }
+  const sourceFilter = sourceWhereClause(opts);
+  if (sourceFilter.sql) {
+    sql = appendWhere(sql, params, sourceFilter.sql);
+    params.push(...sourceFilter.params);
+  }
+  if (project) { sql = appendWhere(sql, params, `project LIKE ?`); params.push(project); }
   sql += ` ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`;
   params.push(limit);
   return db.prepare(sql).all(...params);
@@ -238,8 +354,8 @@ ipcMain.handle('db:getSessionMessages', (_, sessionId) => {
   return db.prepare(`
     SELECT m.uuid, m.session_id, m.type, m.parent_uuid, m.timestamp, m.role, m.text, m.model,
            m.is_sidechain, m.agent_id, m.input_tokens, m.output_tokens, m.cwd, m.skill, m.turn_duration_ms,
-           m.content_type, m.is_meta
-    FROM messages m WHERE m.session_id = ? AND m.agent_id IS NULL ORDER BY m.timestamp
+           m.content_type, m.is_meta, m.source
+    FROM messages m WHERE m.session_id = ? AND m.agent_id IS NULL ORDER BY m.timestamp, m.uuid
   `).all(sessionId);
 });
 
@@ -272,8 +388,8 @@ ipcMain.handle('db:getSubagentMessages', (_, agentId) => {
   return db.prepare(`
     SELECT m.uuid, m.session_id, m.type, m.parent_uuid, m.timestamp, m.role, m.text, m.model,
            m.is_sidechain, m.agent_id, m.input_tokens, m.output_tokens, m.cwd, m.skill, m.turn_duration_ms,
-           m.content_type, m.is_meta
-    FROM messages m WHERE m.agent_id = ? ORDER BY m.timestamp
+           m.content_type, m.is_meta, m.source
+    FROM messages m WHERE m.agent_id = ? ORDER BY m.timestamp, m.uuid
   `).all(agentId);
 });
 
@@ -310,8 +426,44 @@ ipcMain.handle('db:getMemories', () => {
 
 ipcMain.handle('db:getMessageFullText', (_, uuid) => {
   if (!db) return null;
-  const msg = db.prepare('SELECT session_id, agent_id FROM messages WHERE uuid=?').get(uuid);
+  const msg = db.prepare('SELECT session_id, agent_id, source FROM messages WHERE uuid=?').get(uuid);
   if (!msg) return null;
+
+  if (msg.source === 'codex' || String(uuid).startsWith('codex:')) {
+    const match = /^codex:([^:]+):(\d+)$/.exec(String(uuid));
+    if (!match) return null;
+    const rawThreadId = match[1];
+    const targetLine = Number(match[2]);
+    let jsonlPath = null;
+    if (!msg.agent_id) {
+      jsonlPath = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id)?.jsonl_path || null;
+    }
+    if (!jsonlPath) {
+      jsonlPath = db.prepare(`
+        SELECT jsonl_path FROM index_state
+        WHERE jsonl_path LIKE ? AND jsonl_path LIKE '%.jsonl'
+        ORDER BY length(jsonl_path) ASC
+        LIMIT 1
+      `).get(`%${rawThreadId}.jsonl`)?.jsonl_path || null;
+    }
+    if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
+    const lines = fs.readFileSync(jsonlPath, 'utf-8').split('\n').filter(Boolean);
+    const line = lines[targetLine - 1];
+    if (!line) return null;
+    try {
+      const obj = JSON.parse(line);
+      const payload = obj.payload || {};
+      if (obj.type === 'event_msg') {
+        if (typeof payload.message === 'string') return payload.message;
+        if (typeof payload.text === 'string') return payload.text;
+      }
+      if (obj.type === 'response_item' && payload.type === 'message' && Array.isArray(payload.content)) {
+        const parts = payload.content.map(b => b.text).filter(Boolean);
+        return parts.join('\n') || null;
+      }
+    } catch {}
+    return null;
+  }
 
   // Resolve JSONL path
   let jsonlPath = null;
@@ -378,58 +530,68 @@ ipcMain.handle('db:restoreMemory', (_, id) => {
   return true;
 });
 
-ipcMain.handle('db:getProjects', () => {
+ipcMain.handle('db:getProjects', (_, opts = {}) => {
   if (!db) return [];
+  const sourceFilter = sourceWhereClause(opts);
+  const where = sourceFilter.sql ? `WHERE ${sourceFilter.sql}` : '';
   return db.prepare(`
     SELECT project, project_path, COUNT(*) as session_count,
            MAX(COALESCE(ended_at, started_at)) as last_active
-    FROM sessions WHERE project IS NOT NULL
+    FROM sessions ${where ? `${where} AND` : 'WHERE'} project IS NOT NULL
     GROUP BY project ORDER BY last_active DESC
-  `).all();
+  `).all(...sourceFilter.params);
 });
 
-ipcMain.handle('db:getStats', () => {
+ipcMain.handle('db:getStats', (_, opts = {}) => {
   if (!db) return { sessions: 0, memories: 0, memoriesArchived: 0 };
-  const sessions = db.prepare('SELECT COUNT(*) as c FROM sessions').get()?.c || 0;
+  const sourceFilter = sourceWhereClause(opts);
+  const where = sourceFilter.sql ? `WHERE ${sourceFilter.sql}` : '';
+  const sessions = db.prepare(`SELECT COUNT(*) as c FROM sessions ${where}`).get(...sourceFilter.params)?.c || 0;
   const memories = db.prepare('SELECT COUNT(*) as c FROM memories WHERE deleted_at IS NULL').get()?.c || 0;
   const memoriesArchived = db.prepare('SELECT COUNT(*) as c FROM memories WHERE deleted_at IS NOT NULL').get()?.c || 0;
   return { sessions, memories, memoriesArchived };
 });
 
-ipcMain.handle('db:getUsageStats', () => {
+ipcMain.handle('db:getUsageStats', (_, opts = {}) => {
   if (!db) return { daily: [], totalTokens: 0, peakDay: null, longestTurn: null };
+  const sourceFilter = sourceWhereClause(opts, 'source');
+  const sourceSql = sourceFilter.sql ? `AND ${sourceFilter.sql}` : '';
 
   const daily = db.prepare(`
     SELECT DATE(timestamp) as day,
            SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)) as tokens
     FROM messages
     WHERE timestamp IS NOT NULL AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+      ${sourceSql}
     GROUP BY DATE(timestamp)
     ORDER BY day
-  `).all();
+  `).all(...sourceFilter.params);
 
   const totalTokens = db.prepare(`
     SELECT SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)) as total
     FROM messages
-  `).get()?.total || 0;
+    ${sourceFilter.sql ? `WHERE ${sourceFilter.sql}` : ''}
+  `).get(...sourceFilter.params)?.total || 0;
 
   const peakDay = db.prepare(`
     SELECT DATE(timestamp) as day,
            SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)) as tokens
     FROM messages
     WHERE timestamp IS NOT NULL AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+      ${sourceSql}
     GROUP BY DATE(timestamp)
     ORDER BY tokens DESC
     LIMIT 1
-  `).get() || null;
+  `).get(...sourceFilter.params) || null;
 
   const longestTurn = db.prepare(`
     SELECT turn_duration_ms, uuid, session_id, timestamp
     FROM messages
     WHERE turn_duration_ms IS NOT NULL
+      ${sourceSql}
     ORDER BY turn_duration_ms DESC
     LIMIT 1
-  `).get() || null;
+  `).get(...sourceFilter.params) || null;
 
   return { daily, totalTokens, peakDay, longestTurn };
 });
@@ -539,32 +701,66 @@ function savePersistedSettings(settings) {
 
 ipcMain.handle('settings:get', () => {
   const persisted = loadPersistedSettings();
-  const { claudeDir, dbPath: dbFile } = getPathsForClaudeDir(persisted.claudeDir || DEFAULT_CLAUDE_DIR);
+  const { claudeDir, codexDir, dbPath: dbFile } = getPathsForClaudeDir(
+    persisted.claudeDir || DEFAULT_CLAUDE_DIR,
+    persisted.codexDir || DEFAULT_CODEX_DIR,
+  );
   const recapDir = persisted.recapDir || RECAP_DIR;
-  const exists = fs.existsSync(claudeDir);
-  let sessionCount = 0;
+  const claudeExists = fs.existsSync(claudeDir);
+  const codexExists = fs.existsSync(codexDir);
+  let claudeSessionCount = 0;
+  let codexSessionCount = 0;
   let memoryCount = 0;
-  let lastIndexed = '';
+  let claudeLastIndexed = '';
+  let codexLastIndexed = '';
 
   if (db) {
     try {
-      sessionCount = db.prepare('SELECT COUNT(*) as c FROM sessions').get()?.c || 0;
+      claudeSessionCount = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE COALESCE(source, 'claude') = 'claude'").get()?.c || 0;
+      codexSessionCount = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE source = 'codex'").get()?.c || 0;
       memoryCount = db.prepare('SELECT COUNT(*) as c FROM memories WHERE deleted_at IS NULL').get()?.c || 0;
-      const latest = db.prepare('SELECT MAX(started_at) as t FROM sessions').get();
-      lastIndexed = latest?.t || '';
+      const claudeLatest = db.prepare("SELECT MAX(started_at) as t FROM sessions WHERE COALESCE(source, 'claude') = 'claude'").get();
+      claudeLastIndexed = claudeLatest?.t || '';
+      const codexLatest = db.prepare("SELECT MAX(started_at) as t FROM sessions WHERE source = 'codex'").get();
+      codexLastIndexed = codexLatest?.t || '';
     } catch {}
   }
 
   return {
     claudeDir,
+    codexDir,
     dbPath: dbFile,
     recapDir,
     autoRefresh: persisted.autoRefresh !== false,
-    sessionCount,
+    sources: [
+      {
+        id: 'claude',
+        name: 'Claude Code',
+        vendor: 'Anthropic',
+        path: claudeDir,
+        exists: claudeExists,
+        sessionCount: claudeSessionCount,
+        lastIndexed: claudeLastIndexed,
+        status: claudeExists ? 'ok' : 'error',
+        statusText: claudeExists ? 'Connected' : 'Folder not found',
+      },
+      {
+        id: 'codex',
+        name: 'Codex',
+        vendor: 'OpenAI',
+        path: codexDir,
+        exists: codexExists,
+        sessionCount: codexSessionCount,
+        lastIndexed: codexLastIndexed,
+        status: codexExists ? (codexSessionCount > 0 ? 'ok' : 'warn') : 'error',
+        statusText: codexExists ? (codexSessionCount > 0 ? 'Connected' : 'No sessions found') : 'Folder not found',
+      },
+    ],
     memoryCount,
-    lastIndexed,
-    status: exists ? 'ok' : 'error',
-    statusText: exists ? 'Connected' : 'Folder not found',
+    sessionCount: claudeSessionCount + codexSessionCount,
+    lastIndexed: claudeLastIndexed,
+    status: claudeExists ? 'ok' : 'error',
+    statusText: claudeExists ? 'Connected' : 'Folder not found',
   };
 });
 
@@ -586,9 +782,14 @@ ipcMain.handle('settings:set', async (_, key, value) => {
     }
   }
 
-  if (key === 'claudeDir') {
+  if (key === 'claudeDir' || key === 'codexDir') {
     await stopIndexerServiceAndWait();
-    openDb();
+    const paths = getPathsForClaudeDir(
+      persisted.claudeDir || DEFAULT_CLAUDE_DIR,
+      persisted.codexDir || DEFAULT_CODEX_DIR,
+    );
+    migrateLegacyDbIfNeeded(paths);
+    openDb(paths.dbPath);
     if (persisted.autoRefresh !== false) {
       startIndexerService({ buildOnStart: true });
     }
@@ -615,22 +816,43 @@ ipcMain.handle('settings:revealPath', (_, p) => {
 ipcMain.handle('settings:rebuildIndex', async () => {
   if (!indexerWorker) return null;
   const persisted = loadPersistedSettings();
-  const paths = getPathsForClaudeDir(persisted.claudeDir || DEFAULT_CLAUDE_DIR);
+  const paths = getPathsForClaudeDir(
+    persisted.claudeDir || DEFAULT_CLAUDE_DIR,
+    persisted.codexDir || DEFAULT_CODEX_DIR,
+  );
+  const tempDbPath = rebuildTempDbPath(paths.dbPath);
   const shouldRestartWatcher = persisted.autoRefresh !== false;
-  await stopIndexerServiceAndWait();
-  closeDb();
+  await stopIndexerServiceAndWait({ waitForIdle: false });
+  if (indexerWorker) {
+    await Promise.resolve(indexerWorker.stop());
+    indexerWorker = createWorkerBuildIndex();
+  }
+  cleanupDbFiles(tempDbPath);
   try {
+    migrateLegacyDbIfNeeded(paths);
     const result = await indexerWorker.buildIndex({
       reason: 'manual-rebuild',
       force: true,
       claudeDir: paths.claudeDir,
+      codexDir: paths.codexDir,
       projectsDir: paths.projectsDir,
-      dbPath: paths.dbPath,
+      dbPath: tempDbPath,
+      preserveDbPath: fs.existsSync(paths.dbPath) ? paths.dbPath : null,
     });
+    closeDb();
+    replaceDbWithTemp(tempDbPath, paths.dbPath);
     openDb(paths.dbPath);
     notifyIndexUpdated(result);
     return result;
   } finally {
+    cleanupDbFiles(tempDbPath);
+    if (!db) {
+      try {
+        openDb(paths.dbPath);
+      } catch (error) {
+        console.warn?.(`Obelisk DB reopen after rebuild failed: ${error.message}`);
+      }
+    }
     if (shouldRestartWatcher) startIndexerService({ buildOnStart: false });
   }
 });

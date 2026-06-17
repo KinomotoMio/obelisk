@@ -49,8 +49,9 @@ function createWorkerBuildIndex({
   const stop = () => {
     const current = worker;
     worker = null;
-    if (current?.terminate) current.terminate();
+    const termination = current?.terminate ? Promise.resolve(current.terminate()) : Promise.resolve();
     rejectPending(new Error('Indexer worker stopped'));
+    return termination;
   };
 
   return { buildIndex, stop };

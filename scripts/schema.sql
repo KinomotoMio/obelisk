@@ -1,14 +1,15 @@
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY, title TEXT, project TEXT, project_path TEXT,
   started_at TEXT, ended_at TEXT, git_branch TEXT, version TEXT,
-  message_count INTEGER DEFAULT 0, jsonl_path TEXT);
+  message_count INTEGER DEFAULT 0, jsonl_path TEXT, source TEXT DEFAULT 'claude');
 CREATE TABLE IF NOT EXISTS messages (
   uuid TEXT PRIMARY KEY, session_id TEXT, type TEXT, parent_uuid TEXT,
   timestamp TEXT, role TEXT, text TEXT, content_type TEXT,
   is_meta INTEGER DEFAULT 0, model TEXT,
   is_sidechain INTEGER DEFAULT 0, agent_id TEXT,
   input_tokens INTEGER, output_tokens INTEGER,
-  cwd TEXT, skill TEXT, turn_duration_ms INTEGER);
+  cwd TEXT, skill TEXT, turn_duration_ms INTEGER,
+  source TEXT DEFAULT 'claude');
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
   name TEXT, input_json TEXT, file_path TEXT);
@@ -51,6 +52,8 @@ END;
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source);
 CREATE INDEX IF NOT EXISTS idx_tc_session_name ON tool_calls(session_id, name);
 CREATE INDEX IF NOT EXISTS idx_tc_file ON tool_calls(file_path);
 CREATE INDEX IF NOT EXISTS idx_sa_session ON subagents(session_id);

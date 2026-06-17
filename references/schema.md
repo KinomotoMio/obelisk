@@ -10,24 +10,35 @@ contract for agents and humans; it is not the runtime source of truth.
 
 ## 1. Database Schema
 
-Database location: `~/.claude/obelisk.sqlite`
+Database location: `~/.obelisk/obelisk.sqlite`. Older
+`~/.claude/obelisk.sqlite` databases are copied forward on first open when the
+new database does not exist.
+
+Obelisk indexes two transcript sources into the same schema: Claude Code rows
+use `source='claude'`; Codex rows use `source='codex'` and synthetic IDs
+prefixed with `codex:`. Query helpers search all sources by default. Use helper
+`source` filters or raw SQL on `sessions.source` / `messages.source` only when
+provider provenance matters.
 
 ### sessions
 
-One row per Claude Code session.
+One row per root session. Claude session IDs match JSONL filenames. Codex root
+session IDs are prefixed with `codex:`; Codex child threads are attached through
+`subagents` instead of becoming separate `sessions` rows.
 
 ```sql
 CREATE TABLE sessions (
-  id            TEXT PRIMARY KEY,   -- session UUID (matches JSONL filename)
-  title         TEXT,               -- AI-generated session title (may be NULL)
-  project       TEXT,               -- Claude project slug (e.g. "-Users-tomiya-Code-quiet-zero")
+  id            TEXT PRIMARY KEY,   -- Claude UUID or "codex:<thread-id>"
+  title         TEXT,               -- AI-generated/session title (may be NULL)
+  project       TEXT,               -- provider-normalized project slug (e.g. "-Users-tomiya-Code-quiet-zero")
   project_path  TEXT,               -- absolute session cwd-derived path, with slug fallback (e.g. "/Users/tomiya/Code/quiet-zero")
   started_at    TEXT,               -- ISO 8601 timestamp of first message
   ended_at      TEXT,               -- ISO 8601 timestamp of last message
   git_branch    TEXT,               -- git branch active during session (if any)
-  version       TEXT,               -- Claude Code version string
+  version       TEXT,               -- provider CLI/app version string
   message_count INTEGER DEFAULT 0,  -- total user + assistant messages
-  jsonl_path    TEXT                -- absolute path to source JSONL file
+  jsonl_path    TEXT,               -- absolute path to source JSONL file
+  source        TEXT DEFAULT 'claude' -- "claude" or "codex"
 );
 ```
 
@@ -53,18 +64,19 @@ CREATE TABLE messages (
   output_tokens INTEGER,            -- token usage (assistant messages only)
   cwd           TEXT,               -- working directory at message time (may differ from session project_path)
   skill         TEXT,               -- skill that generated this response (e.g. "obelisk"), NULL if none
-  turn_duration_ms INTEGER          -- wall-clock duration of the turn ending at this message (from system turn_duration event)
+  turn_duration_ms INTEGER,         -- wall-clock duration of the turn ending at this message
+  source        TEXT DEFAULT 'claude' -- "claude" or "codex"
 );
 ```
 
 Indexes: `idx_messages_session(session_id)`, `idx_messages_agent(agent_id)`, `idx_messages_ts(session_id, timestamp)`.
 
-`content_type` preserves the top-level Claude Code content block shape for the
-message row. Treat `text` as user/assistant visible language, `thinking` as
-trace/debug material, and `tool_use` as a marker that the assistant message
-contains tool calls. `tool_result` marks a tool-result message, but the
-structured payload remains in `tool_results`. Tool-call details remain in
-`tool_calls`. Messages whose top-level content is not one of these four raw
+`content_type` preserves the normalized transcript surface. Treat `text` as
+user/assistant visible language, `thinking` as trace/debug material, and
+`tool_use` as a marker that the assistant message contains tool calls.
+`tool_result` marks a tool-result message when the provider emits one as a
+message; structured payloads remain in `tool_results`. Tool-call details remain
+in `tool_calls`. Messages whose top-level content is not one of these raw
 message surfaces are `unknown`. Real user input is represented by `type='user'`
 and `content_type='text'`, not by a separate `user_message` content type.
 
@@ -298,27 +310,30 @@ Full-text search across all message text using FTS5.
 | `opts.after` | `string` | ISO 8601 lower bound on timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on timestamp |
 | `opts.cwd` | `string` | Filter by working directory (supports LIKE) |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.includeMeta` | `boolean` | Include injected/control-plane messages (default `false`) |
 
-**Scope note:** `sessions.project` is the stored Claude Code project slug,
+**Scope note:** `sessions.project` is the provider-normalized project slug,
 `sessions.project_path` is the absolute session path derived from message `cwd`
-when available, and `messages.cwd` is the working directory at message time.
-Helper `project` filters are fuzzy `LIKE` filters over `sessions.project`. For
-exact project membership, use `sql()` with `s.project = ?` or
-`s.project_path = ?`.
+when available, `messages.cwd` is the working directory at message time, and
+`source` is the provider. Helper `project` filters are fuzzy `LIKE` filters over
+`sessions.project`. For exact project membership, use `sql()` with
+`s.project = ?` or `s.project_path = ?`.
 
 **Returns:** `Array<{ message, session, rank, context }>` where `message`
-includes `{ uuid, text, content_type, is_meta, role, timestamp, model, cwd }`
-and `context` is the 6 nearest non-meta messages by timestamp in the same
-session unless `includeMeta: true` is passed. It is temporal neighbor context,
-not a parent chain. `rank` is the FTS5 relevance score used by `ORDER BY rank`;
-lower values sort earlier, so treat the returned order as the relevance order
-unless you are deliberately using FTS5 ranking details.
+includes `{ uuid, text, content_type, is_meta, role, timestamp, model, cwd,
+source }`, `session` includes `source`, and `context` is the 6 nearest non-meta
+messages by timestamp in the same session unless `includeMeta: true` is passed.
+It is temporal neighbor context, not a parent chain. `rank` is the FTS5
+relevance score used by `ORDER BY rank`; lower values sort earlier, so treat the
+returned order as the relevance order unless you are deliberately using FTS5
+ranking details.
 
 ```js
 const hits = search('MCTS exploration');
 return hits.map(h => ({
   title: h.session.title,
+  source: h.session.source,
   content_type: h.message.content_type,
   is_meta: h.message.is_meta,
   text: h.message.text?.slice(0, 200),
@@ -418,6 +433,7 @@ All subagent spawns, with message counts. For backward compatibility, passing a 
 |-------|------|-------------|
 | `opts.sessionId` | `string` | Restrict to one session |
 | `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.limit` | `number` | Max results (default 100) |
 
 **Returns:** `Array<{ ...subagent_row, messageCount }>`.
@@ -437,6 +453,7 @@ Workflow executions. For backward compatibility, passing a string is treated as 
 | `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.after` | `string` | ISO 8601 lower bound on timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on timestamp |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.limit` | `number` | Max results (default 100) |
 
 **Returns:** `Array<workflow_row>`.
@@ -466,6 +483,7 @@ All tool calls that touched a specific file, across every session.
 | `filePath` | `string` | Absolute file path (required) |
 | `opts.after` | `string` | ISO 8601 lower bound |
 | `opts.before` | `string` | ISO 8601 upper bound |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.limit` | `number` | Max results (default 200) |
 
 **Returns:** `Array<{ toolCall, session, timestamp }>`.
@@ -488,6 +506,7 @@ Tool calls whose results contain error patterns (`Error`, `ENOENT`, `failed`, `p
 | `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
 | `opts.after` | `string` | ISO 8601 lower bound |
 | `opts.before` | `string` | ISO 8601 upper bound |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.limit` | `number` | Max results (default 50) |
 
 **Returns:** `Array<{ toolCall, result, session, nextMessages }>`.
@@ -523,10 +542,14 @@ string is treated as `sessionId`, and passing a number is treated as `limit`.
 | `opts.after` | `string` | ISO 8601 lower bound on summary timestamp |
 | `opts.before` | `string` | ISO 8601 upper bound on summary timestamp |
 | `opts.branch` | `string` | Filter by source session git branch (exact match) |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.limit` | `number` | Max results (default 100) |
 
 **Returns:** `Array<summary_row & { session_title, project }>` ordered by
 `timestamp` descending.
+
+Note: `summaries.source` is the summary kind such as `away_summary`; provider
+filtering uses the joined session's `source`.
 
 ```js
 const rows = summaries({ project: '%quiet-zero%', limit: 5 });
@@ -574,7 +597,7 @@ from `process.cwd()` against `sessions.project_path`, then from exact
     project_path,
     session_total,
     sessions: [
-      { id, title, project, project_path, started_at, ended_at, git_branch, message_count }
+      { id, title, project, project_path, started_at, ended_at, git_branch, message_count, source }
     ],
     memory_total,
     memories: [
@@ -592,7 +615,12 @@ from `process.cwd()` against `sessions.project_path`, then from exact
       recent_branches
     }
   ],
-  totals: { projects, sessions, memories }
+  totals: {
+    projects,
+    sessions,
+    memories,
+    sources: [{ source: 'claude' | 'codex', session_count, last_session_at }]
+  }
 }
 ```
 
@@ -629,6 +657,7 @@ Query sessions with filters. For backward compatibility, passing a number is tre
 | `opts.before` | `string` | ISO 8601 upper bound on `started_at` |
 | `opts.limit` | `number` | Max results (default 50) |
 | `opts.branch` | `string` | Filter by git branch (exact match) |
+| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
 | `opts.sessionId` | `string` | Restrict to one session |
 | `opts.sessions` | `string[]` | Restrict to a set of session IDs |
 
@@ -656,6 +685,7 @@ string is treated as `sessionId`, and passing a number is treated as `limit`.
 | `opts.after` | `string` | ISO 8601 lower bound on `created_at` |
 | `opts.before` | `string` | ISO 8601 upper bound on `created_at` |
 | `opts.branch` | `string` | Filter by source session git branch (exact match) |
+| `opts.source` | `string` | Optional provider filter through the source session: `"claude"` or `"codex"` |
 | `opts.limit` | `number` | Max results (default 50) |
 
 **Returns:** `Array<memory_row & { rank?: number }>` with archived memories

@@ -17,6 +17,7 @@ export const state = reactive({
   pendingFocusUuid: null,
   query: '',
   projectFilter: 'all',
+  sourceFilter: 'all',
   projectSearch: '',
   sortDesc: true,
   includeMessageBodies: false,

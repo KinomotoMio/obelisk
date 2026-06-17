@@ -10,6 +10,7 @@ const DEFAULT_WATCH_RETRY_MS = 5000;
 
 function createIndexerService({
   projectsDir = DEFAULT_PROJECTS_DIR,
+  watchDirs = [projectsDir],
   debounceMs = DEFAULT_DEBOUNCE_MS,
   stabilityMs = DEFAULT_STABILITY_MS,
   heartbeatMs = DEFAULT_HEARTBEAT_MS,
@@ -28,31 +29,42 @@ function createIndexerService({
 } = {}) {
   if (typeof buildIndex !== 'function') throw new Error('createIndexerService() requires buildIndex');
   const watch = watchProjects || ((onChange) => {
-    if (!fs.existsSync(projectsDir)) return null;
-    const watcher = (chokidar || require('chokidar')).watch(projectsDir, {
-      cwd: projectsDir,
-      ignoreInitial: true,
-      awaitWriteFinish: {
-        stabilityThreshold: Math.max(stabilityMs, 500),
-        pollInterval: 100,
-      },
-      ignored: (targetPath, stats) => {
-        if (stats?.isDirectory()) return false;
-        if (!stats) return false;
-        return !String(targetPath).endsWith('.jsonl') && !String(targetPath).endsWith('.json');
-      },
-    });
+    const roots = [...new Set((Array.isArray(watchDirs) ? watchDirs : [watchDirs]).filter(Boolean))];
+    const existingRoots = roots.filter(root => fs.existsSync(root));
+    if (!existingRoots.length) return null;
+    const watchers = [];
     const onFileChange = (filename) => {
       const name = filename ? String(filename) : '';
       if (!name || name.endsWith('.jsonl') || name.endsWith('.json')) onChange(name);
     };
-    return watcher
-      .on('add', onFileChange)
-      .on('change', onFileChange)
-      .on('unlink', onFileChange)
-      .on('error', (error) => {
-        logger.warn?.(`Obelisk watcher failed: ${error.message}`);
+    for (const root of existingRoots) {
+      const watcher = (chokidar || require('chokidar')).watch(root, {
+        cwd: root,
+        ignoreInitial: true,
+        awaitWriteFinish: {
+          stabilityThreshold: Math.max(stabilityMs, 500),
+          pollInterval: 100,
+        },
+        ignored: (targetPath, stats) => {
+          if (stats?.isDirectory()) return false;
+          if (!stats) return false;
+          return !String(targetPath).endsWith('.jsonl') && !String(targetPath).endsWith('.json');
+        },
       });
+      watcher
+        .on('add', onFileChange)
+        .on('change', onFileChange)
+        .on('unlink', onFileChange)
+        .on('error', (error) => {
+          logger.warn?.(`Obelisk watcher failed: ${error.message}`);
+        });
+      watchers.push(watcher);
+    }
+    return {
+      close() {
+        return Promise.all(watchers.map(w => Promise.resolve(w.close?.())));
+      },
+    };
   });
 
   let buildTimer = null;

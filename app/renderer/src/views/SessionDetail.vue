@@ -615,6 +615,10 @@ function getToolCallParsedInput(tc) {
             <span class="project-name">{{ formatProjectLabel(session.project) }}</span>
             <span class="sep">&middot;</span>
             <span class="project-path">{{ session.project_path || '' }}</span>
+            <span class="via">
+              <span class="via-dot" :class="session.source || 'claude'"></span>
+              via {{ (session.source || 'claude') === 'codex' ? 'Codex' : 'Claude Code' }}
+            </span>
           </div>
           <div class="session-title">{{ session.title || '(untitled)' }}</div>
           <div class="session-meta-inline">

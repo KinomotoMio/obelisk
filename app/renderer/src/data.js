@@ -11,7 +11,7 @@ import { state, clearUndo } from './store.js';
 export async function loadInitialData() {
   const [rawMemories, rawSessions, stats, projects] = await Promise.all([
     window.obelisk.getMemories(),
-    window.obelisk.getSessions(),
+    window.obelisk.getSessions({ source: 'all', limit: 1000 }),
     window.obelisk.getStats(),
     window.obelisk.getProjects()
   ]);
@@ -213,6 +213,23 @@ export async function loadSessionDetail(sessionId) {
     } else {
       const out = { ...msg };
       if (msg._thinking) out._thinking = msg._thinking;
+      // For text assistant messages, absorb following tool_use messages (Codex pattern)
+      if (msg.type === 'assistant' && msg.content_type !== 'tool_use' && msg.content_type !== 'thinking') {
+        if (!out.tool_calls) out.tool_calls = [];
+        let j = i + 1;
+        while (j < rawAssembled.length) {
+          const next = rawAssembled[j];
+          if (next.content_type === 'tool_result') { j++; continue; }
+          if (next.type === 'assistant' && next.content_type === 'tool_use') {
+            if (next.tool_calls) out.tool_calls.push(...next.tool_calls);
+            j++;
+            continue;
+          }
+          break;
+        }
+        if (!out.tool_calls.length) delete out.tool_calls;
+        i = j - 1;
+      }
       assembledMessages.push(out);
     }
   }

@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev",
+    "dev": "node scripts/dev.js",
     "dev:renderer": "vite renderer",
     "build:renderer": "vite build renderer",
     "build": "npm run build:renderer && electron-builder",

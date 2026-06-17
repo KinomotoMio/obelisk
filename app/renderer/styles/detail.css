@@ -425,6 +425,17 @@
 .session-eyebrow .project-name { color: var(--fg-2); font-weight: 500; }
 .session-eyebrow .project-path { font-family: var(--font-mono); color: var(--muted); }
 .session-eyebrow .sep { color: var(--muted-2); margin: 0 2px; }
+.session-eyebrow .via {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+  letter-spacing: 0.02em;
+  padding: 1px 7px; background: rgba(255,255,255,0.04);
+  border: 1px solid var(--hairline); border-radius: 3px;
+  margin-left: 6px;
+}
+.session-eyebrow .via .via-dot { width: 4px; height: 4px; border-radius: 50%; }
+.session-eyebrow .via .via-dot.claude { background: #d97757; box-shadow: 0 0 4px rgba(217,119,87,0.5); }
+.session-eyebrow .via .via-dot.codex { background: #10a37f; box-shadow: 0 0 4px rgba(16,163,127,0.5); }
 .session-title {
   font-size: 22px; font-weight: 600; color: var(--fg);
   line-height: 1.3; margin-bottom: 14px; letter-spacing: -0.01em;

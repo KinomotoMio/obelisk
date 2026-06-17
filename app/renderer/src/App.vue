@@ -47,6 +47,11 @@ const sidebarProjectsForCurrentScope = (search = state.projectSearch) => buildSi
 
 const sidebarProjects = computed(() => sidebarProjectsForCurrentScope());
 
+const NOISE_PROJECT_RE = /^(od-conn-test|[0-9a-f]{6,})/i;
+const normalProjects = computed(() => sidebarProjects.value.filter(p => p.count > 1 || !NOISE_PROJECT_RE.test(p.label)));
+const noiseProjects = computed(() => sidebarProjects.value.filter(p => p.count <= 1 && NOISE_PROJECT_RE.test(p.label)));
+const showNoiseProjects = ref(false);
+
 const totalProjectCount = computed(() => {
   return sidebarProjectsForCurrentScope('').length;
 });
@@ -158,10 +163,35 @@ const keepAliveIncludes = ['SessionDetail'];
 
 const isExportRoute = computed(() => route.name === 'RecapExport');
 
+// --- Source health dots ---
+const sourceDots = ref([]);
+const sourceDetails = ref([]);
+const showSourcePopover = ref(false);
+async function loadSourceDots() {
+  if (!window.obelisk?.getSettings) return;
+  const s = await window.obelisk.getSettings();
+  sourceDots.value = (s.sources || []).map(src => ({ id: src.id, status: src.status }));
+  sourceDetails.value = s.sources || [];
+}
+loadSourceDots();
+
 // --- Recap ---
 const recapGenerateOpen = ref(false);
 function setRecapKind(k) {
   router.replace({ path: '/recap', query: { kind: k } });
+}
+
+// --- Source filter ---
+const showSourceFilter = ref(false);
+const sourceFilterActive = computed(() => state.sourceFilter !== 'all' && state.sourceFilter !== undefined);
+const sourceFilterLabel = computed(() => {
+  if (!state.sourceFilter || state.sourceFilter === 'all') return 'All sources';
+  return state.sourceFilter === 'claude' ? 'Claude Code' : 'Codex';
+});
+function toggleSourceFilter() { showSourceFilter.value = !showSourceFilter.value; }
+function setSourceFilter(id) {
+  state.sourceFilter = id;
+  showSourceFilter.value = false;
 }
 provide('recapGenerateOpen', recapGenerateOpen);
 </script>
@@ -203,6 +233,24 @@ provide('recapGenerateOpen', recapGenerateOpen);
             <rect x="15.5" y="33" width="9" height="1.6" rx="0.3" fill="#0f172a"/>
           </svg>
           <span class="name">Obelisk</span>
+          <button class="source-health" title="Connected sources" @click="showSourcePopover = !showSourcePopover">
+            <span v-for="src in sourceDots" :key="src.id" class="h-dot" :class="src.id + '-' + src.status"></span>
+          </button>
+          <div class="sources-popover" :class="{ show: showSourcePopover }">
+            <div class="sp-head">Connected sources</div>
+            <div class="sp-list">
+              <button v-for="src in sourceDetails" :key="src.id" class="sp-row" @click="router.push('/settings')">
+                <span class="sp-dot" :class="src.id"></span>
+                <div class="sp-body">
+                  <div class="sp-name">{{ src.name }} <span class="sp-count" v-if="src.sessionCount">{{ src.sessionCount }} sessions</span></div>
+                  <div class="sp-meta" :class="src.status">{{ src.statusText }}</div>
+                </div>
+              </button>
+            </div>
+            <div class="sp-foot">
+              <button @click="router.push('/settings'); showSourcePopover = false">Manage in Settings →</button>
+            </div>
+          </div>
         </div>
 
         <div class="sidebar-section">
@@ -283,7 +331,15 @@ provide('recapGenerateOpen', recapGenerateOpen);
         </div>
 
         <div class="sidebar-section projects" v-if="currentRouteType === 'sessions' || currentRouteType === 'memory'">
-          <div class="sidebar-section-title"><span>Projects</span></div>
+          <div class="sidebar-section-title">
+            <span>Projects</span>
+            <button v-if="noiseProjects.length" class="filter-toggle" :class="{ active: showNoiseProjects }" @click.stop="showNoiseProjects = !showNoiseProjects">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M2 6h8M2 3h8M2 9h5"/>
+              </svg>
+              {{ showNoiseProjects ? 'hide noise' : 'show all' }}
+            </button>
+          </div>
           <div class="sidebar-search" v-if="totalProjectCount >= 6">
             <svg class="sidebar-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
               <circle cx="7" cy="7" r="5"/>
@@ -299,7 +355,7 @@ provide('recapGenerateOpen', recapGenerateOpen);
           </div>
           <div class="sidebar-list" id="sidebar-projects">
             <button
-              v-for="p in sidebarProjects"
+              v-for="p in normalProjects"
               :key="p.slug"
               class="sidebar-item"
               :class="{ active: state.projectFilter === p.slug }"
@@ -311,6 +367,28 @@ provide('recapGenerateOpen', recapGenerateOpen);
               <span class="label">{{ p.label }}</span>
               <span class="badge">{{ p.count }}</span>
             </button>
+
+            <!-- Noise projects fold -->
+            <button v-if="noiseProjects.length" class="project-fold" :class="{ expanded: showNoiseProjects }" @click="showNoiseProjects = !showNoiseProjects">
+              <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+              <span class="label">{{ noiseProjects.length }} test projects hidden</span>
+              <span class="count">{{ noiseProjects.length }}</span>
+            </button>
+            <template v-if="showNoiseProjects">
+              <button
+                v-for="p in noiseProjects"
+                :key="p.slug"
+                class="sidebar-item noise"
+                :class="{ active: state.projectFilter === p.slug }"
+                @click="handleSidebarProject(p.slug)"
+              >
+                <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+                  <path d="M2 5.5V12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 14 12V6.5A1.5 1.5 0 0 0 12.5 5H8.3L7 3.5H3.5A1.5 1.5 0 0 0 2 5z"/>
+                </svg>
+                <span class="label">{{ p.label }}</span>
+                <span class="badge">{{ p.count }}</span>
+              </button>
+            </template>
           </div>
         </div>
 
@@ -402,6 +480,35 @@ provide('recapGenerateOpen', recapGenerateOpen);
               <span>Generate</span>
             </button>
           </template>
+
+          <!-- Source filter (session list only, multi-source) -->
+          <div v-if="showToolbar && route.name === 'SessionList' && sourceDots.length > 1" class="source-filter-wrap">
+            <button class="filter-btn" :class="{ active: sourceFilterActive }" @click="toggleSourceFilter">
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M2 3h8M3.5 6h5M5 9h2"/>
+              </svg>
+              <span class="filter-label">{{ sourceFilterLabel }}</span>
+            </button>
+            <div class="filter-dropdown" :class="{ show: showSourceFilter }">
+              <div
+                v-for="src in sourceDots" :key="src.id"
+                class="fd-row" :class="{ checked: state.sourceFilter === 'all' || state.sourceFilter === src.id }"
+                @click.stop="setSourceFilter(src.id)"
+              >
+                <div class="fd-check">
+                  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
+                </div>
+                <span class="fd-name">{{ src.id === 'claude' ? 'Claude Code' : 'Codex' }}</span>
+              </div>
+              <div class="fd-divider"></div>
+              <div class="fd-row" :class="{ checked: state.sourceFilter === 'all' }" @click.stop="setSourceFilter('all')">
+                <div class="fd-check">
+                  <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
+                </div>
+                <span class="fd-name" style="color: var(--accent-2);">All sources</span>
+              </div>
+            </div>
+          </div>
 
           <div class="toolbar-search" id="search-wrap" v-if="showToolbar">
             <svg class="toolbar-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">

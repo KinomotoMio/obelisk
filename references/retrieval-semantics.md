@@ -33,11 +33,13 @@ unless scoped evidence is insufficient and `query_plan` says why.
 
 Project-like fields are distinct:
 
-- `sessions.project`: stored Claude Code project slug.
+- `sessions.project`: provider-normalized project slug.
 - `memories.project`: stored project slug copied onto registered memory records.
 - `sessions.project_path`: absolute session path derived from message `cwd` when available; slug decoding is only a fallback.
 - `messages.cwd`: working directory at message time.
+- `sessions.source` / `messages.source`: transcript provider, currently `claude` or `codex`.
 - helper `project`: SQL `LIKE` over `sessions.project`, not exact membership.
+- helper `source`: optional provider filter. Omit it unless provenance matters.
 
 For exact project membership, prefer helper filters or a scoped first pass when
 they are expressive enough; use `sql()` with `s.project = ?` or
