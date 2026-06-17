@@ -9,7 +9,7 @@
 [![version](https://img.shields.io/github/v/tag/tommy0103/obelisk?label=version&style=flat-square)](https://github.com/tommy0103/obelisk/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
-Every past session, subagent, and workflow -- queryable by your agent, browsable by you.
+Every past Claude Code and Codex session -- queryable by your agent, browsable by you.
 
 </div>
 
@@ -19,11 +19,19 @@ Every past session, subagent, and workflow -- queryable by your agent, browsable
 
 Obelisk has two sides that share one SQLite index:
 
-**Skill side** — a Claude Code skill that lets the agent search and query its own session history. The agent writes JS queries, runs them locally, answers in plain language.
+**Skill side** — an agent skill that lets coding agents search and query their own session history. The agent writes JS queries, runs them locally, answers in plain language.
 
 **App side** — an Electron desktop app for humans to browse sessions, manage memories, view usage stats, and see weekly recap cards.
 
-Both read from the same `~/.claude/obelisk.sqlite` database. The skill indexes; the app watches and renders.
+Both read from the same `~/.obelisk/obelisk.sqlite` database. The indexer reads Claude Code transcripts from `~/.claude/projects` and Codex transcripts from `~/.codex/sessions`.
+
+## Codex support
+
+Obelisk indexes Claude Code and Codex into the same SQLite schema instead of keeping separate databases. Rows carry a `source` value (`claude` or `codex`), and Codex IDs are prefixed with `codex:` so they cannot collide with Claude session IDs.
+
+Codex root threads become normal Obelisk sessions. Codex child threads are attached through the same `subagents` table when parent-thread metadata is available. Codex does not emit Claude-style workflow metadata, so workflow tables may be empty for Codex-only history.
+
+For live app refresh, Obelisk watches `~/.claude/projects` and `~/.codex/sessions`. It does not watch the whole `~/.codex` root. Codex's `session_index.jsonl` is used as lightweight title/update metadata during indexing, not as the message transcript source.
 
 ## Skill: agent-first retrieval
 
@@ -89,12 +97,12 @@ macOS only. Download from [Releases](https://github.com/tommy0103/obelisk/releas
 
 | Layer | Source | What's captured |
 |-------|--------|----------------|
-| **Sessions** | `<project>/<sessionId>.jsonl` | Title, project, timestamps, git branch |
+| **Sessions** | Claude `<project>/<sessionId>.jsonl`; Codex `sessions/YYYY/MM/DD/*.jsonl` | Title, project, timestamps, git branch, source |
 | **Messages** | user + assistant turns | Full text, model, token usage, parent chain |
 | **Tool calls** | every tool invocation | Tool name, input, file paths |
-| **Subagents** | `subagents/agent-<id>.jsonl` | Agent type, description, full conversation |
-| **Workflows** | `workflows/wf_<runId>.json` | Script, result, agent count |
-| **Workflow agents** | `subagents/workflows/wf_<runId>/` | Per-agent transcripts |
+| **Subagents** | Claude `subagents/agent-<id>.jsonl`; Codex child threads | Agent type, description, full conversation |
+| **Workflows** | Claude `workflows/wf_<runId>.json` | Script, result, agent count |
+| **Workflow agents** | Claude `subagents/workflows/wf_<runId>/` | Per-agent transcripts |
 | **Memories** | registered markdown files | Conclusions linked to source sessions |
 
 Full-text search via FTS5 covers all layers.
@@ -124,6 +132,7 @@ SKILL.md              # Skill definition + API + retrieval strategy
 
 - Index rebuilds incrementally — only new/modified JSONL files are re-parsed
 - Skill side uses Node 22 built-in `node:sqlite`; zero npm dependencies
+- Older `~/.claude/obelisk.sqlite` databases are copied forward to `~/.obelisk/obelisk.sqlite` on first open
 - `~/.obelisk/recap/` watched for new recap JSON files (agent writes, app renders)
 
 ---
