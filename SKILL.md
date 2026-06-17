@@ -108,6 +108,19 @@ Routing rules:
    infer recap from broad requests for weekly/monthly summaries, charts,
    rankings, shareable cards, or playlist-style metaphors.
 
+## Reference Map
+
+Use references by job, not by habit:
+
+| Reference | Use when |
+|---|---|
+| `references/query-patterns.md` | Broad synthesis, progress summaries, design history, weekly/monthly reviews, approved memory write/archive/update scripts, or questions about what the user did/learned/decided/tried/abandoned. |
+| `references/retrieval-semantics.md` | Multi-step retrieval, scoped project/file/session searches, or when scope/artifact/semantic boundaries affect query design. |
+| `references/schema.md` | Raw SQL field and join quick reference before writing non-trivial `sql()`. |
+| `references/api-reference.md` | Helper signatures, option names, return fields, or exact `remember()` / `forget()` parameter details are unclear. |
+| `references/pitfalls.md` | Error recovery, FTS syntax, aliases, ordering, row-shape surprises, or compact/raw tradeoffs. |
+| `references/recap/overview.md` | Explicit `/obelisk recap ...` requests only. |
+
 ## Query Routing
 
 Before writing a query, classify the task. Progressive disclosure is useful, but
@@ -115,11 +128,17 @@ skipping the relevant reference usually costs extra query rounds.
 
 - Read `references/query-patterns.md` before the first query for broad synthesis, progress summaries, design history, ordinary weekly/monthly reviews, or questions that ask what the user did, learned, decided, tried, or abandoned. Start from the first-pass or one-shot synthesis pattern, then run a faceted detail pass if needed.
 - Read `references/retrieval-semantics.md` before multi-step retrieval, scoped project/file/session searches, or synthesis/conclusion/history questions. It defines the query design frame.
-- Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. Do this before running the SQL, not after a missing-column error. Do not start with raw SQL for broad synthesis unless helpers cannot express the needed aggregation or join.
-- Read `references/pitfalls.md` after an error or when helper fields, FTS syntax, aliases, or row shapes are unclear.
+- Read `references/schema.md` before raw `sql()` unless the needed table/column relationship is already explicit here. It is intentionally short and SQL-focused. Do this before running the SQL, not after a missing-column error. Do not start with raw SQL for broad synthesis unless helpers cannot express the needed aggregation or join.
+- Read `references/api-reference.md` when helper option names, return fields, scalar shorthand behavior, or `remember()`/`forget()` details are unclear.
+- Read `references/pitfalls.md` after an error or when FTS syntax, aliases, ordering, row shapes, or compact/raw tradeoffs are unclear.
 
 If a helper row shape is unclear, first run a tiny scoped query and return
 `Object.keys(row)` or a compact sample. Do not invent field names.
+
+For approved memory mutations, follow the Memory Layer section below first.
+Use `references/query-patterns.md` for copyable `--attune` scripts
+(`Attune Approved Memory`, `Forget Approved Memory`, `Update Approved Memory`),
+and `references/api-reference.md` only for exact parameter semantics.
 
 ## Core API
 
@@ -183,9 +202,9 @@ Read-only SQL SELECT/WITH with `?` placeholders. Returns array rows. SQL is an
 escape hatch for exact structured joins and aggregations after the helper-first
 surface is insufficient; it is not the default retrieval entry point.
 
-Before writing non-trivial SQL, read `references/schema.md`. The executable DDL
-lives in `scripts/schema.sql`; use the reference for query semantics and the SQL
-file for schema-source alignment. Common safe joins:
+Before writing non-trivial SQL, read `references/schema.md`. It is the raw SQL
+field/join quick reference. The executable DDL lives in `scripts/schema.sql`;
+use the SQL file only when checking source alignment. Common safe joins:
 
 - `tool_calls` does not have timestamps. Join `messages m ON m.uuid = tc.message_uuid`.
 - `tool_results` does not have timestamps. Join `messages m ON m.uuid = tr.message_uuid`.
@@ -202,8 +221,9 @@ not replace `sql()`, but they are the default first-pass surface. Use `sql()`
 when you need an exact aggregation or a join the helper does not expose.
 
 All list helpers accept a bounded `limit`. Many also accept:
-`{ project, after, before, sessionId, sessions, branch, source }`. Check the
-schema or a tiny sample before relying on less common filters.
+`{ project, after, before, sessionId, sessions, branch, source }`. Check
+`references/api-reference.md` or a tiny sample before relying on less common
+filters or return fields.
 
 - `overview(opts?)` -- compact orientation map. Returns current cwd/project if knowable, global project/source counts, and current-project recent sessions plus memory records. It is a map, not evidence.
 - `sessions(opts?)` -- session rows, newest first. `project` is a SQL `LIKE` pattern.
