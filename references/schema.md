@@ -1,275 +1,228 @@
-# Obelisk -- Schema and API Reference
+# Obelisk -- Raw SQL Quick Reference
 
-Advanced reference for the obelisk database.
-Read this when `search()`, `context()`, or `sql()` are not enough.
+Read this before writing non-trivial `sql()` queries. It is a compact field and
+join map for raw SQL, not the full helper API manual.
 
-Executable schema source: `scripts/schema.sql`. This document explains that
-contract for agents and humans; it is not the runtime source of truth.
+- Executable DDL: `scripts/schema.sql`
+- Helper signatures and return shapes: `references/api-reference.md`
+- Query recipes and synthesis patterns: `references/query-patterns.md`
+- FTS, alias, ordering, and compactness traps: `references/pitfalls.md`
 
----
+Database path: `~/.obelisk/obelisk.sqlite`. Older `~/.claude/obelisk.sqlite`
+databases are copied forward on first open when the new database does not
+exist.
 
-## 1. Database Schema
+## Source Model
 
-Database location: `~/.obelisk/obelisk.sqlite`. Older
-`~/.claude/obelisk.sqlite` databases are copied forward on first open when the
-new database does not exist.
+Obelisk stores Claude Code and Codex transcripts in the same schema.
 
-Obelisk indexes two transcript sources into the same schema: Claude Code rows
-use `source='claude'`; Codex rows use `source='codex'` and synthetic IDs
-prefixed with `codex:`. Query helpers search all sources by default. Use helper
-`source` filters or raw SQL on `sessions.source` / `messages.source` only when
-provider provenance matters.
+- Claude rows use `source='claude'`.
+- Codex rows use `source='codex'`; root session and message IDs are prefixed
+  with `codex:`.
+- Omit `source` filters unless provider provenance matters.
+- Codex child threads are represented through `subagents`; Codex may not have
+  Claude-style workflow rows.
 
-### sessions
+## Scope Fields
 
-One row per root session. Claude session IDs match JSONL filenames. Codex root
-session IDs are prefixed with `codex:`; Codex child threads are attached through
-`subagents` instead of becoming separate `sessions` rows.
+Use the narrowest scope before text search.
 
-```sql
-CREATE TABLE sessions (
-  id            TEXT PRIMARY KEY,   -- Claude UUID or "codex:<thread-id>"
-  title         TEXT,               -- AI-generated/session title (may be NULL)
-  project       TEXT,               -- provider-normalized project slug (e.g. "-Users-tomiya-Code-quiet-zero")
-  project_path  TEXT,               -- absolute session cwd-derived path, with slug fallback (e.g. "/Users/tomiya/Code/quiet-zero")
-  started_at    TEXT,               -- ISO 8601 timestamp of first message
-  ended_at      TEXT,               -- ISO 8601 timestamp of last message
-  git_branch    TEXT,               -- git branch active during session (if any)
-  version       TEXT,               -- provider CLI/app version string
-  message_count INTEGER DEFAULT 0,  -- total user + assistant messages
-  jsonl_path    TEXT,               -- absolute path to source JSONL file
-  source        TEXT DEFAULT 'claude' -- "claude" or "codex"
-);
-```
+| Field | Meaning | Raw SQL note |
+| --- | --- | --- |
+| `sessions.project` | Provider-normalized project slug | Use `LIKE ?` for fuzzy project filters |
+| `sessions.project_path` | Absolute project path inferred from cwd | Use for exact local project identity |
+| `messages.cwd` | Working directory at message time | Useful when a session spans directories |
+| `sessions.source` / `messages.source` | Transcript provider | Use only when provider matters |
+| `messages.is_meta` | Injected/control-plane transcript material | Ordinary evidence should filter it out |
 
-### messages
-
-Every user and assistant message. Core table for all queries.
+For ordinary conversation evidence in raw SQL, add:
 
 ```sql
-CREATE TABLE messages (
-  uuid          TEXT PRIMARY KEY,   -- message UUID
-  session_id    TEXT,               -- FK -> sessions.id
-  type          TEXT,               -- "user" or "assistant"
-  parent_uuid   TEXT,               -- UUID of parent message (conversation tree)
-  timestamp     TEXT,               -- ISO 8601
-  role          TEXT,               -- "user" or "assistant" (from message payload)
-  text          TEXT,               -- extracted text content (thinking + text blocks, truncated to 10k chars)
-  content_type  TEXT,               -- "text", "thinking", "tool_use", "tool_result", or "unknown"
-  is_meta       INTEGER DEFAULT 0,  -- 1 for injected/control-plane transcript messages
-  model         TEXT,               -- model name (e.g. "claude-opus-4-6-20250529"), NULL for user messages
-  is_sidechain  INTEGER DEFAULT 0,  -- 1 if this message is on a sidechain (retry/branch)
-  agent_id      TEXT,               -- subagent or workflow agent UUID (NULL for main conversation)
-  input_tokens  INTEGER,            -- token usage (assistant messages only)
-  output_tokens INTEGER,            -- token usage (assistant messages only)
-  cwd           TEXT,               -- working directory at message time (may differ from session project_path)
-  skill         TEXT,               -- skill that generated this response (e.g. "obelisk"), NULL if none
-  turn_duration_ms INTEGER,         -- wall-clock duration of the turn ending at this message
-  source        TEXT DEFAULT 'claude' -- "claude" or "codex"
-);
+COALESCE(m.is_meta, 0) = 0
 ```
 
-Indexes: `idx_messages_session(session_id)`, `idx_messages_agent(agent_id)`, `idx_messages_ts(session_id, timestamp)`.
+Do not add that filter when investigating injected context, command envelopes,
+or transcript structure.
 
-`content_type` preserves the normalized transcript surface. Treat `text` as
-user/assistant visible language, `thinking` as trace/debug material, and
-`tool_use` as a marker that the assistant message contains tool calls.
-`tool_result` marks a tool-result message when the provider emits one as a
-message; structured payloads remain in `tool_results`. Tool-call details remain
-in `tool_calls`. Messages whose top-level content is not one of these raw
-message surfaces are `unknown`. Real user input is represented by `type='user'`
-and `content_type='text'`, not by a separate `user_message` content type.
+## Tables
 
-`is_meta` marks transcript control-plane content: injected caveats, command
-envelopes such as `<command-name>/exit</command-name>`, and similar messages
-that may appear as user-role text but are not ordinary user intent. It is
-separate from `type`, `role`, and `content_type`. Default helpers hide meta
-messages from ordinary recall; use `includeMeta: true` or explicit SQL when
-investigating injected context, command messages, or transcript structure.
+### `sessions`
 
-### messages_fts
+One row per root session.
 
-FTS5 virtual table for full-text search over message text.
+| Column | Meaning |
+| --- | --- |
+| `id` | Session ID (`codex:<thread-id>` for Codex roots) |
+| `title` | AI/session title |
+| `project` | Provider-normalized project slug |
+| `project_path` | Absolute project path when known |
+| `started_at`, `ended_at` | ISO timestamps |
+| `git_branch` | Branch at session time |
+| `version` | Provider CLI/app version |
+| `message_count` | Indexed user + assistant messages |
+| `jsonl_path` | Source JSONL path |
+| `source` | `claude` or `codex` |
 
-```sql
-CREATE VIRTUAL TABLE messages_fts USING fts5(
-  uuid UNINDEXED,        -- not searchable, carried for JOINs
-  session_id UNINDEXED,  -- not searchable, carried for filtering
-  text,                  -- the searchable column
-  content=messages,      -- content-sync with messages table
-  content_rowid=rowid
-);
-```
+### `messages`
 
-Queried via `MATCH` syntax. The table is kept in sync by the `messages_fts_*`
-triggers above; rebuild it manually only when repairing FTS state.
+Core evidence table.
 
-### memories_fts
+| Column | Meaning |
+| --- | --- |
+| `uuid` | Message ID |
+| `session_id` | FK to `sessions.id` |
+| `type`, `role` | User/assistant role fields |
+| `parent_uuid` | Conversation tree parent |
+| `timestamp` | ISO timestamp |
+| `text` | Extracted text, truncated to 10k chars |
+| `content_type` | `text`, `thinking`, `tool_use`, `tool_result`, or `unknown` |
+| `is_meta` | 1 for injected/control-plane messages |
+| `model` | Assistant model name |
+| `is_sidechain` | Retry/branch marker |
+| `agent_id` | Subagent/workflow agent ID |
+| `input_tokens`, `output_tokens` | Assistant token usage |
+| `cwd` | Working directory at message time |
+| `skill` | Skill that generated the response, if known |
+| `turn_duration_ms` | Wall-clock duration for the turn |
+| `source` | `claude` or `codex` |
 
-FTS5 virtual table for ranked memory recall over registered memory summaries
-and paths.
+`content_type='tool_use'` is only a marker. Tool-call details live in
+`tool_calls`. `content_type='tool_result'` marks provider-emitted tool-result
+messages; structured tool-result rows live in `tool_results`.
 
-```sql
-CREATE VIRTUAL TABLE memories_fts USING fts5(
-  id UNINDEXED,         -- memory record ID, carried for inspection
-  path,                 -- searchable memory file path
-  summary,              -- searchable compact memory summary
-  content=memories,
-  content_rowid=rowid,
-  tokenize='unicode61 remove_diacritics 1'
-);
-```
+### `tool_calls`
 
-`memories({ query })` queries this table with safe tokenization and joins back to
-`memories`, omitting archived rows. It is rebuilt during index finalization;
-`remember()` also inserts the new memory row into FTS immediately.
+One row per assistant tool invocation.
 
-### tool_calls
+| Column | Meaning |
+| --- | --- |
+| `id` | Tool-use ID |
+| `message_uuid` | Assistant message containing the call |
+| `session_id` | Denormalized session ID |
+| `name` | Tool name (`Read`, `Edit`, `Bash`, etc.) |
+| `input_json` | JSON-serialized input, truncated to 10k chars |
+| `file_path` | Extracted file path for file tools |
 
-Every tool invocation by the assistant. One row per `tool_use` content block.
+`tool_calls` does not have timestamps. Join through `messages`.
 
-```sql
-CREATE TABLE tool_calls (
-  id            TEXT PRIMARY KEY,   -- tool_use ID (from API response)
-  message_uuid  TEXT,               -- FK -> messages.uuid (the assistant message containing this call)
-  session_id    TEXT,               -- FK -> sessions.id (denormalized for fast queries)
-  name          TEXT,               -- tool name: "Read", "Edit", "Write", "Bash", "WebSearch", etc.
-  input_json    TEXT,               -- JSON-serialized tool input (truncated to 10k chars)
-  file_path     TEXT                -- extracted file_path for Read/Edit/Write/NotebookEdit (NULL otherwise)
-);
-```
+### `tool_results`
 
-Indexes: `idx_tc_session_name(session_id, name)`, `idx_tc_file(file_path)`.
+One row per tool result.
 
-### tool_results
+| Column | Meaning |
+| --- | --- |
+| `tool_use_id` | FK to `tool_calls.id` |
+| `message_uuid` | User/tool-result message carrying the result |
+| `session_id` | Denormalized session ID |
+| `content` | Result text, truncated to 10k chars |
+| `file_path` | Tool result file path metadata, if any |
+| `is_error` | 1 when the provider marks the result as an error |
 
-The result returned for each tool call. Appears in the next user message.
+`tool_results` does not have timestamps. Join through `messages`.
 
-```sql
-CREATE TABLE tool_results (
-  tool_use_id   TEXT PRIMARY KEY,   -- FK -> tool_calls.id
-  message_uuid  TEXT,               -- FK -> messages.uuid (the user message carrying this result)
-  session_id    TEXT,               -- FK -> sessions.id (denormalized)
-  content       TEXT,               -- result text (truncated to 10k chars)
-  file_path     TEXT,               -- file path from toolUseResult metadata (if any)
-  is_error      INTEGER DEFAULT 0   -- 1 if the tool call returned an error (from API is_error field)
-);
-```
+### `summaries`
 
-### subagents
+Session summary rows.
 
-Metadata for subagent spawns (non-workflow agents).
+| Column | Meaning |
+| --- | --- |
+| `id` | Summary ID |
+| `session_id` | FK to `sessions.id` |
+| `timestamp` | Summary timestamp |
+| `source` | Summary kind, such as `away_summary`; not provider source |
+| `content` | Summary text |
 
-```sql
-CREATE TABLE subagents (
-  agent_id          TEXT PRIMARY KEY,   -- subagent UUID
-  session_id        TEXT,               -- FK -> sessions.id (parent session)
-  parent_tool_use_id TEXT,              -- tool_use ID that spawned this agent
-  agent_type        TEXT,               -- e.g. "code-review", "research"
-  description       TEXT,               -- task description given to the subagent
-  duration_ms       INTEGER,            -- wall-clock duration (computed from message timestamps)
-  total_tokens      INTEGER             -- sum of input_tokens + output_tokens across all agent messages
-);
-```
+### `subagents`
 
-Index: `idx_sa_session(session_id)`.
+Metadata for non-workflow subagent spawns.
 
-### workflows
+| Column | Meaning |
+| --- | --- |
+| `agent_id` | Subagent ID |
+| `session_id` | Parent session |
+| `parent_tool_use_id` | Tool call that spawned the subagent |
+| `agent_type` | Agent type label |
+| `description` | Assigned task |
+| `duration_ms` | Wall-clock duration |
+| `total_tokens` | Sum of indexed agent tokens |
 
-Workflow execution records. A workflow orchestrates multiple agents.
+### `workflows`
 
-```sql
-CREATE TABLE workflows (
-  run_id        TEXT PRIMARY KEY,   -- workflow run UUID
-  session_id    TEXT,               -- FK -> sessions.id (parent session)
-  task_id       TEXT,               -- task identifier (if any)
-  script        TEXT,               -- workflow script content (truncated)
-  result_json   TEXT,               -- JSON-serialized workflow result
-  timestamp     TEXT,               -- ISO 8601 execution time
-  agent_count   INTEGER DEFAULT 0,  -- number of agents in this workflow
-  duration_ms   INTEGER,            -- wall-clock duration of the workflow run
-  total_tokens  INTEGER,            -- total tokens across all agents
-  status        TEXT,               -- "completed", "failed", etc.
-  workflow_name TEXT                 -- name from the workflow script meta
-);
-```
+Workflow execution records.
 
-Index: `idx_wf_session(session_id)`.
+| Column | Meaning |
+| --- | --- |
+| `run_id` | Workflow run ID |
+| `session_id` | Parent session |
+| `task_id` | Task identifier |
+| `script` | Workflow script content, truncated |
+| `result_json` | JSON-serialized workflow result |
+| `timestamp` | Execution timestamp |
+| `agent_count` | Number of workflow agents |
+| `duration_ms`, `total_tokens` | Aggregate run cost |
+| `status` | Run status |
+| `workflow_name` | Name from workflow metadata |
 
-### workflow_agents
+### `workflow_agents`
 
-Individual agents within a workflow run.
+Individual agents inside a workflow run.
 
-```sql
-CREATE TABLE workflow_agents (
-  agent_id      TEXT PRIMARY KEY,   -- agent UUID (prefixed with "agent-")
-  run_id        TEXT,               -- FK -> workflows.run_id
-  session_id    TEXT,               -- FK -> sessions.id
-  agent_type    TEXT,               -- agent type label
-  description   TEXT,               -- task description
-  phase         TEXT,               -- workflow phase title (e.g. "Review", "Verify")
-  label         TEXT,               -- agent label from workflow script
-  model         TEXT,               -- model used (e.g. "claude-opus-4-6[1m]")
-  state         TEXT,               -- "done", "error", etc.
-  duration_ms   INTEGER,            -- wall-clock duration of this agent
-  tokens        INTEGER,            -- total tokens used by this agent
-  tool_calls    INTEGER             -- number of tool calls made
-);
-```
+| Column | Meaning |
+| --- | --- |
+| `agent_id` | Workflow agent ID |
+| `run_id` | FK to `workflows.run_id` |
+| `session_id` | Parent session |
+| `agent_type`, `description` | Agent task metadata |
+| `phase`, `label` | Workflow positioning |
+| `model`, `state` | Runtime state |
+| `duration_ms`, `tokens`, `tool_calls` | Per-agent cost |
 
-Index: `idx_wa_run(run_id)`.
+### `memories`
 
-### index_state
+Human-approved markdown memory records. The markdown file at `path` is the
+durable memory; `summary` is the compact retrieval surface.
 
-Tracks incremental indexing progress per JSONL file.
+| Column | Meaning |
+| --- | --- |
+| `id` | Memory ID |
+| `session_id` | Source session, if known |
+| `project` | Project slug for scoped recall |
+| `message_start`, `message_end` | Source message UUID range |
+| `path` | Normalized absolute markdown path |
+| `anchors` | Optional JSON array of recall anchors |
+| `summary` | English retrieval summary |
+| `created_at` | Registration timestamp |
+| `deleted_at` | Archive timestamp |
+| `deleted_reason` | Archive reason |
 
-```sql
-CREATE TABLE index_state (
-  jsonl_path      TEXT PRIMARY KEY,   -- absolute path to JSONL file
-  mtime           REAL,               -- file mtime at last index (milliseconds)
-  lines_processed INTEGER             -- number of lines already processed
-);
-```
+Active memory means `deleted_at IS NULL`. Recall helpers omit archived rows.
+When using raw SQL for memory recall, include `memories.deleted_at IS NULL`.
 
-Sentinel rows use synthetic `jsonl_path` keys:
-`__last_build__` stores the last completed build time, `__app_heartbeat__`
-stores the optional app indexer's liveness heartbeat,
-`__app_last_successful_build__` stores the app's last successful index build,
-`__indexer_owner_app__` marks app ownership, and `__last_source_mtime__` records
-the newest indexed source mtime. Skill-side lazy builds skip work only while the
-app heartbeat and app successful-build marker are both fresh.
+### `index_state`
 
-### memories
+Indexer progress and sentinel state.
 
-Human-approved markdown memory records registered in Obelisk. The markdown
-file at `path` is the durable memory content; `summary` is the compact retrieval
-surface.
+| Column | Meaning |
+| --- | --- |
+| `jsonl_path` | Source path or synthetic sentinel key |
+| `mtime` | Last indexed mtime |
+| `lines_processed` | Incremental line cursor |
 
-```sql
-CREATE TABLE memories (
-  id            TEXT PRIMARY KEY,   -- memory record ID
-  session_id    TEXT,               -- FK -> sessions.id where the memory was drawn, if known
-  project       TEXT,               -- project slug used for scoped recall
-  message_start TEXT,               -- first relevant message UUID, if known
-  message_end   TEXT,               -- last relevant message UUID, if known
-  path          TEXT,               -- normalized absolute markdown memory file path
-  anchors       TEXT,               -- optional JSON array of recall anchors
-  summary       TEXT,               -- retrieval summary of the memory
-  created_at    TEXT,               -- ISO 8601 registration time
-  deleted_at    TEXT,               -- ISO 8601 archive time, if forgotten
-  deleted_reason TEXT               -- human/agent deletion reason, if forgotten
-);
-```
+Sentinel keys include `__last_build__`, `__app_heartbeat__`,
+`__app_last_successful_build__`, `__indexer_owner_app__`, and
+`__last_source_mtime__`.
 
-Indexes: `idx_memories_project(project)`,
-`idx_memories_session(session_id)`, `idx_memories_created(created_at)`.
+### FTS Tables
 
-Active memory means `deleted_at IS NULL`. Recall helpers return active memories
-only. Archived memories are management/audit data, not recall data. Query recall
-uses `memories_fts` joined back to `memories`; when using raw SQL for memory
-recall, include `deleted_at IS NULL`.
+| Table | Search surface | Use |
+| --- | --- | --- |
+| `messages_fts` | `messages.text` | Usually through `search()` |
+| `memories_fts` | `memories.path`, `memories.summary` | Usually through `memories({ query })` |
 
-### Key Relationships
+Prefer helpers for FTS. Raw `MATCH` syntax is easy to get wrong; see
+`references/pitfalls.md` before debugging FTS behavior.
+
+## Key Relationships
 
 ```
 sessions.id        <--  messages.session_id
@@ -281,711 +234,95 @@ sessions.id        <--  memories.session_id
 messages.uuid      <--  tool_calls.message_uuid
 messages.uuid      <--  tool_results.message_uuid
 messages.uuid      <--  memories.message_start / memories.message_end
-messages.agent_id  -->  subagents.agent_id      (for subagent messages)
-messages.agent_id  -->  workflow_agents.agent_id (for workflow agent messages)
+messages.agent_id  -->  subagents.agent_id
+messages.agent_id  -->  workflow_agents.agent_id
 tool_calls.id      <--  tool_results.tool_use_id
 workflows.run_id   <--  workflow_agents.run_id
 ```
 
----
+## Safe SQL Joins
 
-## 2. Query API Reference
+Tool calls with timestamps:
 
-Read helpers are available as globals inside `--query` scripts. Memory mutation
-helpers are available only inside `--attune` scripts. Scripts run in an async
-IIFE with a 30-second timeout.
-
-### Simple Layer
-
-#### `search(text, opts?)`
-
-Full-text search across all message text using FTS5.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `text` | `string` | FTS5 query (terms, phrases, prefix) |
-| `opts.limit` | `number` | Max results (default 20) |
-| `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
-| `opts.after` | `string` | ISO 8601 lower bound on timestamp |
-| `opts.before` | `string` | ISO 8601 upper bound on timestamp |
-| `opts.cwd` | `string` | Filter by working directory (supports LIKE) |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.includeMeta` | `boolean` | Include injected/control-plane messages (default `false`) |
-
-**Scope note:** `sessions.project` is the provider-normalized project slug,
-`sessions.project_path` is the absolute session path derived from message `cwd`
-when available, `messages.cwd` is the working directory at message time, and
-`source` is the provider. Helper `project` filters are fuzzy `LIKE` filters over
-`sessions.project`. For exact project membership, use `sql()` with
-`s.project = ?` or `s.project_path = ?`.
-
-**Returns:** `Array<{ message, session, rank, context }>` where `message`
-includes `{ uuid, text, content_type, is_meta, role, timestamp, model, cwd,
-source }`, `session` includes `source`, and `context` is the 6 nearest non-meta
-messages by timestamp in the same session unless `includeMeta: true` is passed.
-It is temporal neighbor context, not a parent chain. `rank` is the FTS5
-relevance score used by `ORDER BY rank`; lower values sort earlier, so treat the
-returned order as the relevance order unless you are deliberately using FTS5
-ranking details.
-
-```js
-const hits = search('MCTS exploration');
-return hits.map(h => ({
-  title: h.session.title,
-  source: h.session.source,
-  content_type: h.message.content_type,
-  is_meta: h.message.is_meta,
-  text: h.message.text?.slice(0, 200),
-}));
+```sql
+SELECT tc.id, tc.name, tc.file_path, m.timestamp, s.title
+FROM tool_calls tc
+JOIN messages m ON m.uuid = tc.message_uuid
+JOIN sessions s ON s.id = tc.session_id
+WHERE s.project LIKE ?
+ORDER BY m.timestamp DESC
+LIMIT 20;
 ```
 
-#### `context(uuid)`
+Tool failures with timestamps:
 
-Full context around a single message: parent chain, session metadata, subagent/workflow info.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `uuid` | `string` | Message UUID |
-
-**Returns:** `{ message, parentChain, session, subagent, workflow }` or `null`.
-
-```js
-const c = context('abc-123-def');
-return { chain_length: c.parentChain.length, session_title: c.session?.title };
+```sql
+SELECT tr.tool_use_id, tc.name, m.timestamp, substr(tr.content, 1, 200) AS error
+FROM tool_results tr
+JOIN tool_calls tc ON tc.id = tr.tool_use_id
+JOIN messages m ON m.uuid = tr.message_uuid
+WHERE tr.is_error = 1
+ORDER BY m.timestamp DESC
+LIMIT 20;
 ```
 
-#### `sql(query, ...params)`
+Ordinary message evidence:
 
-Read-only SQL with parameterized bindings. Returns an array of row objects.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `query` | `string` | SQL SELECT/WITH statement |
-| `...params` | `any` | Bind parameters (positional `?`) |
-
-**Returns:** `Array<Object>` -- each row as `{ column: value }`.
-
-Write statements are rejected. Use `--attune` with `remember()` or `forget()`
-for memory mutation after user approval.
-
-```js
-const rows = sql('SELECT id, title FROM sessions WHERE project = ? ORDER BY ended_at DESC LIMIT 5', 'Users-tomiya-Code-quiet-zero');
-return rows;
+```sql
+SELECT m.uuid, m.role, m.timestamp, substr(m.text, 1, 220) AS snippet
+FROM messages m
+JOIN sessions s ON s.id = m.session_id
+WHERE s.project LIKE ?
+  AND COALESCE(m.is_meta, 0) = 0
+ORDER BY m.timestamp DESC
+LIMIT 20;
 ```
 
-### Advanced Layer
+Active memories:
 
-#### `trace(uuid)`
-
-Walk the `parent_uuid` chain from a message up to the conversation root.
-
-**Returns:** `Array<message>` ordered root-first.
-
-```js
-const chain = trace('some-uuid');
-return chain.map(m => ({ role: m.role, text: m.text?.slice(0, 100) }));
+```sql
+SELECT id, path, anchors, summary, session_id, created_at
+FROM memories
+WHERE project LIKE ?
+  AND deleted_at IS NULL
+ORDER BY created_at DESC
+LIMIT 20;
 ```
 
-#### `thread(sessionId, opts?)`
-
-Session messages ordered by timestamp. Meta messages are omitted by default;
-pass `{ includeMeta: true }` to include injected caveats, command envelopes, and
-other control-plane transcript rows.
-
-**Returns:** `Array<message>`.
-
-```js
-const msgs = thread('session-uuid');
-return { count: msgs.length, first: msgs[0]?.text?.slice(0, 100) };
-```
-
-#### `raw(uuid, opts?)`
-
-Windowed access to the original JSONL line for a message. Use this when indexed
-text, tool inputs, or tool results were truncated and you need the raw source.
-It resolves main-session, subagent, and workflow-agent JSONL paths from the
-indexed message metadata.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `uuid` | `string` | Message UUID |
-| `opts.offset` | `number` | Character offset into the JSONL line (default 0) |
-| `opts.limit` | `number` | Max characters to return (default 10000) |
-
-**Returns:** `{ text, totalLength, offset, limit, hasMore }` or `null` if the
-source line cannot be found.
-
-```js
-const line = raw('message-uuid', { offset: 0, limit: 4000 });
-return {
-  preview: line?.text,
-  has_more: line?.hasMore,
-  total: line?.totalLength,
-};
-```
-
-#### `subagents(opts?)`
-
-All subagent spawns, with message counts. For backward compatibility, passing a string is treated as `sessionId`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.limit` | `number` | Max results (default 100) |
-
-**Returns:** `Array<{ ...subagent_row, messageCount }>`.
-
-```js
-const subs = subagents({ project: '%quiet-zero%' });
-return subs.map(s => ({ type: s.agent_type, desc: s.description, msgs: s.messageCount, tokens: s.total_tokens }));
-```
-
-#### `workflows(opts?)`
-
-Workflow executions. For backward compatibility, passing a string is treated as `sessionId`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
-| `opts.after` | `string` | ISO 8601 lower bound on timestamp |
-| `opts.before` | `string` | ISO 8601 upper bound on timestamp |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.limit` | `number` | Max results (default 100) |
-
-**Returns:** `Array<workflow_row>`.
-
-```js
-const wfs = workflows({ project: '%quiet-zero%' });
-return wfs.map(w => ({ run: w.run_id, agents: w.agent_count, time: w.timestamp }));
-```
-
-#### `workflowTree(runId)`
-
-Lightweight execution tree for a workflow: metadata, parsed result, and agent summaries with phase/label/performance data. Does not load agent messages — use `sql()` with `agent_id` to drill into a specific agent.
-
-**Returns:** `{ ...workflow_row, result: object, agents: Array<{ ...agent_row, messageCount }> }` or `null`.
-
-```js
-const tree = workflowTree('run-uuid');
-return tree?.agents.map(a => ({ phase: a.phase, label: a.label, tokens: a.tokens, msgs: a.messageCount }));
-```
-
-#### `fileHistory(filePath, opts?)`
-
-All tool calls that touched a specific file, across every session.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `filePath` | `string` | Absolute file path (required) |
-| `opts.after` | `string` | ISO 8601 lower bound |
-| `opts.before` | `string` | ISO 8601 upper bound |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.limit` | `number` | Max results (default 200) |
-
-**Returns:** `Array<{ toolCall, session, timestamp }>`.
-
-Default order is oldest first (`ORDER BY m.timestamp`). For recent file changes,
-use raw SQL with `ORDER BY m.timestamp DESC`.
-
-```js
-const edits = fileHistory('/Users/tomiya/Code/quiet-zero/src/mcts.ts', { after: '2026-05-28' });
-return edits.map(e => ({ tool: e.toolCall.name, session: e.session.title, time: e.timestamp }));
-```
-
-#### `failures(opts?)`
-
-Tool calls whose results contain error patterns (`Error`, `ENOENT`, `failed`, `permission denied`, etc.). Includes the 3 messages immediately after each failure for retry context. For backward compatibility, passing a string is treated as `sessionId`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.sessionId` | `string` | Restrict to one session |
-| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
-| `opts.after` | `string` | ISO 8601 lower bound |
-| `opts.before` | `string` | ISO 8601 upper bound |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.limit` | `number` | Max results (default 50) |
-
-**Returns:** `Array<{ toolCall, result, session, nextMessages }>`.
-
-Default order is newest first by the result message timestamp.
-
-```js
-const fails = failures({ project: '%quiet-zero%', limit: 10 });
-return fails.map(f => ({ tool: f.toolCall?.name, error: f.result.content?.slice(0, 200) }));
-```
-
-#### `recent(n?)`
-
-Shorthand for `sessions({ limit: n })`. Last `n` sessions (default 10), ordered by `ended_at` descending.
-
-**Returns:** `Array<session_row>`.
-
-```js
-const last5 = recent(5);
-return last5.map(s => ({ title: s.title, project: s.project_path, ended: s.ended_at }));
-```
-
-#### `summaries(opts?)`
-
-Session summary rows, newest first. For backward compatibility, passing a
-string is treated as `sessionId`, and passing a number is treated as `limit`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.sessionId` | `string` | Restrict to one session |
-| `opts.sessions` | `string[]` | Restrict to a set of session IDs |
-| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
-| `opts.after` | `string` | ISO 8601 lower bound on summary timestamp |
-| `opts.before` | `string` | ISO 8601 upper bound on summary timestamp |
-| `opts.branch` | `string` | Filter by source session git branch (exact match) |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.limit` | `number` | Max results (default 100) |
-
-**Returns:** `Array<summary_row & { session_title, project }>` ordered by
-`timestamp` descending.
-
-Note: `summaries.source` is the summary kind such as `away_summary`; provider
-filtering uses the joined session's `source`.
-
-```js
-const rows = summaries({ project: '%quiet-zero%', limit: 5 });
-return rows.map(s => ({
-  session: s.session_title,
-  source: s.source,
-  summary: s.content?.slice(0, 240),
-  timestamp: s.timestamp,
-}));
-```
-
-#### `overview(opts?)`
-
-Compact orientation map for choosing the next retrieval scope. It is not an
-evidence helper: it does not return snippets, full messages, or markdown file
-contents. Passing a string is treated as `project`, and passing a number is
-treated as the current-project session `limit`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.project` | `string` | Project slug or SQL `LIKE` pattern to use as the current project scope |
-| `opts.limit` | `number` | Max recent sessions in `current_project.sessions` (default 8) |
-| `opts.projectLimit` | `number` | Max rows in the global `projects` map (default 20) |
-| `opts.memoryLimit` | `number` | Max memory records in `current_project.memories` (default 100) |
-
-If `opts.project` is absent, `overview()` tries to identify the current project
-from `process.cwd()` against `sessions.project_path`, then from exact
-`messages.cwd` matches. It does not guess the current session.
-
-**Returns:**
-
-```js
-{
-  current: {
-    cwd,
-    project: {
-      project,
-      project_path,
-      source: 'opts' | 'cwd_project_path' | 'cwd_messages',
-      confidence: 'exact' | 'inferred' | 'unknown'
-    } | null
-  },
-  current_project: {
-    project,
-    project_path,
-    session_total,
-    sessions: [
-      { id, title, project, project_path, started_at, ended_at, git_branch, message_count, source }
-    ],
-    memory_total,
-    memories: [
-      { id, path, anchors, summary, session_id, project, created_at }
-    ]
-  } | null,
-  projects: [
-    {
-      project,
-      project_path,
-      session_count,
-      memory_count,
-      last_session_at,
-      last_memory_at,
-      recent_branches
-    }
-  ],
-  totals: {
-    projects,
-    sessions,
-    memories,
-    sources: [{ source: 'claude' | 'codex', session_count, last_session_at }]
-  }
-}
-```
-
-Use `current_project.sessions` as recent entry points only. `session_total` and
-`memory_total` tell you whether the returned arrays are complete enough for the
-task. Confirm facts with `memories()`, `search()`, other helpers, or `sql()`.
-
-```js
-const map = overview({ limit: 5 });
-return {
-  current: map.current,
-  sessions: map.current_project?.sessions.map(s => ({
-    id: s.id,
-    title: s.title,
-    ended_at: s.ended_at,
-  })),
-  memories: map.current_project?.memories.map(m => ({
-    id: m.id,
-    path: m.path,
-    anchors: m.anchors,
-    summary: m.summary,
-  })),
-};
-```
-
-#### `sessions(opts?)`
-
-Query sessions with filters. For backward compatibility, passing a number is treated as `limit`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.project` | `string` | SQL `LIKE` pattern over `sessions.project` |
-| `opts.after` | `string` | ISO 8601 lower bound on `started_at` |
-| `opts.before` | `string` | ISO 8601 upper bound on `started_at` |
-| `opts.limit` | `number` | Max results (default 50) |
-| `opts.branch` | `string` | Filter by git branch (exact match) |
-| `opts.source` | `string` | Optional provider filter: `"claude"` or `"codex"` |
-| `opts.sessionId` | `string` | Restrict to one session |
-| `opts.sessions` | `string[]` | Restrict to a set of session IDs |
-
-**Returns:** `Array<session_row>` ordered by `ended_at` descending.
-
-For exact slug/path membership, use raw SQL with `project = ?` or
-`project_path = ?`.
-
-```js
-const qz = sessions({ project: '%quiet-zero%', limit: 5 });
-return qz.map(s => ({ title: s.title, branch: s.git_branch, ended: s.ended_at }));
-```
-
-#### `memories(opts?)`
-
-Active registered markdown memory records. Like other list helpers, passing a
-string is treated as `sessionId`, and passing a number is treated as `limit`.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `opts.query` | `string` | English FTS recall query over `summary` and `path`; hyphens/underscores/punctuation are safely tokenized |
-| `opts.project` | `string` | SQL `LIKE` pattern over `memories.project` |
-| `opts.sessionId` | `string` | Restrict to one source session |
-| `opts.sessions` | `string[]` | Restrict to a set of source session IDs |
-| `opts.after` | `string` | ISO 8601 lower bound on `created_at` |
-| `opts.before` | `string` | ISO 8601 upper bound on `created_at` |
-| `opts.branch` | `string` | Filter by source session git branch (exact match) |
-| `opts.source` | `string` | Optional provider filter through the source session: `"claude"` or `"codex"` |
-| `opts.limit` | `number` | Max results (default 50) |
-
-**Returns:** `Array<memory_row & { rank?: number }>` with archived memories
-omitted. Without `query`, results are ordered by `created_at` descending. With
-`query`, results are ordered by FTS rank first, then `created_at` descending;
-lower rank sorts earlier.
-
-`query` uses safe FTS5 tokenization rather than raw `MATCH`, so punctuation-only
-queries return no rows instead of broadening into all memories. Translate
-non-English user requests into concise English query terms before calling
-`memories()`. Use it to avoid pulling all recent memories, then read the
-markdown file at `path` when a memory looks relevant. The runtime rejects
-obvious CJK text in memory queries.
-
-```js
-const prior = memories({
-  project: '%quiet-zero%',
-  query: 'memory layer markdown',
-  limit: 5,
-});
-return prior.map(m => ({
-  id: m.id,
-  path: m.path,
-  anchors: m.anchors,
-  session_id: m.session_id,
-  summary: m.summary?.slice(0, 240),
-}));
-```
-
-#### `remember(record)`
-
-Register a human-approved markdown memory file. This is a write helper, not a
-recall helper; use it only after the user has approved writing memory. It is
-available only in scripts run with `runtime.mjs --attune`.
-
-`--attune` exposes only `remember()` and `forget()`, not `search()`, `sql()`,
-`memories()`, or other retrieval helpers. If source IDs or memory IDs are
-unknown, find them first with a normal `--query` script.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `record.path` | `string` | Existing markdown file path. Relative paths resolve against the source session `project_path` when `session_id` is provided, otherwise against the runtime cwd |
-| `record.summary` | `string` | Required English retrieval summary: decision, reasoning, constraints |
-| `record.session_id` | `string` | Source session ID, if known |
-| `record.message_start` | `string` | First relevant source message UUID, if known |
-| `record.message_end` | `string` | Last relevant source message UUID, if known |
-| `record.project` | `string` | Project slug override. Defaults from `sessions.project` for `session_id` |
-| `record.anchors` | `array` or JSON `string` | Optional recall anchors stored as JSON text. Expected shape is an array of objects, such as `{ kind: 'file', path: 'src/index/builder.ts' }` |
-
-`remember()` validates that `path` exists and is a regular file, and rejects
-obvious CJK text in `summary`. It stores the normalized absolute path in
-`memories.path`. `anchors` is nullable; omit it or pass an empty array when the
-memory has no explicit file or object anchors.
-
-**Returns:** `{ id, path, project, anchors, created_at }`.
-
-```js
-return remember({
-  path: '.obelisk/memories/memory-layer-design.md',
-  session_id: 'source-session-id',
-  message_start: 'first-message-uuid',
-  message_end: 'last-message-uuid',
-  anchors: [{ kind: 'file', path: 'src/index/builder.ts' }],
-  summary: 'Decision: keep Obelisk as one user-facing entry that queries both memory and raw session evidence. Memory is prior notes, not final authority.',
-});
-```
-
-#### `forget(record)`
-
-Archive a human-approved memory record. Use it when the user says a memory is
-outdated, wrong, or should be forgotten. It is available only in scripts run
-with `runtime.mjs --attune`.
-
-`forget()` requires a precise memory ID. Do not pass a query string and let the
-helper choose. If the ID is unknown, first use a normal `--query` script with
-`memories()` to identify candidates. If exactly one candidate clearly matches
-the user's request, the request is approval to archive it. If multiple memories
-could match, ask the user which one to forget.
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `record.id` | `string` | Memory record ID to archive |
-| `record.reason` | `string` | Required reason for audit and future management views |
-
-`forget()` sets `deleted_at` and `deleted_reason`. It does not delete the
-markdown file at `path`. Active recall helpers omit archived memories.
-
-**Returns:** `{ id, deleted_at, deleted_reason }`, or the same fields plus
-`already_deleted: true` if the record had already been forgotten.
-
-```js
-return forget({
-  id: 'mem-20260610-example',
-  reason: 'Outdated by newer project guidance.',
-});
-```
-
-#### Memory Mutation Approval
-
-Agents may decide whether to use, ignore, or verify memory in a single answer
-without approval. Approval is required only for persistent memory mutations.
-When the user explicitly says a memory is wrong, outdated, should be forgotten,
-or should say something else, that utterance is approval to mutate the exact
-matching memory. If multiple memories could match, ask the user to choose.
-
-Updating is not an in-place edit. Archive the old record with `forget()`, then
-write and register a replacement markdown file with `remember()` under the same
-approval.
-
----
-
-## 3. Common Query Patterns
-
-### Find sessions about a topic
-
-```js
-const hits = search('reinforcement learning');
-const sessions = [...new Set(hits.map(h => h.session.id))];
-return hits.slice(0, 10).map(h => ({
-  session: h.session.title,
-  snippet: h.message.text?.slice(0, 150),
-}));
-```
-
-### Trace a decision chain
-
-```js
-// Find a message, then trace its full parent chain to understand how we got there
-const hits = search('"switched to PPO"');
-if (!hits.length) return 'not found';
-const chain = trace(hits[0].message.uuid);
-return chain.map(m => ({ role: m.role, text: m.text?.slice(0, 120), ts: m.timestamp }));
-```
-
-### Find all edits to a file across sessions
-
-```js
-const edits = fileHistory('/Users/tomiya/Code/quiet-zero/src/mcts.ts');
-return edits.map(e => ({
-  action: e.toolCall.name,
-  session: e.session.title,
-  time: e.timestamp,
-}));
-```
-
-### Find churned files (most-edited across all sessions)
-
-```js
-const rows = sql(`
-  SELECT file_path, COUNT(*) as edit_count, COUNT(DISTINCT session_id) as session_count
-  FROM tool_calls
-  WHERE file_path IS NOT NULL AND name IN ('Edit','Write')
-  GROUP BY file_path
-  ORDER BY edit_count DESC
-  LIMIT 20
-`);
-return rows;
-```
-
-### Token usage analysis
-
-```js
-const rows = sql(`
-  SELECT s.id, s.title,
-    SUM(m.input_tokens) as total_in,
-    SUM(m.output_tokens) as total_out,
-    SUM(m.input_tokens) + SUM(m.output_tokens) as total
-  FROM messages m JOIN sessions s ON s.id = m.session_id
-  WHERE m.input_tokens IS NOT NULL
-  GROUP BY s.id
-  ORDER BY total DESC
-  LIMIT 10
-`);
-return rows;
-```
-
-### Find workflow results
-
-```js
-const wfs = workflows();
-for (const wf of wfs.slice(0, 3)) {
-  const tree = workflowTree(wf.run_id);
-  wf.agent_details = tree?.agents.map(a => ({
-    type: a.agent_type, desc: a.description, msgs: a.messageCount,
-  }));
-}
-return wfs.slice(0, 3);
-```
-
-### Find error patterns
-
-```js
-const fails = failures();
-// Group by tool name
-const byTool = {};
-for (const f of fails) {
-  const name = f.toolCall?.name || 'unknown';
-  byTool[name] = (byTool[name] || 0) + 1;
-}
-return { total: fails.length, byTool };
-```
-
-### Find what tools were used most
-
-```js
-const rows = sql(`
-  SELECT name, COUNT(*) as call_count, COUNT(DISTINCT session_id) as session_count
-  FROM tool_calls
-  GROUP BY name
-  ORDER BY call_count DESC
-`);
-return rows;
-```
-
-### Find sessions by time range
-
-```js
-return sessions({ after: '2026-05-28T00:00:00Z', before: '2026-05-30T00:00:00Z' }).map(s => ({
-  title: s.title, project: s.project_path, started: s.started_at, messages: s.message_count,
-}));
-```
-
-### Cross-reference subagent findings
-
-```js
-// See what all subagents did in a session
-const subs = subagents('session-uuid');
-const details = subs.map(s => {
-  const msgs = sql('SELECT text, role FROM messages WHERE agent_id = ? ORDER BY timestamp', s.agent_id);
-  return { type: s.agent_type, desc: s.description, summary: msgs.slice(-1)[0]?.text?.slice(0, 300) };
-});
-return details;
-```
-
-### Find all sessions for a project
-
-```js
-return sessions({ project: '%quiet-zero%' }).map(s => ({
-  title: s.title, started: s.started_at, ended: s.ended_at,
-  messages: s.message_count, branch: s.git_branch,
-}));
-```
-
-### Reconstruct what happened in a session
-
-```js
-// Full timeline: messages + tool calls interleaved
-const msgs = thread('session-uuid');
-return msgs.map(m => {
-  const tools = sql('SELECT name, file_path FROM tool_calls WHERE message_uuid = ?', m.uuid);
-  return {
-    role: m.role, text: m.text?.slice(0, 100), ts: m.timestamp,
-    tools: tools.length ? tools.map(t => `${t.name}(${t.file_path || ''})`) : undefined,
-  };
-});
-```
-
----
-
-## 4. Tips
-
-### When to use `search()` vs `sql()`
-
-- **`search()`** -- when you are looking for messages containing specific words or phrases.
-  Uses FTS5 under the hood, returns ranked results with surrounding context.
-  Best for: "find where we discussed X", "when did I mention Y".
-- **`sql()`** -- when you need structured queries: aggregations, JOINs, GROUP BY, date ranges,
-  or anything involving tables other than `messages`.
-  Best for: "how many edits to this file", "total tokens this week", "most-used tools".
-
-### FTS5 Match Syntax
-
-The `text` argument to `search()` uses SQLite FTS5 query syntax:
-
-| Pattern | Meaning | Example |
-|---------|---------|---------|
-| `word` | Match token | `search('MCTS')` |
-| `word1 word2` | Implicit AND | `search('MCTS exploration')` |
-| `"exact phrase"` | Phrase match | `search('"Monte Carlo tree"')` |
-| `word*` | Prefix match | `search('optim*')` matches optimize, optimizer, optimization |
-| `word1 OR word2` | Either term | `search('PPO OR TRPO')` |
-| `word1 NOT word2` | Exclude | `search('MCTS NOT debug')` |
-
-Terms are case-insensitive. FTS5 tokenizes on whitespace and punctuation,
-so `camelCase` is indexed as two tokens (`camel`, `case`).
-
-### Performance
-
-- **FTS5 searches** are fast (milliseconds) regardless of database size.
-- **`sql()` with indexes** is fast. The indexed columns cover the common patterns:
-  `messages(session_id)`, `messages(agent_id)`, `messages(session_id, timestamp)`,
-  `tool_calls(session_id, name)`, `tool_calls(file_path)`.
-- **JOINs across large sessions** (1000+ messages) can be slow if you join
-  `messages` with `tool_calls` and `tool_results` without filtering by `session_id` first.
-  Always add a `session_id` filter when working within a session.
-- **Full table scans on `tool_results`** (used by `failures()` with no session ID)
-  can be slow on large databases because it pattern-matches every result row.
-  Pass a `sessionId` when possible.
-- **Text fields are truncated** to 10,000 characters at index time. If you need
-  the full content of a long message or tool result, read the source JSONL directly
-  (path available in `sessions.jsonl_path`).
-- The database uses **WAL mode** and **NORMAL synchronous**, so reads never block
-  writes during re-indexing.
+## Indexes
+
+Common indexed filters:
+
+- `messages(session_id)`
+- `messages(agent_id)`
+- `messages(session_id, timestamp)`
+- `sessions(source)`
+- `messages(source)`
+- `tool_calls(session_id, name)`
+- `tool_calls(file_path)`
+- `subagents(session_id)`
+- `workflows(session_id)`
+- `workflow_agents(run_id)`
+- `summaries(session_id)`
+- `memories(project)`
+- `memories(session_id)`
+- `memories(created_at)`
+
+## Raw SQL Pitfalls
+
+- Start with helpers. Use raw `sql()` for exact joins, grouping, aggregation, or
+  fields helpers do not expose.
+- `sql()` accepts only read-only `SELECT`/`WITH`; use `--attune` for memory
+  mutation.
+- `tool_calls` and `tool_results` do not have timestamps. Join `messages`.
+- For normal user/assistant evidence, filter `COALESCE(m.is_meta, 0) = 0`.
+- `summaries.source` is a summary kind, not provider provenance. Provider
+  source is on `sessions.source` and `messages.source`.
+- `sessions.project` is a slug/fuzzy scope; `sessions.project_path` is the
+  absolute path when known; `messages.cwd` is per-message working directory.
+- Memory rows are archived with `deleted_at`; do not recall archived memories.
+- Indexed text and JSON fields are truncated to 10k chars. Use `raw()` from
+  `references/api-reference.md` when a specific message needs the original JSONL
+  line.
+- Prefer SQL-side `COUNT`, `GROUP BY`, `MAX`, `ORDER BY`, and `LIMIT` over
+  returning large row sets and hand-counting in the final answer.
