@@ -1,7 +1,7 @@
 ---
 name: obelisk
 description: >
-  Search and query past Claude Code session history.
+  Search and query past Claude Code and Codex session history.
   Reactive: when the user asks "how did I fix X", "what did we do last time", "find the session where", "上次怎么修的", "之前的session", "历史记录".
   Proactive: when the user references past work you lack context for, when you're about to modify a file with complex edit history, when the user says "继续之前的" or "continue where we left off", or when understanding prior decisions would improve your current response.
   Memory: when the user says "记住这个", "remember this", "写入记忆", "save this conclusion", or when you determine a retrieval result contains a conclusion worth persisting.
@@ -13,10 +13,18 @@ allowed-tools:
 
 # obelisk
 
-Search and query Claude Code session history stored in `~/.claude/`.
+Search and query Claude Code and Codex session history stored in `~/.claude/`
+and `~/.codex/`.
 Obelisk indexes sessions, messages, tool calls, tool results, summaries,
 subagents, workflows, workflow agents, parent chains, and raw JSONL lines into
 SQLite + FTS5.
+
+Obelisk has two transcript sources. Treat both as ordinary sessions by default:
+Claude rows use `source='claude'`; Codex rows use `source='codex'` and IDs
+prefixed with `codex:`. Use `source` only when provenance matters or the user
+asks to scope to one provider. Codex subagent child threads are mapped to the
+same `subagents` table; Codex workflow rows may be absent because Codex does not
+emit Claude-style workflow metadata.
 
 Obelisk is a CodeAct memory layer: write a small JS query, run it locally, read
 the JSON, then answer. Do not turn history into a flat document or browse entire
@@ -123,8 +131,8 @@ messages.
 Returns:
 
 ```js
-[{ message: { uuid, text, content_type, is_meta, role, timestamp, model, cwd },
-   session: { id, title, project, started_at },
+[{ message: { uuid, text, content_type, is_meta, role, timestamp, model, cwd, source },
+   session: { id, title, project, started_at, source },
    rank,
    context }]
 ```
@@ -148,12 +156,15 @@ be treated as the user's request by default. `search()` and `thread()` omit meta
 messages unless `includeMeta: true` is passed; `context()` and `trace()` preserve
 the original chain and expose `is_meta` on rows.
 
-Opts: `{ limit, sessionId, project, after, before, cwd, includeMeta }`.
+Opts: `{ limit, sessionId, project, after, before, cwd, source, includeMeta }`.
 
 `project` is a SQL `LIKE` filter over `sessions.project`, not an exact project
 identity. Results are already ordered by FTS5 rank; lower rank sorts earlier.
 Prefer returned order over manually interpreting numeric rank unless you are
 deliberately using FTS5 semantics.
+
+`source` can be `'claude'`, `'codex'`, or omitted. Omitted means search all
+indexed sources.
 
 ### `context(uuid)`
 
@@ -191,13 +202,13 @@ not replace `sql()`, but they are the default first-pass surface. Use `sql()`
 when you need an exact aggregation or a join the helper does not expose.
 
 All list helpers accept a bounded `limit`. Many also accept:
-`{ project, after, before, sessionId, sessions, branch }`. Check the schema or a
-tiny sample before relying on less common filters.
+`{ project, after, before, sessionId, sessions, branch, source }`. Check the
+schema or a tiny sample before relying on less common filters.
 
-- `overview(opts?)` -- compact orientation map. Returns current cwd/project if knowable, global project counts, and current-project recent sessions plus memory records. It is a map, not evidence.
+- `overview(opts?)` -- compact orientation map. Returns current cwd/project if knowable, global project/source counts, and current-project recent sessions plus memory records. It is a map, not evidence.
 - `sessions(opts?)` -- session rows, newest first. `project` is a SQL `LIKE` pattern.
 - `recent(n?)` -- shorthand for recent sessions.
-- `summaries(opts?)` -- summary rows, newest first: `{ id, session_id, timestamp, source, content, session_title, project }`.
+- `summaries(opts?)` -- summary rows, newest first: `{ id, session_id, timestamp, source, content, session_title, project }`; here `source` is the summary kind, not the transcript provider.
 - `subagents(opts?)` -- subagent metadata plus `messageCount`.
 - `workflows(opts?)` -- workflow runs, newest first.
 - `workflowTree(runId)` -- workflow row plus parsed `result` and `agents`; may include bulky `script` and `result_json`, so project compact fields.
@@ -372,6 +383,6 @@ See `references/query-patterns.md` for longer recipes.
 ## Notes
 
 - First run builds the index. Later runs update incrementally.
-- DB location: `~/.claude/obelisk.sqlite`.
+- DB location: `~/.obelisk/obelisk.sqlite`; old `~/.claude/obelisk.sqlite` is copied forward if needed.
 - Query scripts run in a sandboxed VM with no filesystem or network access from inside the script.
 - Indexed text and stored tool inputs/results are truncated to 10k chars. Use `raw(uuid, { offset, limit })` for specific JSONL windows.

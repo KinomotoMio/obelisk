@@ -19,6 +19,10 @@ function buildWhere(opts, aliases) {
   if (opts.after) { clauses.push(`${aliases.timestamp} > ?`); params.push(opts.after); }
   if (opts.before) { clauses.push(`${aliases.timestamp} < ?`); params.push(opts.before); }
   if (opts.branch) { clauses.push(`${aliases.branch} = ?`); params.push(opts.branch); }
+  if (opts.source && opts.source !== 'all' && aliases.source) {
+    clauses.push(`COALESCE(${aliases.source}, 'claude') = ?`);
+    params.push(opts.source);
+  }
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
 
@@ -67,7 +71,7 @@ function createQueryApi(db) {
   };
 
   const search = (text, opts = {}) => {
-    const { limit = 20, sessionId, project, after, before, cwd, includeMeta = false } = opts;
+    const { limit = 20, sessionId, project, after, before, cwd, source, includeMeta = false } = opts;
     let where = 'WHERE mf.text MATCH ?';
     const p = [text];
     if (sessionId) { where += ' AND mf.session_id=?'; p.push(sessionId); }
@@ -75,22 +79,25 @@ function createQueryApi(db) {
     if (after)     { where += ' AND m.timestamp>?';    p.push(after); }
     if (before)    { where += ' AND m.timestamp<?';    p.push(before); }
     if (cwd)       { where += ' AND m.cwd LIKE ?';     p.push(cwd); }
+    if (source && source !== 'all') { where += " AND COALESCE(m.source, s.source, 'claude')=?"; p.push(source); }
     if (!includeMeta) where += ' AND COALESCE(m.is_meta,0)=0';
     p.push(limit);
     const rows = db.prepare(`
-      SELECT m.uuid,m.session_id,m.text,m.content_type,m.is_meta,m.role,m.timestamp,m.model,m.cwd,
+      SELECT m.uuid,m.session_id,m.text,m.content_type,m.is_meta,m.role,m.timestamp,m.model,m.cwd,m.source as m_source,
              s.id as s_id,s.title as s_title,s.project as s_project,s.started_at as s_started,
+             s.source as s_source,
              rank
       FROM messages_fts mf JOIN messages m ON m.uuid=mf.uuid LEFT JOIN sessions s ON s.id=m.session_id
       ${where} ORDER BY rank LIMIT ?`).all(...p);
     return rows.map(r => {
       const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
       const ctx = db.prepare(
-        `SELECT uuid,text,content_type,is_meta,role,timestamp,model FROM messages WHERE session_id=? AND uuid!=? ${metaClause} ORDER BY ABS(JULIANDAY(timestamp)-JULIANDAY(?)) LIMIT 6`
+        `SELECT uuid,text,content_type,is_meta,role,timestamp,model,COALESCE(source, 'claude') as source FROM messages WHERE session_id=? AND uuid!=? ${metaClause} ORDER BY ABS(JULIANDAY(timestamp)-JULIANDAY(?)) LIMIT 6`
       ).all(r.session_id, r.uuid, r.timestamp).sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+      const sourceValue = r.m_source || r.s_source || 'claude';
       return {
-        message: { uuid: r.uuid, text: r.text, content_type: r.content_type, is_meta: r.is_meta || 0, role: r.role, timestamp: r.timestamp, model: r.model, cwd: r.cwd },
-        session: { id: r.s_id, title: r.s_title, project: r.s_project, started_at: r.s_started },
+        message: { uuid: r.uuid, text: r.text, content_type: r.content_type, is_meta: r.is_meta || 0, role: r.role, timestamp: r.timestamp, model: r.model, cwd: r.cwd, source: sourceValue },
+        session: { id: r.s_id, title: r.s_title, project: r.s_project, started_at: r.s_started, source: r.s_source || sourceValue },
         rank: r.rank,
         context: ctx,
       };
@@ -129,8 +136,8 @@ function createQueryApi(db) {
   const subagents = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 100 } = opts;
-    const needsJoin = opts.project || opts.branch;
-    const { where, params } = buildWhere(opts, { sessionId: 'sa.session_id', project: 's.project', timestamp: 'sa.session_id', branch: 's.git_branch' });
+    const needsJoin = opts.project || opts.branch || opts.source;
+    const { where, params } = buildWhere(opts, { sessionId: 'sa.session_id', project: 's.project', timestamp: 'sa.session_id', branch: 's.git_branch', source: 's.source' });
     params.push(limit);
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=sa.session_id' : '';
     return db.prepare(`SELECT sa.* FROM subagents sa ${join} WHERE ${where} LIMIT ?`).all(...params).map(r => {
@@ -142,8 +149,8 @@ function createQueryApi(db) {
   const workflows = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 100 } = opts;
-    const needsJoin = opts.project || opts.branch;
-    const { where, params } = buildWhere(opts, { sessionId: 'w.session_id', project: 's.project', timestamp: 'w.timestamp', branch: 's.git_branch' });
+    const needsJoin = opts.project || opts.branch || opts.source;
+    const { where, params } = buildWhere(opts, { sessionId: 'w.session_id', project: 's.project', timestamp: 'w.timestamp', branch: 's.git_branch', source: 's.source' });
     params.push(limit);
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=w.session_id' : '';
     return db.prepare(`SELECT w.* FROM workflows w ${join} WHERE ${where} ORDER BY w.timestamp DESC LIMIT ?`).all(...params);
@@ -162,11 +169,12 @@ function createQueryApi(db) {
   };
 
   const fileHistory = (fp, opts = {}) => {
-    const { limit = 200, after, before } = opts;
+    const { limit = 200, after, before, source } = opts;
     let where = 'tc.file_path=?';
     const params = [fp];
     if (after)  { where += ' AND m.timestamp > ?'; params.push(after); }
     if (before) { where += ' AND m.timestamp < ?'; params.push(before); }
+    if (source && source !== 'all') { where += " AND COALESCE(s.source, 'claude') = ?"; params.push(source); }
     params.push(limit);
     return db.prepare(
       `SELECT tc.*,s.title as s_title,s.project as s_project,m.timestamp as ts FROM tool_calls tc LEFT JOIN sessions s ON s.id=tc.session_id LEFT JOIN messages m ON m.uuid=tc.message_uuid WHERE ${where} ORDER BY m.timestamp LIMIT ?`
@@ -180,8 +188,8 @@ function createQueryApi(db) {
   const failures = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 50 } = opts;
-    const needsJoin = opts.project || opts.branch;
-    const { where, params: filterParams } = buildWhere(opts, { sessionId: 'tr.session_id', project: 's.project', timestamp: 'rm.timestamp', branch: 's.git_branch' });
+    const needsJoin = opts.project || opts.branch || opts.source;
+    const { where, params: filterParams } = buildWhere(opts, { sessionId: 'tr.session_id', project: 's.project', timestamp: 'rm.timestamp', branch: 's.git_branch', source: 's.source' });
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=tr.session_id' : '';
     const errorCond = `(tr.is_error = 1 OR tr.content LIKE '${BASH_EXIT_PAT}')`;
     const allParams = [...filterParams, limit];
@@ -198,7 +206,7 @@ function createQueryApi(db) {
   const sessions = (optsOrN) => {
     const opts = normalizeOpts(optsOrN, 'sessionId');
     const { limit = 50 } = opts;
-    const { where, params } = buildWhere(opts, { sessionId: 's.id', project: 's.project', timestamp: 's.started_at', branch: 's.git_branch' });
+    const { where, params } = buildWhere(opts, { sessionId: 's.id', project: 's.project', timestamp: 's.started_at', branch: 's.git_branch', source: 's.source' });
     params.push(limit);
     return db.prepare(`SELECT * FROM sessions s WHERE ${where} ORDER BY ended_at DESC LIMIT ?`).all(...params);
   };
@@ -208,7 +216,7 @@ function createQueryApi(db) {
   const summaries = (optsOrSid) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 100 } = opts;
-    const { where, params } = buildWhere(opts, { sessionId: 'su.session_id', project: 's.project', timestamp: 'su.timestamp', branch: 's.git_branch' });
+    const { where, params } = buildWhere(opts, { sessionId: 'su.session_id', project: 's.project', timestamp: 'su.timestamp', branch: 's.git_branch', source: 's.source' });
     params.push(limit);
     return db.prepare(`SELECT su.*, s.title as session_title, s.project FROM summaries su LEFT JOIN sessions s ON s.id=su.session_id WHERE ${where} ORDER BY su.timestamp DESC LIMIT ?`).all(...params);
   };
@@ -330,7 +338,7 @@ function createQueryApi(db) {
     if (currentProject?.project) {
       const sessionTotal = db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE project = ?').get(currentProject.project)?.c || 0;
       const sessionsForProject = db.prepare(`
-        SELECT id, title, project, project_path, started_at, ended_at, git_branch, message_count
+        SELECT id, title, project, project_path, started_at, ended_at, git_branch, message_count, COALESCE(source, 'claude') AS source
         FROM sessions
         WHERE project = ?
         ORDER BY COALESCE(ended_at, started_at) DESC
@@ -364,6 +372,14 @@ function createQueryApi(db) {
     `).get()?.c || 0;
     const totalSessions = db.prepare('SELECT COUNT(*) AS c FROM sessions').get()?.c || 0;
     const totalMemories = db.prepare('SELECT COUNT(*) AS c FROM memories WHERE deleted_at IS NULL').get()?.c || 0;
+    const sources = db.prepare(`
+      SELECT COALESCE(source, 'claude') AS source,
+             COUNT(*) AS session_count,
+             MAX(COALESCE(ended_at, started_at)) AS last_session_at
+      FROM sessions
+      GROUP BY COALESCE(source, 'claude')
+      ORDER BY last_session_at DESC
+    `).all();
 
     return {
       current: {
@@ -376,13 +392,29 @@ function createQueryApi(db) {
         projects: totalProjects,
         sessions: totalSessions,
         memories: totalMemories,
+        sources,
       },
     };
   };
 
   const resolveJsonlPath = (messageUuid) => {
-    const msg = db.prepare('SELECT session_id, agent_id FROM messages WHERE uuid=?').get(messageUuid);
+    const msg = db.prepare('SELECT session_id, agent_id, source FROM messages WHERE uuid=?').get(messageUuid);
     if (!msg) return null;
+    if (msg.source === 'codex' || String(messageUuid).startsWith('codex:')) {
+      const match = /^codex:([^:]+):(\d+)$/.exec(String(messageUuid));
+      if (!match) return null;
+      const rawThreadId = match[1];
+      if (!msg.agent_id) {
+        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id);
+        if (ses?.jsonl_path) return ses.jsonl_path;
+      }
+      return db.prepare(`
+        SELECT jsonl_path FROM index_state
+        WHERE jsonl_path LIKE ? AND jsonl_path LIKE '%.jsonl'
+        ORDER BY length(jsonl_path) ASC
+        LIMIT 1
+      `).get(`%${rawThreadId}.jsonl`)?.jsonl_path || null;
+    }
     if (msg.agent_id) {
       const wa = db.prepare('SELECT agent_id, run_id, session_id FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
       if (wa) {
@@ -401,8 +433,24 @@ function createQueryApi(db) {
     return null;
   };
 
+  const findCodexRawLine = (jsonlPath, uuid) => {
+    const match = /^codex:[^:]+:(\d+)$/.exec(String(uuid));
+    if (!match || !jsonlPath || !fs.existsSync(jsonlPath)) return null;
+    const targetLine = Number(match[1]);
+    let lineNum = 0;
+    let found = null;
+    readLines(jsonlPath, (line) => {
+      lineNum++;
+      if (lineNum !== targetLine) return;
+      found = line;
+      return false;
+    });
+    return found;
+  };
+
   const findRawLine = (jsonlPath, uuid) => {
     if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
+    if (String(uuid).startsWith('codex:')) return findCodexRawLine(jsonlPath, uuid);
     let found = null;
     readLines(jsonlPath, (line) => {
       if (!line.includes(uuid)) return;
@@ -429,12 +477,13 @@ function createQueryApi(db) {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 50, query } = opts;
     assertEnglishMemoryText(query, 'memories() query');
-    const needsJoin = opts.branch;
+    const needsJoin = opts.branch || opts.source;
     const { where: baseWhere, params } = buildWhere(opts, {
       sessionId: 'mem.session_id',
       project: 'mem.project',
       timestamp: 'mem.created_at',
       branch: 's.git_branch',
+      source: 's.source',
     });
     let where = baseWhere + ' AND mem.deleted_at IS NULL';
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=mem.session_id' : '';
