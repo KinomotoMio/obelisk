@@ -28,16 +28,30 @@ function executeAttune(db, scriptContent) {
 
 function main() {
   const args = process.argv.slice(2);
+  // Uniform error envelope across all four verbs: a failure is reported as
+  // { error, stack } on stdout with exit code 1, never a raw crash on stderr.
+  const fail = (e) => {
+    process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n');
+    process.exitCode = 1;
+  };
   if (args[0] === '--build') {
-    buildIndex({ force: true });
-    process.stdout.write(JSON.stringify({ ok: true, db: DB_PATH }) + '\n');
+    try {
+      buildIndex({ force: true });
+      process.stdout.write(JSON.stringify({ ok: true, db: DB_PATH }) + '\n');
+    } catch (e) { fail(e); }
     return;
   }
   if (args[0] === '--search' && args[1]) {
-    buildIndex();
-    const db = openDb();
-    process.stdout.write(JSON.stringify(createQueryApi(db).search(args.slice(1).join(' ')), null, 2) + '\n');
-    db.close();
+    let db;
+    try {
+      buildIndex();
+      db = openDb();
+      process.stdout.write(JSON.stringify(createQueryApi(db).search(args.slice(1).join(' ')), null, 2) + '\n');
+    } catch (e) {
+      fail(e);
+    } finally {
+      if (db) db.close();
+    }
     return;
   }
   if (args[0] === '--query' && args[1]) {
