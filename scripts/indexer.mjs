@@ -808,4 +808,4 @@ function buildIndex({ force = false } = {}) {
   db.close();
 }
 
-export { buildIndex, indexJsonl, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };
+export { buildIndex, indexJsonl, discoverJsonlFiles, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };

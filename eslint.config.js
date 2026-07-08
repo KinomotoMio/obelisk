@@ -40,6 +40,9 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      // Provider adapters parse untyped external transcript JSON; `any` at those
+      // boundaries is deliberate, not a smell.
+      '@typescript-eslint/no-explicit-any': 'off',
     },
   },
 );

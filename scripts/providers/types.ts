@@ -60,6 +60,7 @@ export type IndexRecord =
   | SubagentRecord
   | WorkflowRecord
   | WorkflowAgentRecord
+  | MessageTurnDurationRecord
   | DeleteSessionRecord;
 
 export interface MessageRecord {
@@ -161,6 +162,15 @@ export interface WorkflowAgentRecord {
   duration_ms?: number | null;
   tokens?: number | null;
   tool_calls?: number | null;
+}
+
+// Update op (not a table): sets messages.turn_duration_ms for a message that was
+// (or will be) inserted by a separate line, possibly on a different run. Persist
+// applies it as a targeted UPDATE, so it never clobbers other message columns.
+export interface MessageTurnDurationRecord {
+  kind: 'message-turn-duration';
+  uuid: string;
+  turn_duration_ms: number;
 }
 
 // Retraction op (not a table). The adapter emits this when a previously-indexed
