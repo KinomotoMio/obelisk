@@ -1,12 +1,12 @@
 // Flat ESLint config for the Obelisk root (Core + skill runtime + tests).
-// Scope: the ESM sources under scripts/ and tests/. The Electron app has its own
-// package and toolchain and is intentionally excluded (see docs/adr/0003).
-// typescript-eslint is deferred to Phase 4, when the first .ts files land.
+// Scope: the ESM/TS sources under scripts/ and tests/. The Electron app has its
+// own package and toolchain and is intentionally excluded (see docs/adr/0003).
 
 import js from '@eslint/js';
 import globals from 'globals';
+import tseslint from 'typescript-eslint';
 
-export default [
+export default tseslint.config(
   {
     ignores: [
       'node_modules/**',
@@ -32,4 +32,14 @@ export default [
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
-];
+  {
+    files: ['**/*.ts'],
+    extends: [...tseslint.configs.recommended],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+);

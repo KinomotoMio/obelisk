@@ -1,32 +1,16 @@
 #!/usr/bin/env node
+// Skill transport: a thin CLI shell over Obelisk Core (scripts/core.ts).
+// It only parses args, reads script files, prints JSON, and owns the uniform
+// { error, stack } + exit-1 error envelope. All logic lives in Core.
+
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
 
-import { DB_PATH, openDb } from './db.mjs';
-import { buildIndex } from './indexer.mjs';
-import { createQueryApi, createAttuneApi } from './query.mjs';
+import { DB_PATH, buildIndex, searchText, executeQuery, executeAttune } from './core.ts';
 
-function executeScript(api, scriptContent) {
-  const sandbox = {
-    ...api, JSON, Math, Array, Object, Set, Map, Date, RegExp,
-    parseInt, parseFloat, String, Number, Boolean, Error, Promise, console, setTimeout,
-  };
-  const ctx = vm.createContext(sandbox);
-  return vm.runInNewContext(`(async()=>{${scriptContent}})()`, ctx, { timeout: 30000 });
-}
-
-function executeQuery(db, scriptContent) {
-  return executeScript(createQueryApi(db), scriptContent);
-}
-
-function executeAttune(db, scriptContent) {
-  return executeScript(createAttuneApi(db), scriptContent);
-}
-
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   // Uniform error envelope across all four verbs: a failure is reported as
   // { error, stack } on stdout with exit code 1, never a raw crash on stderr.
@@ -34,6 +18,8 @@ function main() {
     process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n');
     process.exitCode = 1;
   };
+  const emit = (r) => process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+
   if (args[0] === '--build') {
     try {
       buildIndex({ force: true });
@@ -42,34 +28,15 @@ function main() {
     return;
   }
   if (args[0] === '--search' && args[1]) {
-    let db;
-    try {
-      buildIndex();
-      db = openDb();
-      process.stdout.write(JSON.stringify(createQueryApi(db).search(args.slice(1).join(' ')), null, 2) + '\n');
-    } catch (e) {
-      fail(e);
-    } finally {
-      if (db) db.close();
-    }
+    try { emit(searchText(args.slice(1).join(' '))); } catch (e) { fail(e); }
     return;
   }
   if (args[0] === '--query' && args[1]) {
-    buildIndex();
-    const db = openDb();
-    const script = fs.readFileSync(path.resolve(args[1]), 'utf8');
-    executeQuery(db, script)
-      .then(r => { process.stdout.write(JSON.stringify(r, null, 2) + '\n'); db.close(); })
-      .catch(e => { process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n'); db.close(); process.exitCode = 1; });
+    try { emit(await executeQuery(fs.readFileSync(path.resolve(args[1]), 'utf8'))); } catch (e) { fail(e); }
     return;
   }
   if (args[0] === '--attune' && args[1]) {
-    buildIndex();
-    const db = openDb();
-    const script = fs.readFileSync(path.resolve(args[1]), 'utf8');
-    executeAttune(db, script)
-      .then(r => { process.stdout.write(JSON.stringify(r, null, 2) + '\n'); db.close(); })
-      .catch(e => { process.stdout.write(JSON.stringify({ error: e.message, stack: e.stack }) + '\n'); db.close(); process.exitCode = 1; });
+    try { emit(await executeAttune(fs.readFileSync(path.resolve(args[1]), 'utf8'))); } catch (e) { fail(e); }
     return;
   }
   process.stderr.write('Usage:\n  node runtime.mjs --build\n  node runtime.mjs --search "text"\n  node runtime.mjs --query <file.js>\n  node runtime.mjs --attune <file.js>\n');
