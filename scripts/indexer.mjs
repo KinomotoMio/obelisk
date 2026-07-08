@@ -1,4 +1,6 @@
 import { CLAUDE_DIR, CODEX_DIR, openDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path } from './db.mjs';
+import { persist } from './persist.ts';
+import { parse as claudeParse } from './providers/claude.ts';
 
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -782,7 +784,14 @@ function buildIndex({ force = false } = {}) {
       if (f.source === 'codex') {
         indexCodexJsonl(db, f);
       } else {
-        indexJsonl(db, f);
+        // Claude transcripts now go through the pure adapter + shared persist
+        // (docs/adr/0001). needsReindex keeps the "skip unchanged file" fast path;
+        // the cursor's line count drives incremental resume inside parse().
+        const { needed, skip } = needsReindex(db, f.path);
+        if (needed) {
+          const unit = { key: f.path, sessionId: f.sessionId, project: f.project, isSubagent: f.isSubagent, agentId: f.agentId };
+          persist(db, unit, claudeParse(unit, skip > 0 ? `0:${skip}` : null));
+        }
         indexSubagentMeta(db, f);
       }
       db.exec('COMMIT');
