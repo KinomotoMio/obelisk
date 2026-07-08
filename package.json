@@ -1,0 +1,20 @@
+{
+  "name": "obelisk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Explicit memory infrastructure for coding agents — a queryable SQLite evidence layer over local Claude Code and Codex history, plus human-approved durable memory.",
+  "license": "AGPL-3.0",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
+    "typescript": "^6.0.3"
+  }
+}
