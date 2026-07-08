@@ -18,6 +18,26 @@ const tooltip = reactive({ text: '', show: false, x: 0, y: 0 });
 
 // --- Constants ---
 const DAY_MS = 86400000;
+const NOISE_PROJECT_RE = /^(od-conn-test|[0-9a-f]{6,})/i;
+
+function isNoiseSession(s) {
+  if (!s.title) return true;
+  const label = formatProjectLabel(s.project) || '';
+  return NOISE_PROJECT_RE.test(label);
+}
+
+function splitNoise(arr) {
+  const normal = [], noise = [];
+  for (const s of arr || []) {
+    if (isNoiseSession(s)) noise.push(s); else normal.push(s);
+  }
+  return { normal, noise, total: normal.length + noise.length };
+}
+
+const expandedNoise = reactive({});
+function toggleNoise(key) {
+  expandedNoise[key] = !expandedNoise[key];
+}
 
 function localDateStr(d) {
   const y = d.getFullYear();
@@ -234,6 +254,26 @@ const daySessions = computed(() => {
     isEmpty: classified.length === 0
   };
 });
+
+const daySessionsSplit = computed(() => {
+  if (!daySessions.value) return null;
+  return {
+    ...daySessions.value,
+    newWorkspaces: splitNoise(daySessions.value.newWorkspaces),
+    newSessions: splitNoise(daySessions.value.newSessions),
+    continued: splitNoise(daySessions.value.continued),
+  };
+});
+
+const monthBlocksSplit = computed(() =>
+  monthBlocks.value.map((b, bi) => ({
+    ...b,
+    bi,
+    newWorkspaces: splitNoise(b.newWorkspaces),
+    newSessions: splitNoise(b.newSessions),
+    continued: splitNoise(b.continued),
+  }))
+);
 
 // --- Methods ---
 function switchTab(view) {
@@ -502,61 +542,112 @@ onMounted(async () => {
       </div>
 
       <!-- Day sessions panel (from heatmap click) -->
-      <div class="day-sessions" v-if="daySessions">
-        <div class="day-sessions-header">{{ daySessions.dateLabel }}<template v-if="daySessions.isEmpty"> — no sessions</template></div>
-        <div class="day-activity-timeline" v-if="!daySessions.isEmpty">
+      <div class="day-sessions" v-if="daySessionsSplit">
+        <div class="day-sessions-header">{{ daySessionsSplit.dateLabel }}<template v-if="daySessionsSplit.isEmpty"> — no sessions</template></div>
+        <div class="day-activity-timeline" v-if="!daySessionsSplit.isEmpty">
           <!-- New workspaces -->
-          <div class="activity-group" v-if="daySessions.newWorkspaces.length">
+          <div class="activity-group" v-if="daySessionsSplit.newWorkspaces.total">
             <div class="activity-group-header">
               <span class="activity-icon workspace">&#9733;</span>
-              <span class="activity-group-title">Created {{ daySessions.newWorkspaces.length }} new workspace{{ daySessions.newWorkspaces.length > 1 ? 's' : '' }}</span>
+              <span class="activity-group-title">Created {{ daySessionsSplit.newWorkspaces.total }} new workspace{{ daySessionsSplit.newWorkspaces.total > 1 ? 's' : '' }}</span>
             </div>
             <div class="activity-group-items">
               <button
-                v-for="s in daySessions.newWorkspaces"
+                v-for="s in daySessionsSplit.newWorkspaces.normal"
                 :key="s.id"
                 class="activity-item"
                 @click="goToSession(s.id)"
               >
                 <span class="activity-item-name"><span class="activity-item-project">{{ projectLabel(s.project) }}</span> {{ s.title || '(untitled)' }}</span>
-                <span class="activity-item-meta">{{ s.message_count || 0 }} msg</span>
+                <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ s.message_count || 0 }} msg</span>
               </button>
+              <template v-if="daySessionsSplit.newWorkspaces.noise.length">
+                <button class="noise-fold-row" :class="{ expanded: expandedNoise['day-workspaces'] }" @click="toggleNoise('day-workspaces')">
+                  <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+                  <span>{{ daySessionsSplit.newWorkspaces.noise.length }} hidden — likely test or throwaway runs</span>
+                </button>
+                <template v-if="expandedNoise['day-workspaces']">
+                  <button
+                    v-for="s in daySessionsSplit.newWorkspaces.noise"
+                    :key="s.id"
+                    class="activity-item noise"
+                    @click="goToSession(s.id)"
+                  >
+                    <span class="activity-item-name"><span class="activity-item-project">{{ projectLabel(s.project) }}</span> {{ s.title || '(untitled)' }}</span>
+                    <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ s.message_count || 0 }} msg</span>
+                  </button>
+                </template>
+              </template>
             </div>
           </div>
           <!-- New sessions -->
-          <div class="activity-group" v-if="daySessions.newSessions.length">
+          <div class="activity-group" v-if="daySessionsSplit.newSessions.total">
             <div class="activity-group-header">
               <span class="activity-icon new">+</span>
-              <span class="activity-group-title">Started {{ daySessions.newSessions.length }} session{{ daySessions.newSessions.length > 1 ? 's' : '' }} in {{ newSessionProjectCount(daySessions.newSessions) }} project{{ newSessionProjectCount(daySessions.newSessions) > 1 ? 's' : '' }}</span>
+              <span class="activity-group-title">Started {{ daySessionsSplit.newSessions.total }} session{{ daySessionsSplit.newSessions.total > 1 ? 's' : '' }} in {{ newSessionProjectCount([...daySessionsSplit.newSessions.normal, ...daySessionsSplit.newSessions.noise]) }} project{{ newSessionProjectCount([...daySessionsSplit.newSessions.normal, ...daySessionsSplit.newSessions.noise]) > 1 ? 's' : '' }}</span>
             </div>
             <div class="activity-group-items">
               <button
-                v-for="s in daySessions.newSessions"
+                v-for="s in daySessionsSplit.newSessions.normal"
                 :key="s.id"
                 class="activity-item"
                 @click="goToSession(s.id)"
               >
                 <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
-                <span class="activity-item-meta">{{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
               </button>
+              <template v-if="daySessionsSplit.newSessions.noise.length">
+                <button class="noise-fold-row" :class="{ expanded: expandedNoise['day-sessions'] }" @click="toggleNoise('day-sessions')">
+                  <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+                  <span>{{ daySessionsSplit.newSessions.noise.length }} hidden — likely test or throwaway runs</span>
+                </button>
+                <template v-if="expandedNoise['day-sessions']">
+                  <button
+                    v-for="s in daySessionsSplit.newSessions.noise"
+                    :key="s.id"
+                    class="activity-item noise"
+                    @click="goToSession(s.id)"
+                  >
+                    <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
+                    <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                  </button>
+                </template>
+              </template>
             </div>
           </div>
           <!-- Continued sessions -->
-          <div class="activity-group continued" v-if="daySessions.continued.length">
+          <div class="activity-group continued" v-if="daySessionsSplit.continued.total">
             <div class="activity-group-header">
               <span class="activity-icon continued">&#8627;</span>
-              <span class="activity-group-title">Continued {{ daySessions.continued.length }} session{{ daySessions.continued.length > 1 ? 's' : '' }}</span>
+              <span class="activity-group-title">Continued {{ daySessionsSplit.continued.total }} session{{ daySessionsSplit.continued.total > 1 ? 's' : '' }}</span>
             </div>
             <div class="activity-group-items">
               <button
-                v-for="s in daySessions.continued"
+                v-for="s in daySessionsSplit.continued.normal"
                 :key="s.id"
                 class="activity-item"
                 @click="goToSession(s.id)"
               >
                 <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
-                <span class="activity-item-meta">{{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
               </button>
+              <template v-if="daySessionsSplit.continued.noise.length">
+                <button class="noise-fold-row" :class="{ expanded: expandedNoise['day-continued'] }" @click="toggleNoise('day-continued')">
+                  <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+                  <span>{{ daySessionsSplit.continued.noise.length }} hidden — likely test or throwaway runs</span>
+                </button>
+                <template v-if="expandedNoise['day-continued']">
+                  <button
+                    v-for="s in daySessionsSplit.continued.noise"
+                    :key="s.id"
+                    class="activity-item noise"
+                    @click="goToSession(s.id)"
+                  >
+                    <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
+                    <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                  </button>
+                </template>
+              </template>
             </div>
           </div>
         </div>
@@ -564,58 +655,109 @@ onMounted(async () => {
 
       <!-- Monthly activity blocks -->
       <div class="day-sessions" v-if="!selectedDayKey">
-        <template v-for="(block, bi) in monthBlocks" :key="bi">
+        <template v-for="(block, bi) in monthBlocksSplit" :key="bi">
           <div class="day-sessions-header">{{ block.header }}</div>
           <div class="day-activity-timeline" v-if="!block.isEmpty">
-            <div class="activity-group" v-if="block.newWorkspaces.length">
+            <div class="activity-group" v-if="block.newWorkspaces.total">
               <div class="activity-group-header">
                 <span class="activity-icon workspace">&#9733;</span>
-                <span class="activity-group-title">Created {{ block.newWorkspaces.length }} new workspace{{ block.newWorkspaces.length > 1 ? 's' : '' }}</span>
+                <span class="activity-group-title">Created {{ block.newWorkspaces.total }} new workspace{{ block.newWorkspaces.total > 1 ? 's' : '' }}</span>
               </div>
               <div class="activity-group-items">
                 <button
-                  v-for="s in block.newWorkspaces"
+                  v-for="s in block.newWorkspaces.normal"
                   :key="s.id"
                   class="activity-item"
                   @click="goToSession(s.id)"
                 >
                   <span class="activity-item-name"><span class="activity-item-project">{{ projectLabel(s.project) }}</span> {{ s.title || '(untitled)' }}</span>
-                  <span class="activity-item-meta">{{ s.message_count || 0 }} msg</span>
+                  <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ s.message_count || 0 }} msg</span>
                 </button>
+                <template v-if="block.newWorkspaces.noise.length">
+                  <button class="noise-fold-row" :class="{ expanded: expandedNoise[`m${bi}-workspaces`] }" @click="toggleNoise(`m${bi}-workspaces`)">
+                    <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+                    <span>{{ block.newWorkspaces.noise.length }} hidden — likely test or throwaway runs</span>
+                  </button>
+                  <template v-if="expandedNoise[`m${bi}-workspaces`]">
+                    <button
+                      v-for="s in block.newWorkspaces.noise"
+                      :key="s.id"
+                      class="activity-item noise"
+                      @click="goToSession(s.id)"
+                    >
+                      <span class="activity-item-name"><span class="activity-item-project">{{ projectLabel(s.project) }}</span> {{ s.title || '(untitled)' }}</span>
+                      <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ s.message_count || 0 }} msg</span>
+                    </button>
+                  </template>
+                </template>
               </div>
             </div>
-            <div class="activity-group" v-if="block.newSessions.length">
+            <div class="activity-group" v-if="block.newSessions.total">
               <div class="activity-group-header">
                 <span class="activity-icon new">+</span>
-                <span class="activity-group-title">Started {{ block.newSessions.length }} session{{ block.newSessions.length > 1 ? 's' : '' }} in {{ newSessionProjectCount(block.newSessions) }} project{{ newSessionProjectCount(block.newSessions) > 1 ? 's' : '' }}</span>
+                <span class="activity-group-title">Started {{ block.newSessions.total }} session{{ block.newSessions.total > 1 ? 's' : '' }} in {{ newSessionProjectCount([...block.newSessions.normal, ...block.newSessions.noise]) }} project{{ newSessionProjectCount([...block.newSessions.normal, ...block.newSessions.noise]) > 1 ? 's' : '' }}</span>
               </div>
               <div class="activity-group-items">
                 <button
-                  v-for="s in block.newSessions"
+                  v-for="s in block.newSessions.normal"
                   :key="s.id"
                   class="activity-item"
                   @click="goToSession(s.id)"
                 >
                   <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
-                  <span class="activity-item-meta">{{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                  <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
                 </button>
+                <template v-if="block.newSessions.noise.length">
+                  <button class="noise-fold-row" :class="{ expanded: expandedNoise[`m${bi}-sessions`] }" @click="toggleNoise(`m${bi}-sessions`)">
+                    <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+                    <span>{{ block.newSessions.noise.length }} hidden — likely test or throwaway runs</span>
+                  </button>
+                  <template v-if="expandedNoise[`m${bi}-sessions`]">
+                    <button
+                      v-for="s in block.newSessions.noise"
+                      :key="s.id"
+                      class="activity-item noise"
+                      @click="goToSession(s.id)"
+                    >
+                      <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
+                      <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                    </button>
+                  </template>
+                </template>
               </div>
             </div>
-            <div class="activity-group continued" v-if="block.continued.length">
+            <div class="activity-group continued" v-if="block.continued.total">
               <div class="activity-group-header">
                 <span class="activity-icon continued">&#8627;</span>
-                <span class="activity-group-title">Continued {{ block.continued.length }} session{{ block.continued.length > 1 ? 's' : '' }}</span>
+                <span class="activity-group-title">Continued {{ block.continued.total }} session{{ block.continued.total > 1 ? 's' : '' }}</span>
               </div>
               <div class="activity-group-items">
                 <button
-                  v-for="s in block.continued"
+                  v-for="s in block.continued.normal"
                   :key="s.id"
                   class="activity-item"
                   @click="goToSession(s.id)"
                 >
                   <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
-                  <span class="activity-item-meta">{{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                  <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
                 </button>
+                <template v-if="block.continued.noise.length">
+                  <button class="noise-fold-row" :class="{ expanded: expandedNoise[`m${bi}-continued`] }" @click="toggleNoise(`m${bi}-continued`)">
+                    <svg class="chev" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 2.5l3 3.5-3 3.5"/></svg>
+                    <span>{{ block.continued.noise.length }} hidden — likely test or throwaway runs</span>
+                  </button>
+                  <template v-if="expandedNoise[`m${bi}-continued`]">
+                    <button
+                      v-for="s in block.continued.noise"
+                      :key="s.id"
+                      class="activity-item noise"
+                      @click="goToSession(s.id)"
+                    >
+                      <span class="activity-item-name">{{ s.title || '(untitled)' }}</span>
+                      <span class="activity-item-meta"><span class="src-tag" :class="s.source || 'claude'" :title="(s.source === 'codex' ? 'via Codex' : 'via Claude Code')"><span class="src-dot"></span>{{ s.source === 'codex' ? 'Codex' : 'Claude' }}</span> · {{ projectLabel(s.project) }} · {{ s.message_count || 0 }} msg</span>
+                    </button>
+                  </template>
+                </template>
               </div>
             </div>
           </div>
@@ -763,9 +905,40 @@ onMounted(async () => {
 .activity-item-name { font-size: 13px; color: var(--accent-2); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-item-name .activity-item-project { color: var(--muted); font-weight: 400; margin-right: 4px; }
 .activity-item:hover .activity-item-name { text-decoration: underline; text-underline-offset: 2px; }
-.activity-item-meta { font-size: 11px; color: var(--muted); font-family: var(--font-mono); flex-shrink: 0; }
+.activity-item-meta { font-size: 11px; color: var(--muted); font-family: var(--font-mono); flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
+.activity-item-meta .src-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.activity-item-meta .src-tag .src-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.activity-item-meta .src-tag.claude .src-dot { background: #d97757; box-shadow: 0 0 4px rgba(217,119,87,0.5); }
+.activity-item-meta .src-tag.codex .src-dot { background: #10a37f; box-shadow: 0 0 4px rgba(16,163,127,0.5); }
+.activity-item-meta .src-tag.claude { color: #d97757; }
+.activity-item-meta .src-tag.codex { color: #10a37f; }
 
 .activity-group.continued .activity-item-name { color: var(--fg-2); }
+
+.noise-fold-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; margin-top: 2px;
+  border-radius: 5px; background: transparent; border: 0;
+  cursor: pointer; transition: background 0.08s;
+  text-align: left; width: 100%; font: inherit;
+  color: var(--muted); font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+.noise-fold-row:hover { background: var(--surface-strong); color: var(--fg-2); }
+.noise-fold-row .chev {
+  width: 9px; height: 9px; color: var(--muted-2);
+  transition: transform 0.15s; flex-shrink: 0;
+}
+.noise-fold-row.expanded .chev { transform: rotate(90deg); color: var(--accent-2); }
+
+.activity-item.noise .activity-item-name {
+  color: var(--fg-2); font-style: italic; font-weight: 400;
+}
+.activity-item.noise .activity-item-project { color: var(--muted); }
 
 .show-more-btn {
   display: block; width: 100%; margin-top: 20px;

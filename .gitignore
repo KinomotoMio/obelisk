@@ -1,9 +1,8 @@
 .DS_Store
 plans/
 .skillopt-backups
-tests/
 node_modules/
 dist-renderer/
 release/
-docs/
+.dev.docs
 .claude/

@@ -1,0 +1,261 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const require = createRequire(import.meta.url);
+const { createIndexerService } = require('../app/indexer-service.js');
+
+function manualTimers() {
+  const timers = new Set();
+  return {
+    setTimeout(fn) {
+      timers.add(fn);
+      return fn;
+    },
+    clearTimeout(fn) {
+      timers.delete(fn);
+    },
+    flush() {
+      const pending = [...timers];
+      timers.clear();
+      for (const fn of pending) fn();
+    },
+  };
+}
+
+test('indexer service debounces repeated build requests', async () => {
+  const timers = manualTimers();
+  const calls = [];
+  const service = createIndexerService({
+    buildIndex: async ({ reason }) => calls.push(reason),
+    watchProjects: () => null,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+  });
+
+  service.scheduleBuild('first');
+  service.scheduleBuild('second');
+  service.scheduleBuild('third');
+  timers.flush();
+  await service.idle();
+
+  assert.deepEqual(calls, ['third']);
+});
+
+test('indexer service runs one pending build after an in-flight build finishes', async () => {
+  const timers = manualTimers();
+  const calls = [];
+  let finishFirst;
+  const service = createIndexerService({
+    buildIndex: async ({ reason }) => {
+      calls.push(reason);
+      if (reason === 'first') await new Promise(resolve => { finishFirst = resolve; });
+    },
+    watchProjects: () => null,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+  });
+
+  const first = service.runBuildNow('first');
+  service.scheduleBuild('second');
+  timers.flush();
+
+  assert.deepEqual(calls, ['first']);
+  finishFirst();
+  await first;
+  await service.idle();
+
+  assert.deepEqual(calls, ['first', 'pending']);
+});
+
+test('indexer service waits for a stability window before building', async () => {
+  const timers = manualTimers();
+  const calls = [];
+  const service = createIndexerService({
+    buildIndex: async ({ reason }) => calls.push(reason),
+    watchProjects: () => null,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 500,
+  });
+
+  service.scheduleBuild('jsonl-change');
+  timers.flush();
+  await service.idle();
+  assert.deepEqual(calls, []);
+
+  timers.flush();
+  await service.idle();
+  assert.deepEqual(calls, ['jsonl-change']);
+});
+
+test('indexer service retries watcher setup when the projects directory is missing', () => {
+  const timers = manualTimers();
+  let attempts = 0;
+  const service = createIndexerService({
+    buildIndex: async () => {},
+    watchProjects: () => {
+      attempts++;
+      return attempts === 1 ? null : { close() {} };
+    },
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+  });
+
+  service.start({ buildOnStart: false });
+  assert.equal(attempts, 1);
+
+  timers.flush();
+  assert.equal(attempts, 2);
+
+  timers.flush();
+  assert.equal(attempts, 2);
+});
+
+test('indexer service watches Claude JSON files through chokidar', async () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), 'obelisk-chokidar-projects-'));
+  const timers = manualTimers();
+  const calls = [];
+  let watchArgs = null;
+  const handlers = {};
+  const watcher = {
+    on(event, handler) {
+      handlers[event] = handler;
+      return watcher;
+    },
+    closeCalled: false,
+    close() {
+      watcher.closeCalled = true;
+    },
+  };
+  const chokidar = {
+    watch(paths, options) {
+      watchArgs = { paths, options };
+      return watcher;
+    },
+  };
+
+  const service = createIndexerService({
+    projectsDir,
+    buildIndex: async ({ reason }) => calls.push(reason),
+    chokidar,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+    debounceMs: 0,
+  });
+
+  try {
+    service.start({ buildOnStart: false });
+    assert.equal(watchArgs.paths, projectsDir);
+    assert.equal(watchArgs.options.cwd, projectsDir);
+    assert.equal(watchArgs.options.ignoreInitial, true);
+    assert.ok(watchArgs.options.awaitWriteFinish);
+
+    handlers.change('session.jsonl');
+    timers.flush();
+    await service.idle();
+    assert.deepEqual(calls, ['watch']);
+  } finally {
+    service.stop();
+  }
+
+  assert.equal(watcher.closeCalled, true);
+});
+
+test('indexer service passes changed JSONL paths to the build worker', async () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), 'obelisk-changed-paths-'));
+  const timers = manualTimers();
+  const calls = [];
+  const handlers = {};
+  const watcher = {
+    on(event, handler) {
+      handlers[event] = handler;
+      return watcher;
+    },
+    close() {},
+  };
+  const chokidar = {
+    watch() {
+      return watcher;
+    },
+  };
+
+  const service = createIndexerService({
+    projectsDir,
+    buildIndex: async (args) => calls.push(args),
+    chokidar,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+    debounceMs: 0,
+  });
+
+  service.start({ buildOnStart: false });
+  handlers.change('project-a/session-1.jsonl');
+  handlers.add('project-a/session-2.json');
+  timers.flush();
+  await service.idle();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].reason, 'watch');
+  assert.deepEqual(calls[0].changedPaths, [
+    'project-a/session-1.jsonl',
+    'project-a/session-2.json',
+  ]);
+});
+
+test('indexer service watches Claude projects and Codex sessions for app-side indexing', async () => {
+  const claudeProjectsDir = mkdtempSync(join(tmpdir(), 'obelisk-watch-claude-'));
+  const codexSessionsDir = mkdtempSync(join(tmpdir(), 'obelisk-watch-codex-sessions-'));
+  const timers = manualTimers();
+  const calls = [];
+  const watchers = [];
+  const watchArgs = [];
+  const chokidar = {
+    watch(paths, options) {
+      const handlers = {};
+      const watcher = {
+        handlers,
+        on(event, handler) {
+          handlers[event] = handler;
+          return watcher;
+        },
+        close() {},
+      };
+      watchers.push(watcher);
+      watchArgs.push({ paths, options });
+      return watcher;
+    },
+  };
+
+  const service = createIndexerService({
+    projectsDir: claudeProjectsDir,
+    watchDirs: [claudeProjectsDir, codexSessionsDir],
+    buildIndex: async (args) => calls.push(args),
+    chokidar,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+    debounceMs: 0,
+  });
+
+  service.start({ buildOnStart: false });
+  assert.deepEqual(watchArgs.map(arg => arg.paths), [claudeProjectsDir, codexSessionsDir]);
+  assert.deepEqual(watchArgs.map(arg => arg.options.cwd), [claudeProjectsDir, codexSessionsDir]);
+
+  watchers[1].handlers.change('2026/06/15/rollout-2026-06-15T00-00-00-codex.jsonl');
+  timers.flush();
+  await service.idle();
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].changedPaths, [
+    '2026/06/15/rollout-2026-06-15T00-00-00-codex.jsonl',
+  ]);
+});
