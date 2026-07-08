@@ -73,22 +73,32 @@ function createQueryApi(db) {
   const search = (text, opts = {}) => {
     const { limit = 20, sessionId, project, after, before, cwd, source, includeMeta = false } = opts;
     let where = 'WHERE mf.text MATCH ?';
-    const p = [text];
-    if (sessionId) { where += ' AND mf.session_id=?'; p.push(sessionId); }
-    if (project)   { where += ' AND s.project LIKE ?'; p.push(project); }
-    if (after)     { where += ' AND m.timestamp>?';    p.push(after); }
-    if (before)    { where += ' AND m.timestamp<?';    p.push(before); }
-    if (cwd)       { where += ' AND m.cwd LIKE ?';     p.push(cwd); }
-    if (source && source !== 'all') { where += " AND COALESCE(m.source, s.source, 'claude')=?"; p.push(source); }
+    const filterParams = [];
+    if (sessionId) { where += ' AND mf.session_id=?'; filterParams.push(sessionId); }
+    if (project)   { where += ' AND s.project LIKE ?'; filterParams.push(project); }
+    if (after)     { where += ' AND m.timestamp>?';    filterParams.push(after); }
+    if (before)    { where += ' AND m.timestamp<?';    filterParams.push(before); }
+    if (cwd)       { where += ' AND m.cwd LIKE ?';     filterParams.push(cwd); }
+    if (source && source !== 'all') { where += " AND COALESCE(m.source, s.source, 'claude')=?"; filterParams.push(source); }
     if (!includeMeta) where += ' AND COALESCE(m.is_meta,0)=0';
-    p.push(limit);
-    const rows = db.prepare(`
+    const stmt = db.prepare(`
       SELECT m.uuid,m.session_id,m.text,m.content_type,m.is_meta,m.role,m.timestamp,m.model,m.cwd,m.source as m_source,
              s.id as s_id,s.title as s_title,s.project as s_project,s.started_at as s_started,
              s.source as s_source,
              rank
       FROM messages_fts mf JOIN messages m ON m.uuid=mf.uuid LEFT JOIN sessions s ON s.id=m.session_id
-      ${where} ORDER BY rank LIMIT ?`).all(...p);
+      ${where} ORDER BY rank LIMIT ?`);
+    const runMatch = (matchText) => stmt.all(matchText, ...filterParams, limit);
+    // Honor raw FTS5 syntax when the query is valid, but never crash on ordinary
+    // input (hyphens, punctuation) that FTS5 would parse as operators: fall back
+    // to safe per-token quoting, the same tokenization memories() uses.
+    let rows;
+    try {
+      rows = runMatch(text);
+    } catch {
+      const safe = buildSafeFtsQuery(text);
+      rows = safe ? runMatch(safe) : [];
+    }
     return rows.map(r => {
       const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
       const ctx = db.prepare(

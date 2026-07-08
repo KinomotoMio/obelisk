@@ -65,6 +65,19 @@ function searchDb() {
   return db;
 }
 
+test('search falls back to safe tokenization for FTS-special input instead of throwing', () => {
+  const db = searchDb();
+  const api = createQueryApi(db);
+
+  // 'needle-reply' is FTS5 operator syntax (a hyphen). Raw MATCH would throw;
+  // search() must fall back to safe per-token quoting ("needle" "reply") and
+  // still find the message that contains both tokens.
+  const rows = api.search('needle-reply', { limit: 5 });
+
+  assert.deepEqual(rows.map(r => r.message.uuid), ['msg-text']);
+  db.close();
+});
+
 test('search exposes content_type on hits and temporal context', () => {
   const db = searchDb();
   const api = createQueryApi(db);

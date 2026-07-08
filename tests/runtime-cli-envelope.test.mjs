@@ -108,16 +108,14 @@ test('unknown verb prints usage to stderr and exits non-zero', () => {
   assert.match(result.stderr, /--build/);
 });
 
-test('--search shares the { error, stack } envelope instead of crashing to stderr', () => {
-  // A hyphenated term is FTS5 syntax and makes search() throw. The uniform
-  // error envelope (see docs/adr/0002) requires this surface as { error, stack }
-  // on stdout with exit 1 — the same shape as --query/--attune — not a raw crash.
+test('--search tolerates FTS-special input via safe tokenization', () => {
+  // A hyphenated term is FTS5 operator syntax. search() falls back to safe
+  // per-token quoting instead of crashing, so the CLI returns an array, not an
+  // error. (The uniform { error, stack } envelope is exercised via --query/--attune.)
   const home = tempHome();
   const result = runRuntime(['--search', 'foo-bar'], { home });
 
-  assert.equal(result.status, 1);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(typeof payload.error, 'string');
-  assert.equal(typeof payload.stack, 'string');
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.ok(Array.isArray(JSON.parse(result.stdout)), 'search must return a JSON array');
 });
 

@@ -76,6 +76,11 @@ Use `context(uuid)` or `trace(uuid)` for causal/parent-chain expansion. Lower
 FTS rank sorts earlier; prefer returned order unless deliberately inspecting
 FTS ranking.
 
+Valid FTS5 syntax in `text` is honored. Input that FTS5 would reject as
+malformed (for example a hyphenated term like `foo-bar`) does not error: it
+falls back to safe per-token quoting — the same tokenization `memories()` uses —
+so ordinary text never crashes the query.
+
 #### `context(uuid)`
 
 Full indexed context around one message.
@@ -368,7 +373,11 @@ well as `Edit`/`Write`.
 Returns:
 
 ```js
-Array<{ toolCall, session, timestamp }>
+Array<{
+  toolCall: { id, message_uuid, name, input_json },
+  session: { id, title, project },
+  timestamp
+}>
 ```
 
 Use raw SQL with `ORDER BY m.timestamp DESC` when you need newest-first file
