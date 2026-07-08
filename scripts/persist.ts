@@ -33,10 +33,19 @@ function statements(db: any) {
     tr: db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
     sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
     ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)'),
+    sub: db.prepare(`
+      INSERT INTO subagents (agent_id,session_id,parent_tool_use_id,agent_type,description,duration_ms,total_tokens)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        session_id=excluded.session_id,
+        parent_tool_use_id=COALESCE(excluded.parent_tool_use_id, subagents.parent_tool_use_id),
+        agent_type=COALESCE(excluded.agent_type, subagents.agent_type),
+        description=COALESCE(excluded.description, subagents.description),
+        duration_ms=COALESCE(excluded.duration_ms, subagents.duration_ms),
+        total_tokens=COALESCE(excluded.total_tokens, subagents.total_tokens)`),
     turn: db.prepare('UPDATE messages SET turn_duration_ms=? WHERE uuid=?'),
     idx: db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)'),
     getSession: db.prepare('SELECT * FROM sessions WHERE id=?'),
-    getState: db.prepare('SELECT lines_processed FROM index_state WHERE jsonl_path=?'),
   };
 }
 
@@ -54,9 +63,6 @@ function deleteSession(db: any, sessionId: string) {
 // (also written to index_state). `db` is any SQLite handle sharing prepare/run.
 export function persist(db: any, unit: IndexUnit, gen: Generator<IndexRecord, Cursor>): Cursor {
   const st = statements(db);
-  // A prior lines_processed>0 means this parse resumed, so message_count must
-  // accumulate onto the existing row rather than reset (matches indexJsonl).
-  const resuming = ((st.getState.get(unit.key)?.lines_processed as number) || 0) > 0;
 
   const write = (r: IndexRecord) => {
     switch (r.kind) {
@@ -72,11 +78,17 @@ export function persist(db: any, unit: IndexUnit, gen: Generator<IndexRecord, Cu
       case 'summary':
         st.sum.run(r.id, r.session_id, r.timestamp, r.source, r.content);
         break;
+      case 'subagent':
+        st.sub.run(r.agent_id, r.session_id, r.parent_tool_use_id ?? null, r.agent_type ?? null, r.description ?? null, r.duration_ms ?? null, r.total_tokens ?? null);
+        break;
       case 'message-turn-duration':
         st.turn.run(r.turn_duration_ms, r.uuid);
         break;
       case 'session': {
         const prev = st.getSession.get(r.id);
+        // 'delta' accumulates onto the existing count (line-incremental adapters);
+        // 'total' replaces it (full-reparse adapters).
+        const message_count = r.countMode === 'delta' ? (prev?.message_count || 0) + r.message_count : r.message_count;
         st.ses.run(
           r.id,
           r.title ?? prev?.title ?? null,
@@ -86,7 +98,7 @@ export function persist(db: any, unit: IndexUnit, gen: Generator<IndexRecord, Cu
           maxStr(prev?.ended_at ?? null, r.ended_at),
           r.git_branch ?? prev?.git_branch ?? null,
           r.version ?? prev?.version ?? null,
-          resuming ? (prev?.message_count || 0) + r.message_count : r.message_count,
+          message_count,
           r.jsonl_path,
           r.source,
         );

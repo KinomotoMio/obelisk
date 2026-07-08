@@ -1,6 +1,7 @@
-import { CLAUDE_DIR, CODEX_DIR, openDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path } from './db.mjs';
+import { CLAUDE_DIR, CODEX_DIR, openDb, rebuildMemoryFts, isDir, readLines, fs, path } from './db.mjs';
 import { persist } from './persist.ts';
 import { parse as claudeParse } from './providers/claude.ts';
+import { parse as codexParse } from './providers/codex.ts';
 
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -103,116 +104,6 @@ function needsReindex(db, fp) {
   return mt > row.mtime ? { needed: true, skip: row.lines_processed } : { needed: false, skip: 0 };
 }
 
-function indexJsonl(db, fi) {
-  const { needed, skip } = needsReindex(db, fi.path);
-  if (!needed) return;
-  const mt = fs.statSync(fi.path).mtimeMs;
-
-  const ins = {
-    ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)'),
-    msg: db.prepare(`
-      INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(uuid) DO UPDATE SET
-        session_id=excluded.session_id,
-        type=excluded.type,
-        parent_uuid=excluded.parent_uuid,
-        timestamp=excluded.timestamp,
-        role=excluded.role,
-        text=excluded.text,
-        content_type=excluded.content_type,
-        is_meta=excluded.is_meta,
-        model=excluded.model,
-        is_sidechain=excluded.is_sidechain,
-        agent_id=excluded.agent_id,
-        input_tokens=excluded.input_tokens,
-        output_tokens=excluded.output_tokens,
-        cwd=excluded.cwd,
-        skill=excluded.skill,
-        source=excluded.source
-    `),
-    tc:  db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
-    tr:  db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
-    sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
-    idx: db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)'),
-  };
-
-  const existing = !fi.isSubagent ? db.prepare('SELECT * FROM sessions WHERE id = ?').get(fi.sessionId) : null;
-  const sm = {
-    started_at: existing?.started_at || null,
-    ended_at: existing?.ended_at || null,
-    git_branch: existing?.git_branch || null,
-    version: existing?.version || null,
-    title: existing?.title || null,
-    n: skip > 0 ? (existing?.message_count || 0) : 0,
-    cwds: [],
-  };
-
-  let lineNum = 0;
-  readLines(fi.path, (line) => {
-    lineNum++;
-    if (lineNum <= skip) return;
-    let obj;
-    try { obj = JSON.parse(line); } catch { return; }
-    const sid = fi.sessionId;
-    const ts = obj.timestamp || null;
-
-    if (obj.type === 'ai-title' && obj.aiTitle) { sm.title = obj.aiTitle; return; }
-    if (obj.type === 'system' && obj.subtype === 'away_summary' && obj.content) {
-      ins.sum.run(obj.uuid || `${sid}-away-${ts}`, sid, ts, 'away_summary', obj.content);
-      return;
-    }
-    if (obj.type === 'system' && obj.subtype === 'turn_duration' && obj.parentUuid && obj.durationMs) {
-      db.prepare('UPDATE messages SET turn_duration_ms=? WHERE uuid=?').run(obj.durationMs, obj.parentUuid);
-      return;
-    }
-    if (obj.type !== 'user' && obj.type !== 'assistant') return;
-
-    if (ts && (!sm.started_at || ts < sm.started_at)) sm.started_at = ts;
-    if (ts && (!sm.ended_at || ts > sm.ended_at)) sm.ended_at = ts;
-    if (obj.gitBranch) sm.git_branch = obj.gitBranch;
-    if (obj.version) sm.version = obj.version;
-    sm.n++;
-    if (!fi.isSubagent && obj.cwd) sm.cwds.push(obj.cwd);
-
-    const msg = obj.message || {};
-    const text = extractText(msg.content);
-    const contentType = extractContentType(msg.content);
-    const isMeta = extractMessageIsMeta(obj, text);
-    const usage = msg.usage || {};
-    const aid = fi.isSubagent ? fi.agentId : (obj.agentId || null);
-
-    if (obj.uuid) {
-      ins.msg.run(obj.uuid, sid, obj.type, obj.parentUuid || null, ts,
-        msg.role || obj.type, text, contentType, isMeta, msg.model || null,
-        obj.isSidechain ? 1 : 0, aid, usage.input_tokens || null, usage.output_tokens || null,
-        obj.cwd || null, obj.attributionSkill || null, 'claude');
-    }
-
-    if (obj.type === 'assistant' && Array.isArray(msg.content)) {
-      for (const b of msg.content) {
-        if (b.type === 'tool_use' && b.id)
-          ins.tc.run(b.id, obj.uuid, sid, b.name, truncJson(b.input || {}), filePath(b.name, b.input));
-      }
-    }
-
-    if (obj.type === 'user' && Array.isArray(msg.content)) {
-      for (const b of msg.content) {
-        if (b.type !== 'tool_result' || !b.tool_use_id) continue;
-        const rt = typeof b.content === 'string' ? b.content
-          : Array.isArray(b.content) ? b.content.map(c => c.text || '').join('\n') : '';
-        ins.tr.run(b.tool_use_id, obj.uuid, sid, trunc(rt), obj.toolUseResult?.filePath || null, b.is_error ? 1 : 0);
-      }
-    }
-  });
-
-  if (!fi.isSubagent) {
-    const pp = inferProjectPath(fi.project, sm.cwds);
-    ins.ses.run(fi.sessionId, sm.title, fi.project, pp, sm.started_at, sm.ended_at, sm.git_branch, sm.version, sm.n, fi.path, 'claude');
-  }
-  ins.idx.run(fi.path, mt, lineNum);
-}
-
 function codexDbId(id) {
   if (!id) return null;
   const raw = String(id).replace(/^codex:/, '');
@@ -245,25 +136,6 @@ function codexIsGuardianThread(meta, records = []) {
   if (subagent?.other === 'guardian') return true;
   if (meta?.thread_source !== 'subagent') return false;
   return records.some(({ obj }) => obj?.payload?.model === 'codex-auto-review' || obj?.model === 'codex-auto-review');
-}
-
-function deleteCodexThreadRows(db, threadRawId) {
-  const threadId = codexDbId(threadRawId);
-  if (!threadId) return;
-  db.prepare(`
-    DELETE FROM tool_results
-    WHERE session_id = ?
-       OR message_uuid IN (SELECT uuid FROM messages WHERE session_id = ? OR agent_id = ?)
-  `).run(threadId, threadId, threadId);
-  db.prepare(`
-    DELETE FROM tool_calls
-    WHERE session_id = ?
-       OR message_uuid IN (SELECT uuid FROM messages WHERE session_id = ? OR agent_id = ?)
-  `).run(threadId, threadId, threadId);
-  db.prepare('DELETE FROM messages WHERE session_id = ? OR agent_id = ?').run(threadId, threadId);
-  db.prepare('DELETE FROM subagents WHERE agent_id = ? OR session_id = ?').run(threadId, threadId);
-  db.prepare('DELETE FROM summaries WHERE session_id = ?').run(threadId);
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(threadId);
 }
 
 function readCodexGuardianThreadInfo(filePath) {
@@ -354,299 +226,6 @@ function codexToolOutput(payload) {
   if (payload?.tools !== undefined) return JSON.stringify(payload.tools);
   if (payload?.execution !== undefined) return JSON.stringify(payload.execution);
   return null;
-}
-
-function upsertCodexSubagent(db, {
-  agentId,
-  sessionId,
-  parentToolUseId = null,
-  agentType = null,
-  description = null,
-  durationMs = null,
-  totalTokens = null,
-} = {}) {
-  if (!agentId || !sessionId) return;
-  db.prepare(`
-    INSERT INTO subagents (agent_id,session_id,parent_tool_use_id,agent_type,description,duration_ms,total_tokens)
-    VALUES (?,?,?,?,?,?,?)
-    ON CONFLICT(agent_id) DO UPDATE SET
-      session_id=excluded.session_id,
-      parent_tool_use_id=COALESCE(excluded.parent_tool_use_id, subagents.parent_tool_use_id),
-      agent_type=COALESCE(excluded.agent_type, subagents.agent_type),
-      description=COALESCE(excluded.description, subagents.description),
-      duration_ms=COALESCE(excluded.duration_ms, subagents.duration_ms),
-      total_tokens=COALESCE(excluded.total_tokens, subagents.total_tokens)
-  `).run(agentId, sessionId, parentToolUseId, agentType, description, durationMs, totalTokens);
-}
-
-function indexCodexJsonl(db, fi) {
-  const state = needsReindex(db, fi.path);
-  if (!state.needed) {
-    const guardian = readCodexGuardianThreadInfo(fi.path);
-    if (guardian) deleteCodexThreadRows(db, guardian.threadRawId);
-    return;
-  }
-  const mt = fs.statSync(fi.path).mtimeMs;
-  const records = [];
-  let lineNum = 0;
-  readLines(fi.path, (line) => {
-    lineNum++;
-    try {
-      records.push({ lineNum, obj: JSON.parse(line) });
-    } catch {}
-  });
-
-  const metaRecord = records.find(r => r.obj?.type === 'session_meta' && r.obj.payload?.id);
-  if (!metaRecord) {
-    db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)').run(fi.path, mt, lineNum);
-    return;
-  }
-
-  const meta = metaRecord.obj.payload;
-  const threadRawId = codexRawId(meta.id);
-  if (codexIsGuardianThread(meta, records)) {
-    deleteCodexThreadRows(db, threadRawId);
-    db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)').run(fi.path, mt, lineNum);
-    return;
-  }
-  const parentRawId = codexParentThreadId(meta);
-  const sessionId = codexDbId(parentRawId || threadRawId);
-  const agentId = parentRawId ? codexDbId(threadRawId) : null;
-  const isSidechain = agentId ? 1 : 0;
-  const projectPath = normalizeObservedCwd(meta.cwd);
-  const project = projectSlugFromPath(projectPath);
-  const sm = {
-    started_at: meta.timestamp || metaRecord.obj.timestamp || null,
-    ended_at: meta.timestamp || metaRecord.obj.timestamp || null,
-    git_branch: meta.git?.branch || null,
-    version: meta.cli_version || null,
-    title: null,
-    n: 0,
-    cwds: projectPath ? [projectPath] : [],
-    lastMessageUuid: null,
-    lastTextAssistantUuid: null,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
-  };
-
-  const ins = {
-    ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)'),
-    msg: db.prepare(`
-      INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(uuid) DO UPDATE SET
-        session_id=excluded.session_id,
-        type=excluded.type,
-        parent_uuid=excluded.parent_uuid,
-        timestamp=excluded.timestamp,
-        role=excluded.role,
-        text=excluded.text,
-        content_type=excluded.content_type,
-        is_meta=excluded.is_meta,
-        model=excluded.model,
-        is_sidechain=excluded.is_sidechain,
-        agent_id=excluded.agent_id,
-        input_tokens=excluded.input_tokens,
-        output_tokens=excluded.output_tokens,
-        cwd=excluded.cwd,
-        skill=excluded.skill,
-        source=excluded.source
-    `),
-    tc: db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
-    tr: db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
-    idx: db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)'),
-    dur: db.prepare('UPDATE messages SET turn_duration_ms=? WHERE uuid=?'),
-    usage: db.prepare('UPDATE messages SET input_tokens=?, output_tokens=? WHERE uuid=?'),
-  };
-
-  let currentCwd = projectPath;
-  let currentModel = null;
-  const eventMessageKeys = new Set();
-  const callMessageUuids = new Map();
-
-  for (const { obj } of records) {
-    if (obj?.type !== 'event_msg') continue;
-    const payload = obj.payload || {};
-    if (payload.type !== 'user_message' && payload.type !== 'agent_message') continue;
-    const text = codexEventText(payload);
-    if (text === null) continue;
-    eventMessageKeys.add(codexVisibleMessageKey(payload.type === 'user_message' ? 'user' : 'assistant', text));
-  }
-
-  const updateBounds = (ts) => {
-    if (!ts) return;
-    if (!sm.started_at || ts < sm.started_at) sm.started_at = ts;
-    if (!sm.ended_at || ts > sm.ended_at) sm.ended_at = ts;
-  };
-
-  const insertMessage = ({ uuid, type, role, text = null, contentType = 'text', timestamp, isMeta = 0 }) => {
-    ins.msg.run(
-      uuid,
-      sessionId,
-      type,
-      sm.lastMessageUuid,
-      timestamp || null,
-      role,
-      trunc(text),
-      contentType,
-      isMeta,
-      currentModel,
-      isSidechain,
-      agentId,
-      null,
-      null,
-      currentCwd,
-      null,
-      'codex',
-    );
-    sm.lastMessageUuid = uuid;
-    if (!agentId) sm.n++;
-    if (type === 'assistant' && contentType === 'text') sm.lastTextAssistantUuid = uuid;
-    updateBounds(timestamp);
-    return uuid;
-  };
-
-  for (const { lineNum: currentLine, obj } of records) {
-    const ts = obj.timestamp || null;
-    if (obj.type === 'session_meta') {
-      if (obj.payload?.cwd) {
-        currentCwd = normalizeObservedCwd(obj.payload.cwd) || currentCwd;
-        if (currentCwd) sm.cwds.push(currentCwd);
-      }
-      if (obj.payload?.git?.branch) sm.git_branch = obj.payload.git.branch;
-      if (obj.payload?.cli_version) sm.version = obj.payload.cli_version;
-      updateBounds(obj.payload?.timestamp || ts);
-      continue;
-    }
-    if (obj.type === 'turn_context') {
-      currentCwd = normalizeObservedCwd(obj.payload?.cwd) || currentCwd;
-      currentModel = obj.payload?.model || currentModel;
-      if (currentCwd) sm.cwds.push(currentCwd);
-      updateBounds(ts);
-      continue;
-    }
-    if (obj.type === 'event_msg') {
-      const payload = obj.payload || {};
-      if (payload.type === 'user_message' || payload.type === 'agent_message' || payload.type === 'agent_reasoning') {
-        const text = codexEventText(payload);
-        if (text === null) continue;
-        const isReasoning = payload.type === 'agent_reasoning';
-        insertMessage({
-          uuid: codexLineUuid(threadRawId, currentLine),
-          type: payload.type === 'user_message' ? 'user' : 'assistant',
-          role: payload.type === 'user_message' ? 'user' : 'assistant',
-          text,
-          contentType: isReasoning ? 'thinking' : 'text',
-          timestamp: ts,
-        });
-        continue;
-      }
-      if (payload.type === 'collab_agent_spawn_end' && payload.call_id && payload.new_thread_id) {
-        const uuid = insertMessage({
-          uuid: codexLineUuid(threadRawId, currentLine),
-          type: 'assistant',
-          role: 'assistant',
-          text: null,
-          contentType: 'tool_use',
-          timestamp: ts,
-        });
-        const toolId = codexCallId(payload.call_id);
-        const description = payload.new_agent_nickname || payload.new_agent_role || 'Agent';
-        const input = {
-          description,
-          subagent_type: payload.new_agent_role || 'Agent',
-          prompt: payload.prompt || '',
-          new_thread_id: payload.new_thread_id,
-          model: payload.model || null,
-          reasoning_effort: payload.reasoning_effort || null,
-        };
-        ins.tc.run(toolId, uuid, sessionId, 'Agent', truncJson(input), null);
-        callMessageUuids.set(toolId, uuid);
-        upsertCodexSubagent(db, {
-          agentId: codexDbId(payload.new_thread_id),
-          sessionId,
-          parentToolUseId: toolId,
-          agentType: payload.new_agent_role || null,
-          description,
-        });
-        continue;
-      }
-      if (payload.type === 'task_complete') {
-        if (sm.lastTextAssistantUuid && payload.duration_ms !== undefined) {
-          ins.dur.run(payload.duration_ms || null, sm.lastTextAssistantUuid);
-        }
-        updateBounds(ts);
-        continue;
-      }
-      if (payload.type === 'token_count') {
-        const usage = codexUsage(payload);
-        if (usage.inputTokens !== null) sm.totalInputTokens = usage.inputTokens;
-        if (usage.outputTokens !== null) sm.totalOutputTokens = usage.outputTokens;
-        if (sm.lastTextAssistantUuid && (usage.inputTokens !== null || usage.outputTokens !== null)) {
-          ins.usage.run(usage.inputTokens, usage.outputTokens, sm.lastTextAssistantUuid);
-        }
-        continue;
-      }
-      if (payload.type === 'thread_name_updated' && payload.thread_name) {
-        sm.title = payload.thread_name;
-      }
-      continue;
-    }
-    if (obj.type !== 'response_item') continue;
-    const payload = obj.payload || {};
-    if (payload.type === 'message' && payload.role !== 'developer') {
-      const text = codexMessagePayloadText(payload);
-      const role = payload.role || 'assistant';
-      if (text !== null && !eventMessageKeys.has(codexVisibleMessageKey(role, text))) {
-        insertMessage({
-          uuid: codexLineUuid(threadRawId, currentLine),
-          type: role === 'user' ? 'user' : 'assistant',
-          role,
-          text,
-          contentType: 'text',
-          timestamp: ts,
-        });
-      }
-      continue;
-    }
-    if (['function_call', 'custom_tool_call', 'tool_search_call', 'web_search_call'].includes(payload.type) && payload.call_id) {
-      const uuid = insertMessage({
-        uuid: codexLineUuid(threadRawId, currentLine),
-        type: 'assistant',
-        role: 'assistant',
-        text: null,
-        contentType: 'tool_use',
-        timestamp: ts,
-      });
-      const name = payload.name || payload.tool || payload.type.replace(/_call$/, '');
-      const toolId = codexCallId(payload.call_id);
-      ins.tc.run(toolId, uuid, sessionId, name, truncJson(codexToolInput(payload)), null);
-      callMessageUuids.set(toolId, uuid);
-      continue;
-    }
-    if (['function_call_output', 'custom_tool_call_output', 'tool_search_output'].includes(payload.type) && payload.call_id) {
-      const toolId = codexCallId(payload.call_id);
-      ins.tr.run(toolId, callMessageUuids.get(toolId) || null, sessionId, trunc(codexToolOutput(payload) || ''), null, payload.is_error ? 1 : 0);
-    }
-  }
-
-  if (agentId) {
-    const tokenTotal = (sm.totalInputTokens || 0) + (sm.totalOutputTokens || 0);
-    const started = sm.started_at ? new Date(sm.started_at).getTime() : null;
-    const ended = sm.ended_at ? new Date(sm.ended_at).getTime() : null;
-    upsertCodexSubagent(db, {
-      agentId,
-      sessionId,
-      agentType: codexAgentRole(meta),
-      description: codexAgentNickname(meta),
-      durationMs: started && ended ? ended - started : null,
-      totalTokens: tokenTotal || null,
-    });
-  } else {
-    const pp = inferProjectPath(project, sm.cwds);
-    ins.ses.run(sessionId, sm.title, project, pp, sm.started_at, sm.ended_at, sm.git_branch, sm.version, sm.n, fi.path, 'codex');
-  }
-  ins.idx.run(fi.path, mt, lineNum);
 }
 
 function indexCodexSessionIndex(db) {
@@ -763,6 +342,13 @@ function shouldSkipBuild(db, { now = Date.now() } = {}) {
   return { skip: false };
 }
 
+// A one-shot record stream that retracts a session, for routing guardian sweeps
+// through persist (the single db writer) instead of deleting rows directly.
+function* guardianDelete(sessionId) {
+  yield { kind: 'delete-session', sessionId };
+  return null;
+}
+
 function buildIndex({ force = false } = {}) {
   const db = openDb();
   if (!force) {
@@ -782,7 +368,20 @@ function buildIndex({ force = false } = {}) {
     db.exec('BEGIN');
     try {
       if (f.source === 'codex') {
-        indexCodexJsonl(db, f);
+        // Codex goes through the pure adapter + shared persist (docs/adr/0001),
+        // full-reparse (countMode 'total') when the file changed. An unchanged
+        // file is not reparsed, but is still swept for stale guardian rows: a
+        // guardian/auto-review thread must never linger in the index, even if it
+        // was indexed before guardian detection removed it.
+        const { needed } = needsReindex(db, f.path);
+        if (needed) {
+          persist(db, { key: f.path, sessionId: '' }, codexParse({ key: f.path, sessionId: '' }, null));
+        } else {
+          const guardian = readCodexGuardianThreadInfo(f.path);
+          if (guardian) {
+            persist(db, { key: f.path, sessionId: '' }, guardianDelete(codexDbId(guardian.threadRawId)));
+          }
+        }
       } else {
         // Claude transcripts now go through the pure adapter + shared persist
         // (docs/adr/0001). needsReindex keeps the "skip unchanged file" fast path;
@@ -817,4 +416,13 @@ function buildIndex({ force = false } = {}) {
   db.close();
 }
 
-export { buildIndex, indexJsonl, discoverJsonlFiles, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };
+export {
+  buildIndex, discoverJsonlFiles, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild,
+  // Pure codex helpers consumed by providers/codex.ts (temporary export; they
+  // move into codex.ts once indexCodexJsonl is removed in the 5c cleanup).
+  discoverCodexJsonlFiles, normalizeObservedCwd, projectSlugFromPath,
+  codexRawId, codexDbId, codexCallId, codexLineUuid, codexParentThreadId,
+  codexIsGuardianThread, codexAgentNickname, codexAgentRole, codexUsage,
+  codexEventText, codexMessagePayloadText, codexVisibleMessageKey,
+  codexToolInput, codexToolOutput,
+};

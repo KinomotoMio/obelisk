@@ -113,15 +113,18 @@ export interface SummaryRecord {
   content: string;
 }
 
+// One codex subagent. Like workflow_agent, a row can be contributed by more than
+// one point in the parse (the spawn event vs the agent's own thread), so non-key
+// fields are optional and persist merges them column-wise with COALESCE.
 export interface SubagentRecord {
   kind: 'subagent';
   agent_id: string;
   session_id: string;
-  parent_tool_use_id: string | null;
-  agent_type: string | null;
-  description: string | null;
-  duration_ms: number | null;
-  total_tokens: number | null;
+  parent_tool_use_id?: string | null;
+  agent_type?: string | null;
+  description?: string | null;
+  duration_ms?: number | null;
+  total_tokens?: number | null;
 }
 
 // A workflow run. `agent_count` is intentionally absent: it is a derived
@@ -170,7 +173,7 @@ export interface WorkflowAgentRecord {
 export interface MessageTurnDurationRecord {
   kind: 'message-turn-duration';
   uuid: string;
-  turn_duration_ms: number;
+  turn_duration_ms: number | null;
 }
 
 // Retraction op (not a table). The adapter emits this when a previously-indexed
@@ -188,6 +191,12 @@ export interface DeleteSessionRecord {
 // fill-if-null (COALESCE) so those never clobber a value already present.
 // project_path is NOT set here — the orchestration's global pass derives it from
 // persisted message cwds (refreshSessionProjectPaths).
+//
+// countMode tells persist how to treat message_count, because providers differ:
+// a line-incremental adapter (claude) yields only new messages ('delta', persist
+// accumulates onto the existing row); a full-reparse adapter (codex) yields every
+// message each run ('total', persist replaces). A 'delta' parse from an empty
+// cursor is equivalent to 'total'.
 export interface SessionRecord {
   kind: 'session';
   id: string;
@@ -198,6 +207,7 @@ export interface SessionRecord {
   git_branch: string | null;
   version: string | null;
   message_count: number;
+  countMode: 'total' | 'delta';
   jsonl_path: string;
   source: string;
 }

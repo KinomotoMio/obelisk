@@ -120,7 +120,8 @@ export function* parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, 
     records.push({
       kind: 'session', id: unit.sessionId, title: sm.title, project: unit.project || null,
       started_at: sm.started_at, ended_at: sm.ended_at, git_branch: sm.git_branch,
-      version: sm.version, message_count: sm.n, jsonl_path: unit.key, source: 'claude',
+      version: sm.version, message_count: sm.n, countMode: skip > 0 ? 'delta' : 'total',
+      jsonl_path: unit.key, source: 'claude',
     });
   }
 
