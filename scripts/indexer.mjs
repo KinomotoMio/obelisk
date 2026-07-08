@@ -108,7 +108,27 @@ function indexJsonl(db, fi) {
 
   const ins = {
     ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)'),
-    msg: db.prepare('INSERT OR REPLACE INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),
+    msg: db.prepare(`
+      INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(uuid) DO UPDATE SET
+        session_id=excluded.session_id,
+        type=excluded.type,
+        parent_uuid=excluded.parent_uuid,
+        timestamp=excluded.timestamp,
+        role=excluded.role,
+        text=excluded.text,
+        content_type=excluded.content_type,
+        is_meta=excluded.is_meta,
+        model=excluded.model,
+        is_sidechain=excluded.is_sidechain,
+        agent_id=excluded.agent_id,
+        input_tokens=excluded.input_tokens,
+        output_tokens=excluded.output_tokens,
+        cwd=excluded.cwd,
+        skill=excluded.skill,
+        source=excluded.source
+    `),
     tc:  db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
     tr:  db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
     sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
@@ -122,7 +142,7 @@ function indexJsonl(db, fi) {
     git_branch: existing?.git_branch || null,
     version: existing?.version || null,
     title: existing?.title || null,
-    n: existing?.message_count || 0,
+    n: skip > 0 ? (existing?.message_count || 0) : 0,
     cwds: [],
   };
 
@@ -788,4 +808,4 @@ function buildIndex({ force = false } = {}) {
   db.close();
 }
 
-export { buildIndex, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };
+export { buildIndex, indexJsonl, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };
