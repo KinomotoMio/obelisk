@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,4 +67,37 @@ test('incremental buildIndex resumes from cursor and accumulates message_count',
   assert.equal(afterAppend.mc, 4, 'message_count accumulated to 4');
   assert.equal(afterAppend.n, 4, 'exactly four messages, no duplicates');
   assert.equal(afterAppend.lp, 4, 'cursor advanced to 4 lines');
+});
+
+test('force build purges sessions for deleted files and preserves memories', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-force-'));
+  const projDir = join(home, '.claude', 'projects', '-tmp-proj');
+  mkdirSync(projDir, { recursive: true });
+  const keep = join(projDir, 'keep.jsonl');
+  const gone = join(projDir, 'gone.jsonl');
+  writeFileSync(keep, line('k1', 'user', '2026-06-10T10:00:00Z') + '\n');
+  writeFileSync(gone, line('g1', 'user', '2026-06-10T10:00:00Z') + '\n');
+  assert.equal(runRuntime(['--build'], home).status, 0);
+
+  const dbPath = join(home, '.obelisk', 'obelisk.sqlite');
+  let db = new DatabaseSync(dbPath);
+  // Seed a durable memory that must survive a clean rebuild.
+  db.prepare("INSERT INTO memories (id, path, summary, created_at) VALUES ('mem-keep', '/tmp/proj/.obelisk/memories/x.md', 'durable note', '2026-06-10T10:00:00Z')").run();
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM sessions').get().c, 2, 'both sessions indexed initially');
+  db.close();
+
+  // Delete one transcript, then force a clean rebuild (`--build` is always force).
+  rmSync(gone);
+  clearBuildDebounce(home);
+  assert.equal(runRuntime(['--build'], home).status, 0);
+
+  db = new DatabaseSync(dbPath);
+  const sessionIds = db.prepare('SELECT id FROM sessions ORDER BY id').all().map(r => r.id);
+  const messageCount = db.prepare('SELECT COUNT(*) c FROM messages').get().c;
+  const memoryAlive = db.prepare("SELECT COUNT(*) c FROM memories WHERE id='mem-keep' AND deleted_at IS NULL").get().c;
+  db.close();
+
+  assert.deepEqual(sessionIds, ['keep'], 'stale session for the deleted file is purged');
+  assert.equal(messageCount, 1, 'only the surviving file\'s message remains');
+  assert.equal(memoryAlive, 1, 'the durable memory survived the force rebuild');
 });

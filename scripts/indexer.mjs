@@ -148,6 +148,14 @@ function buildIndex({ force = false } = {}) {
 
   if (force) {
     db.prepare("DELETE FROM index_state WHERE jsonl_path != '__last_build__'").run();
+    // Clearing index_state alone re-indexes existing files but leaves rows for
+    // files that no longer exist on disk (stale sessions accumulate). A force
+    // build is a clean rebuild: drop every derived table, then re-index from the
+    // current files. `memories` is the durable, human-approved layer and is never
+    // cleared; messages_fts is repopulated by the 'rebuild' command in finalize.
+    for (const table of ['messages', 'tool_calls', 'tool_results', 'sessions', 'summaries', 'subagents', 'workflows', 'workflow_agents']) {
+      db.prepare(`DELETE FROM ${table}`).run();
+    }
   }
 
   const files = [
