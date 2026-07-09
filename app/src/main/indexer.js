@@ -14,7 +14,7 @@ const DEFAULT_HISTORY_PATH = path.join(DEFAULT_CLAUDE_DIR, 'history.jsonl');
 function resolveSchemaPath() {
   const candidates = [
     path.join(__dirname, 'schema.sql'),
-    path.join(__dirname, '..', 'scripts', 'schema.sql'),
+    path.join(__dirname, '..', '..', '..', 'scripts', 'schema.sql'),
     process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'schema.sql') : null,
   ].filter(Boolean);
   const found = candidates.find(p => fs.existsSync(p));

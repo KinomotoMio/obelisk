@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { createIndexerService } = require('../app/indexer-service.js');
+const { createIndexerService } = require('../app/src/main/indexer-service.js');
 
 function manualTimers() {
   const timers = new Set();

@@ -241,7 +241,7 @@ async function stopBackgroundResources({ stopWorker = false } = {}) {
 }
 
 function createWindow() {
-  const isDev = process.argv.includes('--dev');
+  const isDev = process.argv.includes('--dev') || !!process.env.ELECTRON_RENDERER_URL;
   const shouldOpenDevTools = process.argv.includes('--devtools');
 
   const win = new BrowserWindow({
@@ -253,7 +253,7 @@ function createWindow() {
     trafficLightPosition: { x: 14, y: 10 },
     backgroundColor: '#0a0b14',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       devTools: isDev || shouldOpenDevTools,
@@ -268,12 +268,12 @@ function createWindow() {
   });
 
   if (isDev) {
-    win.loadURL(process.env.OBELISK_DEV_SERVER_URL || 'http://localhost:5173');
+    win.loadURL(process.env.ELECTRON_RENDERER_URL || process.env.OBELISK_DEV_SERVER_URL || 'http://localhost:5173');
     if (shouldOpenDevTools) {
       win.webContents.openDevTools();
     }
   } else {
-    win.loadFile(path.join(__dirname, 'dist-renderer', 'index.html'));
+    win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   }
 }
 
@@ -607,7 +607,7 @@ async function createExportCapture(parentWin, query) {
     height: EXPORT_HEIGHT,
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       offscreen: true,
@@ -615,10 +615,10 @@ async function createExportCapture(parentWin, query) {
     },
   });
 
-  const isDev = process.argv.includes('--dev');
+  const isDev = process.argv.includes('--dev') || !!process.env.ELECTRON_RENDERER_URL;
   const url = isDev
-    ? `http://localhost:5173/#/recap-export?${query}`
-    : `file://${path.join(__dirname, 'dist-renderer', 'index.html')}#/recap-export?${query}`;
+    ? `${process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173'}/#/recap-export?${query}`
+    : `file://${path.join(__dirname, '..', 'renderer', 'index.html')}#/recap-export?${query}`;
 
   await exportWin.loadURL(url);
   await waitForExportReady(exportWin.webContents);

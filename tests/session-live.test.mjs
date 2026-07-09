@@ -5,7 +5,7 @@ import {
   createSessionLiveState,
   consumeSessionDirty,
   noteSessionUpdated,
-} from '../app/renderer/src/session-live.mjs';
+} from '../app/src/renderer/src/session-live.mjs';
 
 test('session live state marks non-visible updated sessions as dirty', () => {
   const live = createSessionLiveState();

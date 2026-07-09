@@ -7,3 +7,4 @@ release/
 .dev.docs
 .claude/
 dist/
+app/out/

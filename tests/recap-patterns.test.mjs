@@ -155,10 +155,10 @@ test('cover card retrieval and writing choose one dominant human claim', async (
 test('cover card schema uses claim instead of subtitle', async () => {
   const pattern = await read('references/recap/pattern1-cover.md');
   const writing = await read('references/recap/writing1-cover.md');
-  const component = await read('app/renderer/src/components/recap/CoverCard.vue');
-  const detail = await read('app/renderer/src/views/RecapDetail.vue');
-  const list = await read('app/renderer/src/views/RecapList.vue');
-  const mock = await read('app/renderer/src/mock/recap-2026-W24.json');
+  const component = await read('app/src/renderer/src/components/recap/CoverCard.vue');
+  const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
+  const list = await read('app/src/renderer/src/views/RecapList.vue');
+  const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
   assert.match(pattern, /claim that lists three topics/i);
   assert.doesNotMatch(pattern, /subtitle/);
@@ -197,8 +197,8 @@ test('thinking card retrieval searches for turns instead of implementation timel
 test('thinking path schema uses turn instead of outcome', async () => {
   const pattern = await read('references/recap/pattern2-thinking.md');
   const writing = await read('references/recap/writing2-thinking.md');
-  const component = await read('app/renderer/src/components/recap/PathCard.vue');
-  const mock = await read('app/renderer/src/mock/recap-2026-W24.json');
+  const component = await read('app/src/renderer/src/components/recap/PathCard.vue');
+  const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
   assert.match(pattern, /prompt, turn, and an `evidence` anchor/i);
   assert.doesNotMatch(pattern, /outcome/);
@@ -230,9 +230,9 @@ test('vibe card retrieval finds small user voice, not a correction audit', async
 
 test('vibe card schema uses voice_lines instead of observations', async () => {
   const writing = await read('references/recap/writing3-vibe.md');
-  const component = await read('app/renderer/src/components/recap/VibeCard.vue');
-  const detail = await read('app/renderer/src/views/RecapDetail.vue');
-  const mock = await read('app/renderer/src/mock/recap-2026-W24.json');
+  const component = await read('app/src/renderer/src/components/recap/VibeCard.vue');
+  const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
+  const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
   assert.match(writing, /voice_lines: Array/);
   assert.match(writing, /"voice_lines": \[/);
@@ -273,8 +273,8 @@ test('workflow card retrieval scopes real workflow runs and user reactions', asy
 test('workflow card uses reaction instead of outcome for row copy', async () => {
   const pattern = await read('references/recap/pattern4-workflow.md');
   const writing = await read('references/recap/writing4-workflow.md');
-  const component = await read('app/renderer/src/components/recap/WorkflowCard.vue');
-  const mock = await read('app/renderer/src/mock/recap-2026-W24.json');
+  const component = await read('app/src/renderer/src/components/recap/WorkflowCard.vue');
+  const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
   assert.match(pattern, /items\[\]\.reaction/i);
   assert.match(writing, /reaction: string/);
@@ -288,9 +288,9 @@ test('workflow card uses reaction instead of outcome for row copy', async () => 
 
 test('workflow card schema uses deck instead of summary for the visible line', async () => {
   const writing = await read('references/recap/writing4-workflow.md');
-  const component = await read('app/renderer/src/components/recap/WorkflowCard.vue');
-  const detail = await read('app/renderer/src/views/RecapDetail.vue');
-  const mock = await read('app/renderer/src/mock/recap-2026-W24.json');
+  const component = await read('app/src/renderer/src/components/recap/WorkflowCard.vue');
+  const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
+  const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
   assert.match(writing, /deck\?: string/);
   assert.match(writing, /"deck": "你召唤了机器军团。结果各有不同。"/);
@@ -323,9 +323,9 @@ test('closing card retrieval and writing keep a small personal receipt', async (
 test('closing card schema uses receipts instead of stats', async () => {
   const pattern = await read('references/recap/pattern5-closing.md');
   const writing = await read('references/recap/writing5-closing.md');
-  const component = await read('app/renderer/src/components/recap/ClosingCard.vue');
-  const detail = await read('app/renderer/src/views/RecapDetail.vue');
-  const mock = await read('app/renderer/src/mock/recap-2026-W24.json');
+  const component = await read('app/src/renderer/src/components/recap/ClosingCard.vue');
+  const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
+  const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
   assert.match(pattern, /one or two compact receipts/i);
   assert.doesNotMatch(pattern, /receipt stats/);

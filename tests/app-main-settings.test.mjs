@@ -12,7 +12,7 @@ async function loadMainForWindowFlags(flags) {
   const originalArgv = process.argv;
   const originalHome = process.env.HOME;
   const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   const home = join(tmpdir(), `obelisk-window-flags-${Date.now()}-${Math.random()}`);
   mkdirSync(join(home, '.obelisk'), { recursive: true });
   writeFileSync(join(home, '.obelisk', 'obelisk.sqlite'), '');
@@ -93,7 +93,7 @@ async function loadMainForWindowFlags(flags) {
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
     return windows;
   } finally {
@@ -137,7 +137,7 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
   process.env.HOME = home;
 
   const serviceOptions = [];
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
 
   class FakeDatabase {
@@ -202,7 +202,7 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(serviceOptions.length, 1);
@@ -229,7 +229,7 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
 
   const ipcHandlers = new Map();
   const queries = [];
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
 
   class FakeDatabase {
@@ -305,7 +305,7 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     ipcHandlers.get('db:getSessions')(null, {});
@@ -373,7 +373,7 @@ test('main process migrates an existing app database before source-filtered IPC 
   legacy.close();
 
   const ipcHandlers = new Map();
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
 
   class FakeBrowserWindow {
@@ -454,7 +454,7 @@ test('main process migrates an existing app database before source-filtered IPC 
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     const sessions = ipcHandlers.get('db:getSessions')(null, {});
@@ -480,7 +480,7 @@ test('closing the last macOS window releases background resources until activati
   const home = join(tmpdir(), `obelisk-main-window-${Date.now()}`);
   mkdirSync(join(home, '.obelisk'), { recursive: true });
   writeFileSync(join(home, '.obelisk', 'obelisk.sqlite'), '');
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
   process.env.HOME = home;
   Object.defineProperty(process, 'platform', { value: 'darwin' });
@@ -561,7 +561,7 @@ test('closing the last macOS window releases background resources until activati
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(windows.length, 1);
@@ -618,7 +618,7 @@ test('settings rebuild reopens the database from the configured Claude path', as
   const buildCalls = [];
   const serviceEvents = [];
   const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
 
   class FakeDatabase {
@@ -703,7 +703,7 @@ test('settings rebuild reopens the database from the configured Claude path', as
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     const rebuild = ipcHandlers.get('settings:rebuildIndex');
@@ -750,7 +750,7 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
   const closedDbPaths = [];
   const serviceEvents = [];
   const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
 
   class FakeDatabase {
@@ -834,7 +834,7 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     const rebuild = ipcHandlers.get('settings:rebuildIndex');
@@ -878,7 +878,7 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
   const ipcHandlers = new Map();
   const serviceEvents = [];
   const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/main.js');
+  const mainPath = require.resolve('../app/src/main/index.js');
   delete require.cache[mainPath];
 
   class FakeDatabase {
@@ -963,7 +963,7 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
   };
 
   try {
-    require('../app/main.js');
+    require('../app/src/main/index.js');
     await new Promise(resolve => setImmediate(resolve));
 
     const rebuild = ipcHandlers.get('settings:rebuildIndex');

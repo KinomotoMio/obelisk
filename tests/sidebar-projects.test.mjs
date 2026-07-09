@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSidebarProjects } from '../app/renderer/src/sidebar-projects.mjs';
+import { buildSidebarProjects } from '../app/src/renderer/src/sidebar-projects.mjs';
 
 test('session sidebar projects follow database recency order instead of label order', () => {
   const sessions = [
