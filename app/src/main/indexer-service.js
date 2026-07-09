@@ -111,7 +111,9 @@ function createIndexerService({
       writeHeartbeat();
     })()
       .catch((error) => {
-        logger.warn?.(`Obelisk index build failed: ${error.message}`);
+        // A build in flight when the service is stopped (e.g. a manual rebuild
+        // tears down the worker) is a deliberate cancellation, not a failure.
+        if (!stopped) logger.warn?.(`Obelisk index build failed: ${error.message}`);
       })
       .finally(() => {
         running = false;

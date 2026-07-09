@@ -27,22 +27,26 @@ promoted to an external tool surface.
 
 ## Indexing
 
-**Parse core**:
-The pure `jsonl -> records` transform. Given a transcript file and a start line,
-it yields normalized index records. It does not open, own, or write to a
-database, and is shared verbatim by every indexing mode. This is the layer that
-must never be duplicated.
-_Avoid_: parser, ingest
+**Provider adapter**:
+A pure per-source module (claude, codex, later opencode, pi, …) that discovers a
+source's transcript files and parses one into a stream of records. It never opens
+or writes a database; adding a source means adding one adapter. The shared pure
+parse/discover helpers live in `scripts/parsing.mjs`, which imports only
+node:fs/path/os — deliberately node:sqlite-free so the compiled providers can be
+consumed by the app (whose Electron runtime has no `node:sqlite`).
+_Avoid_: parse core, parser, ingest
 
 **Record**:
 One normalized row destined for the index (session, message, tool call, tool
-result, summary, subagent, workflow, …), emitted by the parse core before any
+result, summary, subagent, workflow, …), emitted by a provider adapter before any
 persistence happens.
 
 **Persist layer**:
-The thin, binding-specific writer that consumes records from the parse core and
-writes them into SQLite inside a transaction. Two persist layers exist and differ
-only in binding: `node:sqlite` (skill/CLI) and `better-sqlite3` (app).
+The single shared, provider- and binding-agnostic writer that consumes records
+from any adapter and writes them into an injected SQLite handle inside a
+transaction. The binding is injected — `node:sqlite` (skill/CLI) or
+`better-sqlite3` (app) — so there is one persist implementation, not one per
+binding.
 _Avoid_: writer, sink, DAO
 
 **Daemon indexing mode**:

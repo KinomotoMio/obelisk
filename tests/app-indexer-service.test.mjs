@@ -73,6 +73,48 @@ test('indexer service runs one pending build after an in-flight build finishes',
   assert.deepEqual(calls, ['first', 'pending']);
 });
 
+test('indexer service does not log a build cancelled by a service stop', async () => {
+  const timers = manualTimers();
+  const warnings = [];
+  let rejectBuild;
+  const service = createIndexerService({
+    buildIndex: () => new Promise((_resolve, reject) => { rejectBuild = reject; }),
+    watchProjects: () => null,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+    logger: { warn: (msg) => warnings.push(msg) },
+  });
+
+  const build = service.runBuildNow('startup');
+  service.stop(); // manual rebuild path tears the worker down mid-build
+  rejectBuild(new Error('Indexer worker stopped'));
+  await build;
+
+  assert.deepEqual(warnings, []);
+});
+
+test('indexer service logs a build that fails while running', async () => {
+  const timers = manualTimers();
+  const warnings = [];
+  let rejectBuild;
+  const service = createIndexerService({
+    buildIndex: () => new Promise((_resolve, reject) => { rejectBuild = reject; }),
+    watchProjects: () => null,
+    writeHeartbeat: () => {},
+    timers,
+    stabilityMs: 0,
+    logger: { warn: (msg) => warnings.push(msg) },
+  });
+
+  const build = service.runBuildNow('watch');
+  rejectBuild(new Error('disk on fire'));
+  await build;
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Obelisk index build failed: disk on fire/);
+});
+
 test('indexer service waits for a stability window before building', async () => {
   const timers = manualTimers();
   const calls = [];
