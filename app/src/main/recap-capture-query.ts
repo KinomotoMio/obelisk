@@ -1,11 +1,17 @@
 import path from 'node:path';
 
-function cleanRecapFilename(filename) {
+function cleanRecapFilename(filename?: string | null): string {
   if (!filename) return '';
   return path.basename(String(filename));
 }
 
-function buildRecapExportQuery({ cardIdx = 0, archetype = '', filename = '' } = {}) {
+interface RecapExportQueryOptions {
+  cardIdx?: number | string;
+  archetype?: string;
+  filename?: string;
+}
+
+function buildRecapExportQuery({ cardIdx = 0, archetype = '', filename = '' }: RecapExportQueryOptions = {}): string {
   const params = new URLSearchParams();
   const cardNumber = Number(cardIdx);
   params.set('card', Number.isFinite(cardNumber) ? String(cardNumber) : '0');

@@ -7,7 +7,7 @@
   "license": "AGPL-3.0",
   "scripts": {
     "test": "node --experimental-test-module-mocks --test tests/*.test.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p app/tsconfig.json",
     "lint": "eslint .",
     "build:core": "rm -rf dist && tsc -p tsconfig.build.json"
   },

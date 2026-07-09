@@ -6,7 +6,9 @@
     "lib": ["ES2023"],
     "types": ["node"],
     "strict": true,
+    "noImplicitAny": false,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "allowJs": true,
     "checkJs": false,
     "erasableSyntaxOnly": true,
@@ -15,13 +17,6 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["scripts/**/*", "tests/**/*"],
-  "exclude": [
-    "node_modules",
-    "app",
-    "dist",
-    "release",
-    "tests/app-*.test.mjs",
-    "tests/recap-capture-query.test.mjs"
-  ]
+  "include": ["src/main/**/*", "src/preload/**/*"],
+  "exclude": ["node_modules", "out", "dist", "release", "src/renderer"]
 }

@@ -5,10 +5,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import chokidar from 'chokidar';
-import { writeHeartbeat } from './indexer.js';
-import { createIndexerService } from './indexer-service.js';
-import { createWorkerBuildIndex } from './indexer-worker-client.js';
-import { buildRecapExportQuery } from './recap-capture-query.js';
+import { writeHeartbeat } from './indexer.ts';
+import { createIndexerService } from './indexer-service.ts';
+import { createWorkerBuildIndex } from './indexer-worker-client.ts';
+import { buildRecapExportQuery } from './recap-capture-query.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -68,7 +68,7 @@ function migrateLegacyDbIfNeeded(paths = getPathsForClaudeDir()) {
     fs.mkdirSync(path.dirname(paths.dbPath), { recursive: true });
     fs.copyFileSync(legacyDbPath, paths.dbPath);
   } catch (error) {
-    console.warn?.(`Obelisk legacy DB migration skipped: ${error.message}`);
+    console.warn?.(`Obelisk legacy DB migration skipped: ${(error as Error).message}`);
   }
 }
 
@@ -111,7 +111,7 @@ function resolveSchemaPath() {
     path.join(__dirname, 'schema.sql'),
     path.join(__dirname, '..', 'scripts', 'schema.sql'),
     process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'schema.sql') : null,
-  ].filter(Boolean);
+  ].filter((c): c is string => Boolean(c));
   return candidates.find(p => fs.existsSync(p));
 }
 
@@ -160,7 +160,7 @@ function openDb(dbPath = getPathsForClaudeDir().dbPath) {
   return db;
 }
 
-function notifyIndexUpdated(result = {}) {
+function notifyIndexUpdated(result: { affectedSessionIds?: unknown } = {}) {
   const affectedSessionIds = Array.isArray(result.affectedSessionIds)
     ? [...new Set(result.affectedSessionIds.filter(Boolean))]
     : [];
@@ -173,7 +173,7 @@ function notifyIndexUpdated(result = {}) {
   }
 }
 
-function sourceWhereClause(opts = {}, column = 'source') {
+function sourceWhereClause(opts: { includeCodex?: boolean; source?: string } = {}, column = "source"): { sql: string; params: unknown[] } {
   if (opts.includeCodex || opts.source === 'all') return { sql: '', params: [] };
   if (opts.source) return { sql: `COALESCE(${column}, 'claude') = ?`, params: [opts.source] };
   return { sql: `COALESCE(${column}, 'claude') = 'claude'`, params: [] };
@@ -283,7 +283,7 @@ function createWindow() {
 
 const OBELISK_DIR = path.join(os.homedir(), '.obelisk');
 const RECAP_DIR = path.join(OBELISK_DIR, 'recap');
-let obeliskWatcher = null;
+let obeliskWatcher: import("chokidar").FSWatcher | null = null;
 
 function startObeliskWatcher() {
   if (obeliskWatcher) return obeliskWatcher;
@@ -340,7 +340,7 @@ ipcMain.handle('db:getSessions', (_, opts = {}) => {
   if (!db) return [];
   const { project, limit = 200 } = opts;
   let sql = `SELECT id, title, project, project_path, started_at, ended_at, git_branch, version, message_count, jsonl_path, source FROM sessions`;
-  const params = [];
+  const params: unknown[] = [];
   const sourceFilter = sourceWhereClause(opts);
   if (sourceFilter.sql) {
     sql = appendWhere(sql, params, sourceFilter.sql);
@@ -437,7 +437,7 @@ ipcMain.handle('db:getMessageFullText', (_, uuid) => {
     if (!match) return null;
     const rawThreadId = match[1];
     const targetLine = Number(match[2]);
-    let jsonlPath = null;
+    let jsonlPath: string | null = null;
     if (!msg.agent_id) {
       jsonlPath = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id)?.jsonl_path || null;
     }
@@ -469,7 +469,7 @@ ipcMain.handle('db:getMessageFullText', (_, uuid) => {
   }
 
   // Resolve JSONL path
-  let jsonlPath = null;
+  let jsonlPath: string | null = null;
   if (msg.agent_id) {
     const wa = db.prepare('SELECT agent_id, run_id, session_id FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
     if (wa) {
@@ -501,7 +501,7 @@ ipcMain.handle('db:getMessageFullText', (_, uuid) => {
       const content = obj.message?.content;
       if (typeof content === 'string') return content;
       if (!Array.isArray(content)) return null;
-      const parts = [];
+      const parts: string[] = [];
       for (const b of content) {
         if (b.type === 'text' && b.text) parts.push(b.text);
         else if (b.type === 'thinking' && b.thinking) parts.push(b.thinking);
@@ -614,7 +614,7 @@ async function createExportCapture(parentWin, query) {
       nodeIntegration: false,
       offscreen: true,
       deviceScaleFactor: 2,
-    },
+    } as Electron.WebPreferences,
   });
 
   const isDev = process.argv.includes('--dev') || !!process.env.ELECTRON_RENDERER_URL;
@@ -802,6 +802,7 @@ ipcMain.handle('settings:set', async (_, key, value) => {
 
 ipcMain.handle('settings:browseFolder', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return null;
   const { filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openDirectory'],
     title: 'Select Claude Code data folder',
@@ -851,7 +852,7 @@ ipcMain.handle('settings:rebuildIndex', async () => {
       try {
         openDb(paths.dbPath);
       } catch (error) {
-        console.warn?.(`Obelisk DB reopen after rebuild failed: ${error.message}`);
+        console.warn?.(`Obelisk DB reopen after rebuild failed: ${(error as Error).message}`);
       }
     }
     if (shouldRestartWatcher) startIndexerService({ buildOnStart: false });

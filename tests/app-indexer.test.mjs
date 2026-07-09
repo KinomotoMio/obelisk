@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
-import { buildIndex } from '../app/src/main/indexer.js';
+import { buildIndex } from '../app/src/main/indexer.ts';
 const { DatabaseSync } = require('node:sqlite');
 
 class TestDatabase {

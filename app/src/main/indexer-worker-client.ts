@@ -4,23 +4,41 @@ import { Worker } from 'node:worker_threads';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+interface WorkerMessage {
+  id: number;
+  result?: unknown;
+  error?: { message: string; stack?: string };
+}
+
+interface PendingBuild {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+}
+
+interface WorkerBuildIndexOptions {
+  workerPath?: string;
+  WorkerImpl?: typeof Worker;
+}
+
 function createWorkerBuildIndex({
+  // indexer-worker.js is the built worker output emitted next to this module.
   workerPath = path.join(__dirname, 'indexer-worker.js'),
   WorkerImpl = Worker,
-} = {}) {
-  let worker = null;
+}: WorkerBuildIndexOptions = {}) {
+  let worker: Worker | null = null;
   let nextId = 1;
-  const pending = new Map();
+  const pending = new Map<number, PendingBuild>();
 
-  const rejectPending = (error) => {
+  const rejectPending = (error: Error) => {
     for (const { reject } of pending.values()) reject(error);
     pending.clear();
   };
 
-  const ensureWorker = () => {
+  const ensureWorker = (): Worker => {
     if (worker) return worker;
-    worker = new WorkerImpl(workerPath, { type: 'module' });
-    worker.on('message', (message) => {
+    const active = new WorkerImpl(workerPath, { type: 'module' } as ConstructorParameters<typeof Worker>[1]);
+    worker = active;
+    active.on('message', (message: WorkerMessage) => {
       const current = pending.get(message.id);
       if (!current) return;
       pending.delete(message.id);
@@ -32,18 +50,18 @@ function createWorkerBuildIndex({
         current.resolve(message.result);
       }
     });
-    worker.on('error', (error) => {
+    active.on('error', (error: Error) => {
       rejectPending(error);
       worker = null;
     });
-    worker.on('exit', (code) => {
+    active.on('exit', (code: number) => {
       if (pending.size) rejectPending(new Error(`Indexer worker exited with code ${code}`));
       worker = null;
     });
-    return worker;
+    return active;
   };
 
-  const buildIndex = (args = {}) => new Promise((resolve, reject) => {
+  const buildIndex = (args: Record<string, unknown> = {}) => new Promise((resolve, reject) => {
     const id = nextId++;
     pending.set(id, { resolve, reject });
     ensureWorker().postMessage({ id, args });

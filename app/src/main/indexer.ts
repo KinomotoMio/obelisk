@@ -25,12 +25,22 @@ const DEFAULT_DB_PATH = path.join(DEFAULT_OBELISK_DIR, 'obelisk.sqlite');
 const DEFAULT_PROJECTS_DIR = path.join(DEFAULT_CLAUDE_DIR, 'projects');
 const DEFAULT_HISTORY_PATH = path.join(DEFAULT_CLAUDE_DIR, 'history.jsonl');
 
+interface FileInfo {
+  path: string;
+  sessionId?: string;
+  project?: string;
+  isSubagent?: boolean;
+  agentId?: string;
+  workflowRunId?: string;
+  source?: string;
+}
+
 function resolveSchemaPath() {
   const candidates = [
     path.join(__dirname, 'schema.sql'),
     path.join(__dirname, '..', '..', '..', 'scripts', 'schema.sql'),
     process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'schema.sql') : null,
-  ].filter(Boolean);
+  ].filter((c): c is string => Boolean(c));
   const found = candidates.find(p => fs.existsSync(p));
   if (!found) throw new Error('Obelisk schema.sql not found');
   return found;
@@ -41,7 +51,7 @@ function installSchema(db, schemaPath = resolveSchemaPath()) {
   migrateDb(db);
 }
 
-function openIndexDb({ dbPath = DEFAULT_DB_PATH, schemaPath = resolveSchemaPath(), DatabaseImpl = Database } = {}) {
+function openIndexDb({ dbPath = DEFAULT_DB_PATH, schemaPath = resolveSchemaPath(), DatabaseImpl = Database }: { dbPath?: string; schemaPath?: string; DatabaseImpl?: new (dbPath: string) => any } = {}) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseImpl(dbPath);
   db.pragma('journal_mode = WAL');
@@ -104,7 +114,7 @@ function copyMemoriesFromDb(db, sourceDbPath) {
   }
 }
 
-function discoverJsonlFiles({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = undefined } = {}) {
+function discoverJsonlFiles({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = undefined }: { projectsDir?: string; changedPaths?: string[] } = {}) {
   if (Array.isArray(changedPaths) && changedPaths.length) {
     const changedFiles = discoverJsonlFilesForChanges({ projectsDir, changedPaths });
     if (changedFiles.length) return changedFiles;
@@ -168,8 +178,8 @@ function dedupeFileInfos(files) {
   return [...byPath.values()];
 }
 
-function discoverJsonlFilesForChanges({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = [] } = {}) {
-  const files = [];
+function discoverJsonlFilesForChanges({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = [] }: { projectsDir?: string; changedPaths?: string[] } = {}) {
+  const files: FileInfo[] = [];
   for (const changedPath of changedPaths) {
     const info = jsonlFileInfoFromPath(projectsDir, changedPath);
     if (info) files.push(info);
@@ -178,7 +188,7 @@ function discoverJsonlFilesForChanges({ projectsDir = DEFAULT_PROJECTS_DIR, chan
 }
 
 function discoverJsonlFilesFull({ projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
-  const files = [];
+  const files: FileInfo[] = [];
   if (!fs.existsSync(projectsDir)) return files;
   let projects;
   try { projects = fs.readdirSync(projectsDir); } catch { return files; }
@@ -219,7 +229,7 @@ function discoverJsonlFilesFull({ projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
   return files;
 }
 
-function discoverCodexJsonlFiles({ codexDir = DEFAULT_CODEX_DIR, changedPaths = undefined } = {}) {
+function discoverCodexJsonlFiles({ codexDir = DEFAULT_CODEX_DIR, changedPaths = undefined }: { codexDir?: string; changedPaths?: string[] } = {}) {
   if (Array.isArray(changedPaths) && changedPaths.length) {
     const changedFiles = discoverCodexJsonlFilesForChanges({ codexDir, changedPaths });
     if (changedFiles.length) return changedFiles;
@@ -244,8 +254,8 @@ function isPathInside(rootDir, candidate) {
   return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
-function discoverCodexJsonlFilesForChanges({ codexDir = DEFAULT_CODEX_DIR, changedPaths = [] } = {}) {
-  const files = [];
+function discoverCodexJsonlFilesForChanges({ codexDir = DEFAULT_CODEX_DIR, changedPaths = [] }: { codexDir?: string; changedPaths?: string[] } = {}) {
+  const files: FileInfo[] = [];
   const sessionsDir = codexSessionsDir(codexDir);
   for (const changedPath of changedPaths) {
     const rootRelativePath = normalizeChangedPathForRoot(codexDir, changedPath);
@@ -255,7 +265,7 @@ function discoverCodexJsonlFilesForChanges({ codexDir = DEFAULT_CODEX_DIR, chang
     }
     const sessionRelativePath = normalizeChangedPathForRoot(sessionsDir, changedPath);
     const fp = isPathInside(sessionsDir, rootRelativePath) ? rootRelativePath : sessionRelativePath;
-    if (!fp.endsWith('.jsonl') || !isPathInside(sessionsDir, fp)) continue;
+    if (!fp || !fp.endsWith(".jsonl") || !isPathInside(sessionsDir, fp)) continue;
     if (!fs.existsSync(fp)) continue;
     files.push({ path: fp, source: 'codex' });
   }
@@ -264,11 +274,11 @@ function discoverCodexJsonlFilesForChanges({ codexDir = DEFAULT_CODEX_DIR, chang
 
 function discoverCodexJsonlFilesFull({ codexDir = DEFAULT_CODEX_DIR } = {}) {
   const root = codexSessionsDir(codexDir);
-  const files = [];
+  const files: FileInfo[] = [];
   if (!fs.existsSync(root)) return files;
   const stack = [root];
   while (stack.length) {
-    const current = stack.pop();
+    const current = stack.pop()!;
     let entries;
     try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
@@ -308,7 +318,7 @@ function indexClaudeFile(db, file) {
 }
 
 function codexSessionMeta(filePath) {
-  let meta = null;
+  let meta: any = null;
   readLines(filePath, (line) => {
     let obj;
     try { obj = JSON.parse(line); } catch { return; }
@@ -328,7 +338,7 @@ function indexCodexFile(db, file) {
   if (!needed) {
     if (guardian) {
       persist(db, { key: file.path, sessionId: '' }, (function* () {
-        yield { kind: 'delete-session', sessionId: codexDbId(guardian.threadRawId) };
+        yield { kind: "delete-session", sessionId: codexDbId(guardian.threadRawId) as string };
         return null;
       })());
     }
@@ -352,7 +362,7 @@ function indexCodexSessionIndex(db, { codexDir = DEFAULT_CODEX_DIR } = {}) {
       db.prepare('UPDATE sessions SET title=COALESCE(title, ?), ended_at=COALESCE(ended_at, ?) WHERE id=? AND source=?')
         .run(item.thread_name, item.updated_at || null, codexDbId(item.id), 'codex');
     } catch (error) {
-      console.warn(`Warning: malformed Codex session index line: ${error.message}`);
+      console.warn(`Warning: malformed Codex session index line: ${(error as Error).message}`);
     }
   });
 }
@@ -387,7 +397,7 @@ function indexSubagentMeta(db, fi) {
       db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
     }
   } catch (error) {
-    console.warn(`Warning: failed to read subagent meta ${mp}: ${error.message}`);
+    console.warn(`Warning: failed to read subagent meta ${mp}: ${(error as Error).message}`);
   }
 }
 
@@ -423,7 +433,7 @@ function indexWorkflows(db, { projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
               item.durationMs||null, item.tokens||null, item.toolCalls||null, 'agent-' + item.agentId);
           }
         } catch (error) {
-          console.warn(`Warning: failed to index workflow ${f}: ${error.message}`);
+          console.warn(`Warning: failed to index workflow ${f}: ${(error as Error).message}`);
         }
       }
     }
@@ -437,7 +447,7 @@ function indexHistory(db, { historyPath = DEFAULT_HISTORY_PATH } = {}) {
       const o = JSON.parse(line);
       if (o.sessionId && o.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(o.title, o.sessionId);
     } catch (error) {
-      console.warn(`Warning: malformed history line: ${error.message}`);
+      console.warn(`Warning: malformed history line: ${(error as Error).message}`);
     }
   });
 }
@@ -488,6 +498,26 @@ function writeHeartbeat({ dbPath = DEFAULT_DB_PATH, DatabaseImpl = Database } = 
   }
 }
 
+interface BuildIndexOptions {
+  claudeDir?: string;
+  codexDir?: string;
+  projectsDir?: string;
+  historyPath?: string;
+  dbPath?: string;
+  schemaPath?: string;
+  DatabaseImpl?: new (dbPath: string) => any;
+  force?: boolean;
+  changedPaths?: string[];
+  preserveDbPath?: string | null;
+}
+
+interface BuildIndexResult {
+  files: number;
+  latestSourceMtime: number;
+  affectedSessionIds: string[];
+  ftsRebuilt: boolean;
+}
+
 function buildIndex({
   claudeDir = DEFAULT_CLAUDE_DIR,
   codexDir = path.join(path.dirname(claudeDir), '.codex'),
@@ -499,7 +529,7 @@ function buildIndex({
   force = false,
   changedPaths = undefined,
   preserveDbPath = null,
-} = {}) {
+}: BuildIndexOptions = {}): BuildIndexResult {
   const db = openIndexDb({ dbPath, schemaPath, DatabaseImpl });
   let messageFtsTriggersDropped = false;
   if (preserveDbPath && path.resolve(preserveDbPath) !== path.resolve(dbPath)) {
@@ -531,7 +561,7 @@ function buildIndex({
       db.prepare("DELETE FROM workflows").run();
       db.prepare("DELETE FROM workflow_agents").run();
     }
-    const affectedSessionIds = new Set();
+    const affectedSessionIds = new Set<string>();
     if (Array.isArray(changedPaths)) {
       for (const changedPath of changedPaths) {
         const sessionId = sessionIdFromChangedPath(projectsDir, changedPath);
@@ -547,7 +577,7 @@ function buildIndex({
         db.exec('COMMIT');
       } catch (error) {
         db.exec('ROLLBACK');
-        console.warn(`Warning: failed to index ${file.path}: ${error.message}`);
+        console.warn(`Warning: failed to index ${file.path}: ${(error as Error).message}`);
       }
     }
     db.exec('BEGIN');
@@ -575,7 +605,7 @@ function buildIndex({
       try {
         installSchema(db, schemaPath);
       } catch (error) {
-        console.warn(`Warning: failed to restore message FTS triggers: ${error.message}`);
+        console.warn(`Warning: failed to restore message FTS triggers: ${(error as Error).message}`);
       }
     }
     checkpointDb(db);

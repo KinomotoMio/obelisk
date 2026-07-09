@@ -9,6 +9,34 @@ const DEFAULT_STABILITY_MS = 500;
 const DEFAULT_HEARTBEAT_MS = 30000;
 const DEFAULT_WATCH_RETRY_MS = 5000;
 
+type TimerHandle = ReturnType<typeof setTimeout>;
+
+interface Timers {
+  setTimeout: (fn: () => void, ms?: number) => TimerHandle;
+  clearTimeout: (handle: TimerHandle) => void;
+  setInterval?: (fn: () => void, ms?: number) => TimerHandle;
+  clearInterval?: (handle: TimerHandle) => void;
+}
+
+interface Watcher {
+  close(): unknown;
+}
+
+interface IndexerServiceOptions {
+  projectsDir?: string;
+  watchDirs?: string | string[];
+  debounceMs?: number;
+  stabilityMs?: number;
+  heartbeatMs?: number;
+  watchRetryMs?: number;
+  buildIndex?: (args: { reason?: string; changedPaths?: string[] }) => unknown;
+  writeHeartbeat?: () => void;
+  watchProjects?: (onChange: (changedPath: string) => void) => Watcher | null;
+  chokidar?: any;
+  timers?: Timers;
+  logger?: { warn?: (msg: string) => void };
+}
+
 function createIndexerService({
   projectsDir = DEFAULT_PROJECTS_DIR,
   watchDirs = [projectsDir],
@@ -27,13 +55,13 @@ function createIndexerService({
     clearInterval,
   },
   logger = console,
-} = {}) {
+}: IndexerServiceOptions = {}) {
   if (typeof buildIndex !== 'function') throw new Error('createIndexerService() requires buildIndex');
   const watch = watchProjects || ((onChange) => {
     const roots = [...new Set((Array.isArray(watchDirs) ? watchDirs : [watchDirs]).filter(Boolean))];
     const existingRoots = roots.filter(root => fs.existsSync(root));
     if (!existingRoots.length) return null;
-    const watchers = [];
+    const watchers: any[] = [];
     const onFileChange = (filename) => {
       const name = filename ? String(filename) : '';
       if (!name || name.endsWith('.jsonl') || name.endsWith('.json')) onChange(name);
@@ -57,7 +85,7 @@ function createIndexerService({
         .on('change', onFileChange)
         .on('unlink', onFileChange)
         .on('error', (error) => {
-          logger.warn?.(`Obelisk watcher failed: ${error.message}`);
+          logger.warn?.(`Obelisk watcher failed: ${(error as Error).message}`);
         });
       watchers.push(watcher);
     }
@@ -68,19 +96,19 @@ function createIndexerService({
     };
   });
 
-  let buildTimer = null;
-  let stabilityTimer = null;
-  let heartbeatTimer = null;
-  let watchRetryTimer = null;
-  let watcher = null;
+  let buildTimer: TimerHandle | null = null;
+  let stabilityTimer: TimerHandle | null = null;
+  let heartbeatTimer: TimerHandle | null = null;
+  let watchRetryTimer: TimerHandle | null = null;
+  let watcher: Watcher | null = null;
   let stopped = false;
   let running = false;
   let pending = false;
-  let lastReason = null;
-  let changedPaths = new Set();
+  let lastReason: string | null = null;
+  let changedPaths = new Set<string>();
   let idlePromise = Promise.resolve();
 
-  const addChangedPath = (changedPath) => {
+  const addChangedPath = (changedPath?: string | string[]) => {
     if (Array.isArray(changedPath)) {
       for (const p of changedPath) addChangedPath(p);
       return;
@@ -96,7 +124,7 @@ function createIndexerService({
     return paths;
   };
 
-  const runBuildNow = (reason = 'manual', paths = undefined) => {
+  const runBuildNow = (reason = "manual", paths: string[] | undefined = undefined) => {
     addChangedPath(paths);
     if (stopped) return idlePromise;
     if (running) {
@@ -113,7 +141,7 @@ function createIndexerService({
       .catch((error) => {
         // A build in flight when the service is stopped (e.g. a manual rebuild
         // tears down the worker) is a deliberate cancellation, not a failure.
-        if (!stopped) logger.warn?.(`Obelisk index build failed: ${error.message}`);
+        if (!stopped) logger.warn?.(`Obelisk index build failed: ${(error as Error).message}`);
       })
       .finally(() => {
         running = false;
@@ -125,7 +153,7 @@ function createIndexerService({
     return idlePromise;
   };
 
-  const scheduleBuild = (reason = 'change', changedPath = undefined) => {
+  const scheduleBuild = (reason = "change", changedPath: string | undefined = undefined) => {
     if (stopped) return;
     addChangedPath(changedPath);
     lastReason = reason;
@@ -165,7 +193,7 @@ function createIndexerService({
         try {
           writeHeartbeat();
         } catch (error) {
-          logger.warn?.(`Obelisk heartbeat failed: ${error.message}`);
+          logger.warn?.(`Obelisk heartbeat failed: ${(error as Error).message}`);
         }
       }, heartbeatMs);
     }

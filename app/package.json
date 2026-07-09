@@ -60,6 +60,7 @@
     "chokidar": "^4.0.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@vitejs/plugin-vue": "^5.0.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0",

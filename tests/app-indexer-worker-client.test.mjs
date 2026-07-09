@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-import { createWorkerBuildIndex } from '../app/src/main/indexer-worker-client.js';
+import { createWorkerBuildIndex } from '../app/src/main/indexer-worker-client.ts';
 
 test('worker build client resolves build results from a worker thread', async () => {
   const instances = [];

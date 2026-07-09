@@ -22,7 +22,7 @@ const require = createRequire(import.meta.url);
 // resolve each bare specifier exactly as the main module sees it (ESM resolution
 // relative to the main module's directory) and mock that URL. Relative deps are
 // resolved against the main module URL directly.
-const mainUrl = new URL('../app/src/main/index.js', import.meta.url);
+const mainUrl = new URL('../app/src/main/index.ts', import.meta.url);
 const mainPath = fileURLToPath(mainUrl);
 const mainDir = fileURLToPath(new URL('.', mainUrl));
 
@@ -37,9 +37,9 @@ function esmResolve(specifier) {
 const ELECTRON_URL = esmResolve('electron');
 const DATABASE_URL = esmResolve('better-sqlite3');
 const CHOKIDAR_URL = esmResolve('chokidar');
-const INDEXER_URL = new URL('./indexer.js', mainUrl).href;
-const INDEXER_SERVICE_URL = new URL('./indexer-service.js', mainUrl).href;
-const INDEXER_WORKER_URL = new URL('./indexer-worker-client.js', mainUrl).href;
+const INDEXER_URL = new URL('./indexer.ts', mainUrl).href;
+const INDEXER_SERVICE_URL = new URL('./indexer-service.ts', mainUrl).href;
+const INDEXER_WORKER_URL = new URL('./indexer-worker-client.ts', mainUrl).href;
 
 let importCounter = 0;
 
