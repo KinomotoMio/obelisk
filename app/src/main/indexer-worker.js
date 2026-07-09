@@ -1,5 +1,5 @@
-const { parentPort } = require('worker_threads');
-const { buildIndex } = require('./indexer');
+import { parentPort } from 'node:worker_threads';
+import { buildIndex } from './indexer.js';
 
 parentPort.on('message', ({ id, args }) => {
   try {

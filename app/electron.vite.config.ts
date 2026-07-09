@@ -24,6 +24,13 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        // Electron sandbox does not support ESM preload — emit CJS index.js
+        // (main loads ../preload/index.js) even though the project is ESM.
+        output: { format: 'cjs', entryFileNames: '[name].js' },
+      },
+    },
   },
   renderer: {
     plugins: [vue()],

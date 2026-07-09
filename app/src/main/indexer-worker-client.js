@@ -1,5 +1,8 @@
-const path = require('path');
-const { Worker } = require('worker_threads');
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function createWorkerBuildIndex({
   workerPath = path.join(__dirname, 'indexer-worker.js'),
@@ -16,7 +19,7 @@ function createWorkerBuildIndex({
 
   const ensureWorker = () => {
     if (worker) return worker;
-    worker = new WorkerImpl(workerPath);
+    worker = new WorkerImpl(workerPath, { type: 'module' });
     worker.on('message', (message) => {
       const current = pending.get(message.id);
       if (!current) return;
@@ -57,4 +60,4 @@ function createWorkerBuildIndex({
   return { buildIndex, stop };
 }
 
-module.exports = { createWorkerBuildIndex };
+export { createWorkerBuildIndex };

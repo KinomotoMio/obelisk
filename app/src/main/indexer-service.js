@@ -1,6 +1,7 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import chokidarModule from 'chokidar';
 
 const DEFAULT_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const DEFAULT_DEBOUNCE_MS = 2000;
@@ -38,7 +39,7 @@ function createIndexerService({
       if (!name || name.endsWith('.jsonl') || name.endsWith('.json')) onChange(name);
     };
     for (const root of existingRoots) {
-      const watcher = (chokidar || require('chokidar')).watch(root, {
+      const watcher = (chokidar || chokidarModule).watch(root, {
         cwd: root,
         ignoreInitial: true,
         awaitWriteFinish: {
@@ -192,4 +193,4 @@ function createIndexerService({
   };
 }
 
-module.exports = { createIndexerService };
+export { createIndexerService };

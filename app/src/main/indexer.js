@@ -1,7 +1,10 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const Database = require('better-sqlite3');
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const TEXT_LIMIT = 10000;
 const DEFAULT_CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -1161,7 +1164,7 @@ function buildIndex({
   }
 }
 
-module.exports = {
+export {
   buildIndex,
   writeHeartbeat,
   openIndexDb,

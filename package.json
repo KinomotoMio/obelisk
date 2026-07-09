@@ -6,7 +6,7 @@
   "description": "Explicit memory infrastructure for coding agents — a queryable SQLite evidence layer over local Claude Code and Codex history, plus human-approved durable memory.",
   "license": "AGPL-3.0",
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --experimental-test-module-mocks --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "build:core": "rm -rf dist && tsc -p tsconfig.build.json"

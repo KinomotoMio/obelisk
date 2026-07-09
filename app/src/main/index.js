@@ -1,12 +1,16 @@
-const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage } = require('electron');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
-const Database = require('better-sqlite3');
-const { writeHeartbeat } = require('./indexer');
-const { createIndexerService } = require('./indexer-service');
-const { createWorkerBuildIndex } = require('./indexer-worker-client');
-const { buildRecapExportQuery } = require('./recap-capture-query');
+import { app, BrowserWindow, ipcMain, clipboard, dialog, shell } from 'electron';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import chokidar from 'chokidar';
+import { writeHeartbeat } from './indexer.js';
+import { createIndexerService } from './indexer-service.js';
+import { createWorkerBuildIndex } from './indexer-worker-client.js';
+import { buildRecapExportQuery } from './recap-capture-query.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function detectClaudeDir() {
   // macOS / Linux: ~/.claude
@@ -283,7 +287,6 @@ let obeliskWatcher = null;
 
 function startObeliskWatcher() {
   if (obeliskWatcher) return obeliskWatcher;
-  const chokidar = require('chokidar');
   if (!fs.existsSync(OBELISK_DIR)) {
     fs.mkdirSync(OBELISK_DIR, { recursive: true });
   }
@@ -488,7 +491,6 @@ ipcMain.handle('db:getMessageFullText', (_, uuid) => {
   if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
 
   // Scan JSONL for the message UUID and extract full text
-  const readline = require('readline');
   const data = fs.readFileSync(jsonlPath, 'utf-8');
   const lines = data.split('\n');
   for (const line of lines) {
@@ -809,7 +811,6 @@ ipcMain.handle('settings:browseFolder', async (event) => {
 });
 
 ipcMain.handle('settings:revealPath', (_, p) => {
-  const { shell } = require('electron');
   if (fs.existsSync(p)) shell.showItemInFolder(p);
 });
 

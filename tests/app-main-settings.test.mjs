@@ -1,22 +1,108 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Module from 'node:module';
 
 const require = createRequire(import.meta.url);
+
+// The app main process is now an ES module. It runs side-effectfully on import
+// (registers ipcMain handlers, opens windows, etc.) and has no exports, so we
+// mock its ESM dependencies with node:test's `mock.module` and load it via a
+// cache-busted dynamic import.
+//
+// `mock.module` keys mocks by the *resolved* module URL. The app's dependencies
+// live in `app/node_modules`, so they are NOT resolvable from this test file's
+// directory, and bare specifiers ('electron', ...) would either fail to resolve
+// here or resolve to the wrong ESM entry (e.g. chokidar exposes esm/index.js via
+// its "exports" map, which differs from require.resolve's CJS entry). We instead
+// resolve each bare specifier exactly as the main module sees it (ESM resolution
+// relative to the main module's directory) and mock that URL. Relative deps are
+// resolved against the main module URL directly.
+const mainUrl = new URL('../app/src/main/index.js', import.meta.url);
+const mainPath = fileURLToPath(mainUrl);
+const mainDir = fileURLToPath(new URL('.', mainUrl));
+
+function esmResolve(specifier) {
+  return execFileSync(
+    process.execPath,
+    ['--input-type=module', '-e', `process.stdout.write(import.meta.resolve(${JSON.stringify(specifier)}))`],
+    { cwd: mainDir, encoding: 'utf8' },
+  ).trim();
+}
+
+const ELECTRON_URL = esmResolve('electron');
+const DATABASE_URL = esmResolve('better-sqlite3');
+const CHOKIDAR_URL = esmResolve('chokidar');
+const INDEXER_URL = new URL('./indexer.js', mainUrl).href;
+const INDEXER_SERVICE_URL = new URL('./indexer-service.js', mainUrl).href;
+const INDEXER_WORKER_URL = new URL('./indexer-worker-client.js', mainUrl).href;
+
+let importCounter = 0;
+
+// Registers the given [specifier, options] mocks and returns a restore fn.
+function registerMocks(defs) {
+  const contexts = defs.map(([spec, opts]) => mock.module(spec, opts));
+  return () => {
+    for (const ctx of contexts) ctx.restore();
+    mock.reset();
+  };
+}
+
+// Fresh evaluation of the main module every call (cache-busted query string).
+async function importMain() {
+  await import(`${mainUrl.href}?t=${++importCounter}-${Date.now()}`);
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+// Electron named-export namespace. ESM named imports are validated at load time,
+// so every export the app imports ('app', 'BrowserWindow', 'ipcMain', 'clipboard',
+// 'dialog', 'nativeImage', 'shell') must be present, even if unused by a test.
+function electronNamespace({ app, BrowserWindow, ipcMain }) {
+  return {
+    app: app ?? { whenReady: () => Promise.resolve(), on() {}, quit() {} },
+    BrowserWindow,
+    ipcMain: ipcMain ?? { handle() {} },
+    clipboard: {},
+    dialog: {},
+    nativeImage: {},
+    shell: {},
+  };
+}
+
+function noopChokidar() {
+  return { watch: () => ({ on() { return this; }, close() {} }) };
+}
+
+function defaultIndexerService() {
+  return {
+    createIndexerService: () => ({
+      start() {},
+      stop() {},
+      idle: async () => {},
+      runBuildNow() { return Promise.resolve(); },
+    }),
+  };
+}
+
+function defaultIndexerWorkerClient() {
+  return {
+    createWorkerBuildIndex: () => ({
+      buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
+      stop() {},
+    }),
+  };
+}
 
 async function loadMainForWindowFlags(flags) {
   const originalArgv = process.argv;
   const originalHome = process.env.HOME;
-  const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/src/main/index.js');
   const home = join(tmpdir(), `obelisk-window-flags-${Date.now()}-${Math.random()}`);
   mkdirSync(join(home, '.obelisk'), { recursive: true });
   writeFileSync(join(home, '.obelisk', 'obelisk.sqlite'), '');
-  delete require.cache[mainPath];
   process.env.HOME = home;
   process.argv = [originalArgv[0] || 'node', originalArgv[1] || 'electron', ...flags];
 
@@ -51,54 +137,20 @@ async function loadMainForWindowFlags(flags) {
     static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
-        BrowserWindow: FakeBrowserWindow,
-        ipcMain: { handle() {} },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
-        createIndexerService: () => ({
-          start() {},
-          stop() {},
-          idle: async () => {},
-          runBuildNow() { return Promise.resolve(); },
-        }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
-        createWorkerBuildIndex: () => ({
-          buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
-          stop() {},
-        }),
-      };
-    }
-    if (request === 'chokidar') {
-      return { watch: () => ({ on() { return this; }, close() {} }) };
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
+  const restore = registerMocks([
+    [ELECTRON_URL, { namedExports: electronNamespace({ BrowserWindow: FakeBrowserWindow }) }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
     return windows;
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.argv = originalArgv;
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
@@ -125,7 +177,6 @@ test('dev mode does not open DevTools unless explicitly requested', async () => 
 });
 
 test('main process watches Codex sessions directory instead of Codex root', async () => {
-  const originalLoad = Module._load;
   const originalHome = process.env.HOME;
   const home = join(tmpdir(), `obelisk-main-watch-dirs-${Date.now()}`);
   const claudeDir = join(home, '.claude');
@@ -137,8 +188,6 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
   process.env.HOME = home;
 
   const serviceOptions = [];
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
 
   class FakeDatabase {
     pragma() {}
@@ -159,25 +208,13 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
     static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
-        BrowserWindow: FakeBrowserWindow,
-        ipcMain: { handle() {} },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
+  const restore = registerMocks([
+    [ELECTRON_URL, { namedExports: electronNamespace({ BrowserWindow: FakeBrowserWindow }) }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, {
+      namedExports: {
         createIndexerService: (options) => {
           serviceOptions.push(options);
           return {
@@ -187,23 +224,13 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
             runBuildNow() { return Promise.resolve(); },
           };
         },
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
-        createWorkerBuildIndex: () => ({
-          buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
-          stop() {},
-        }),
-      };
-    }
-    if (request === 'chokidar') return { watch: () => ({ on() { return this; }, close() {} }) };
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      },
+    }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     assert.equal(serviceOptions.length, 1);
     assert.deepEqual(serviceOptions[0].watchDirs, [
@@ -212,15 +239,13 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
     ]);
     assert.equal(serviceOptions[0].watchDirs.includes(codexDir), false);
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
   }
 });
 
 test('session IPC hides Codex rows by default and supports explicit source opt-in', async () => {
-  const originalLoad = Module._load;
   const originalHome = process.env.HOME;
   const home = join(tmpdir(), `obelisk-main-source-filter-${Date.now()}`);
   mkdirSync(join(home, '.obelisk'), { recursive: true });
@@ -229,8 +254,6 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
 
   const ipcHandlers = new Map();
   const queries = [];
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
 
   class FakeDatabase {
     pragma() {}
@@ -261,52 +284,26 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
     static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
         BrowserWindow: FakeBrowserWindow,
         ipcMain: {
           handle(channel, handler) {
             ipcHandlers.set(channel, handler);
           },
         },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
-        createIndexerService: () => ({
-          start() {},
-          stop() {},
-          idle: async () => {},
-          runBuildNow() { return Promise.resolve(); },
-        }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
-        createWorkerBuildIndex: () => ({
-          buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
-          stop() {},
-        }),
-      };
-    }
-    if (request === 'chokidar') return { watch: () => ({ on() { return this; }, close() {} }) };
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     ipcHandlers.get('db:getSessions')(null, {});
     assert.match(queries.at(-1).sql, /COALESCE\(source, 'claude'\) = 'claude'/);
@@ -329,15 +326,13 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
       queries.some(q => /MAX\(started_at\) as t FROM sessions WHERE COALESCE\(source, 'claude'\) = 'claude'/.test(q.sql)),
     );
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
   }
 });
 
 test('main process migrates an existing app database before source-filtered IPC queries', async () => {
-  const originalLoad = Module._load;
   const originalHome = process.env.HOME;
   const home = join(tmpdir(), `obelisk-main-db-migration-${Date.now()}`);
   const obeliskDir = join(home, '.obelisk');
@@ -373,8 +368,31 @@ test('main process migrates an existing app database before source-filtered IPC 
   legacy.close();
 
   const ipcHandlers = new Map();
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
+
+  // better-sqlite3-compatible adapter over node:sqlite so the real migration
+  // logic (ALTER TABLE ADD COLUMN source, etc.) runs against a real database.
+  class SqliteCompatDatabase {
+    constructor(dbFile) {
+      this.db = new DatabaseSync(dbFile);
+    }
+    pragma(statement) {
+      this.db.exec(`PRAGMA ${statement}`);
+    }
+    exec(sql) {
+      return this.db.exec(sql);
+    }
+    close() {
+      return this.db.close();
+    }
+    prepare(sql) {
+      const stmt = this.db.prepare(sql);
+      return {
+        all: (...params) => stmt.all(...params),
+        get: (...params) => stmt.get(...params),
+        run: (...params) => stmt.run(...params),
+      };
+    }
+  }
 
   class FakeBrowserWindow {
     constructor() {
@@ -387,75 +405,26 @@ test('main process migrates an existing app database before source-filtered IPC 
     static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
         BrowserWindow: FakeBrowserWindow,
         ipcMain: {
           handle(channel, handler) {
             ipcHandlers.set(channel, handler);
           },
         },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') {
-      return class SqliteCompatDatabase {
-        constructor(dbFile) {
-          this.db = new DatabaseSync(dbFile);
-        }
-        pragma(statement) {
-          this.db.exec(`PRAGMA ${statement}`);
-        }
-        exec(sql) {
-          return this.db.exec(sql);
-        }
-        close() {
-          return this.db.close();
-        }
-        prepare(sql) {
-          const stmt = this.db.prepare(sql);
-          return {
-            all: (...params) => stmt.all(...params),
-            get: (...params) => stmt.get(...params),
-            run: (...params) => stmt.run(...params),
-          };
-        }
-      };
-    }
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
-        createIndexerService: () => ({
-          start() {},
-          stop() {},
-          idle: async () => {},
-          runBuildNow() { return Promise.resolve(); },
-        }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
-        createWorkerBuildIndex: () => ({
-          buildIndex: async () => ({ files: 0, affectedSessionIds: [] }),
-          stop() {},
-        }),
-      };
-    }
-    if (request === 'chokidar') return { watch: () => ({ on() { return this; }, close() {} }) };
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: SqliteCompatDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     const sessions = ipcHandlers.get('db:getSessions')(null, {});
     assert.equal(sessions[0].id, 'legacy-session');
@@ -466,22 +435,18 @@ test('main process migrates an existing app database before source-filtered IPC 
       memoriesArchived: 0,
     });
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
   }
 });
 
 test('closing the last macOS window releases background resources until activation', async () => {
-  const originalLoad = Module._load;
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   const originalHome = process.env.HOME;
   const home = join(tmpdir(), `obelisk-main-window-${Date.now()}`);
   mkdirSync(join(home, '.obelisk'), { recursive: true });
   writeFileSync(join(home, '.obelisk', 'obelisk.sqlite'), '');
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
   process.env.HOME = home;
   Object.defineProperty(process, 'platform', { value: 'darwin' });
 
@@ -512,57 +477,51 @@ test('closing the last macOS window releases background resources until activati
     static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
         app: {
           whenReady: () => Promise.resolve(),
           on(event, handler) { appHandlers.set(event, handler); },
           quit() { quitCalled = true; },
         },
         BrowserWindow: FakeBrowserWindow,
-        ipcMain: { handle() {} },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, {
+      defaultExport: {
+        watch: () => {
+          const watcher = { on() { return this; }, close() { serviceEvents.push('watcher-close'); } };
+          watchers.push(watcher);
+          return watcher;
+        },
+      },
+    }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, {
+      namedExports: {
         createIndexerService: () => ({
           start() { serviceEvents.push('service-start'); },
           stop() { serviceEvents.push('service-stop'); },
           idle: async () => { serviceEvents.push('service-idle'); },
           runBuildNow() { serviceEvents.push('service-build'); return Promise.resolve(); },
         }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
+      },
+    }],
+    [INDEXER_WORKER_URL, {
+      namedExports: {
         createWorkerBuildIndex: () => {
           const worker = { stop() { serviceEvents.push('worker-stop'); } };
           workers.push(worker);
           return worker;
         },
-      };
-    }
-    if (request === 'chokidar') {
-      return {
-        watch: () => {
-          const watcher = { on() { return this; }, close() { serviceEvents.push('watcher-close'); } };
-          watchers.push(watcher);
-          return watcher;
-        },
-      };
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      },
+    }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     assert.equal(windows.length, 1);
     assert.equal(workers.length, 1);
@@ -586,8 +545,7 @@ test('closing the last macOS window releases background resources until activati
     assert.equal(watchers.length, 2);
     assert.equal(serviceEvents.filter(e => e === 'service-start').length, 2);
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
     rmSync(home, { recursive: true, force: true });
@@ -617,9 +575,6 @@ test('settings rebuild reopens the database from the configured Claude path', as
   const openedDbPaths = [];
   const buildCalls = [];
   const serviceEvents = [];
-  const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
 
   class FakeDatabase {
     constructor(dbPath) {
@@ -634,57 +589,41 @@ test('settings rebuild reopens the database from the configured Claude path', as
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = {
-        on() {},
-        setZoomLevel() {},
-        openDevTools() {},
-        send() {},
-      };
+      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
     close() {}
-    static getAllWindows() {
-      return [];
-    }
-    static fromWebContents() {
-      return null;
-    }
+    static getAllWindows() { return []; }
+    static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
         BrowserWindow: FakeBrowserWindow,
         ipcMain: {
           handle(channel, handler) {
             ipcHandlers.set(channel, handler);
           },
         },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, {
+      namedExports: {
         createIndexerService: () => ({
           start() { serviceEvents.push('start'); },
           stop() { serviceEvents.push('stop'); },
           idle: async () => { serviceEvents.push('idle'); },
           runBuildNow() { serviceEvents.push('runBuildNow'); return Promise.resolve(); },
         }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
+      },
+    }],
+    [INDEXER_WORKER_URL, {
+      namedExports: {
         createWorkerBuildIndex: () => ({
           buildIndex: async (args) => {
             serviceEvents.push('build');
@@ -694,17 +633,12 @@ test('settings rebuild reopens the database from the configured Claude path', as
           },
           stop() { return Promise.resolve(); },
         }),
-      };
-    }
-    if (request === 'chokidar') {
-      return { watch: () => ({ on() { return this; }, close() {} }) };
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      },
+    }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     const rebuild = ipcHandlers.get('settings:rebuildIndex');
     assert.equal(typeof rebuild, 'function');
@@ -722,8 +656,7 @@ test('settings rebuild reopens the database from the configured Claude path', as
     );
     assert.ok(serviceEvents.indexOf('build') > serviceEvents.indexOf('stop'));
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
   }
@@ -749,9 +682,6 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
   const openedDbPaths = [];
   const closedDbPaths = [];
   const serviceEvents = [];
-  const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
 
   class FakeDatabase {
     constructor(dbPath) {
@@ -767,57 +697,41 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = {
-        on() {},
-        setZoomLevel() {},
-        openDevTools() {},
-        send() {},
-      };
+      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
     close() {}
-    static getAllWindows() {
-      return [];
-    }
-    static fromWebContents() {
-      return null;
-    }
+    static getAllWindows() { return []; }
+    static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
         BrowserWindow: FakeBrowserWindow,
         ipcMain: {
           handle(channel, handler) {
             ipcHandlers.set(channel, handler);
           },
         },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, {
+      namedExports: {
         createIndexerService: () => ({
           start() { serviceEvents.push('start'); },
           stop() { serviceEvents.push('stop'); },
           idle: async () => { serviceEvents.push('idle'); },
           runBuildNow() { serviceEvents.push('runBuildNow'); return Promise.resolve(); },
         }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      return {
+      },
+    }],
+    [INDEXER_WORKER_URL, {
+      namedExports: {
         createWorkerBuildIndex: () => ({
           buildIndex: async () => {
             serviceEvents.push('build');
@@ -825,17 +739,12 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
           },
           stop() {},
         }),
-      };
-    }
-    if (request === 'chokidar') {
-      return { watch: () => ({ on() { return this; }, close() {} }) };
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      },
+    }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     const rebuild = ipcHandlers.get('settings:rebuildIndex');
     const openCountBeforeRebuild = openedDbPaths.length;
@@ -852,8 +761,7 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
     assert.ok(serviceEvents.indexOf('build') > serviceEvents.indexOf('stop'));
     assert.ok(serviceEvents.lastIndexOf('start') > serviceEvents.indexOf('build'));
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
   }
@@ -877,9 +785,7 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
 
   const ipcHandlers = new Map();
   const serviceEvents = [];
-  const originalLoad = Module._load;
-  const mainPath = require.resolve('../app/src/main/index.js');
-  delete require.cache[mainPath];
+  let buildIndexCalls = 0;
 
   class FakeDatabase {
     pragma() {}
@@ -891,58 +797,41 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = {
-        on() {},
-        setZoomLevel() {},
-        openDevTools() {},
-        send() {},
-      };
+      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
     close() {}
-    static getAllWindows() {
-      return [];
-    }
-    static fromWebContents() {
-      return null;
-    }
+    static getAllWindows() { return []; }
+    static fromWebContents() { return null; }
   }
 
-  Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === 'electron') {
-      return {
-        app: {
-          whenReady: () => Promise.resolve(),
-          on() {},
-          quit() {},
-        },
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
         BrowserWindow: FakeBrowserWindow,
         ipcMain: {
           handle(channel, handler) {
             ipcHandlers.set(channel, handler);
           },
         },
-        clipboard: {},
-        dialog: {},
-        nativeImage: {},
-      };
-    }
-    if (request === 'better-sqlite3') return FakeDatabase;
-    if (request === './indexer') return { writeHeartbeat() {} };
-    if (request === './indexer-service') {
-      return {
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, {
+      namedExports: {
         createIndexerService: () => ({
           start() { serviceEvents.push('start'); },
           stop() { serviceEvents.push('stop'); },
           idle: async () => new Promise(() => {}),
           runBuildNow() { serviceEvents.push('runBuildNow'); return Promise.resolve(); },
         }),
-      };
-    }
-    if (request === './indexer-worker-client') {
-      let buildIndexCalls = 0;
-      return {
+      },
+    }],
+    [INDEXER_WORKER_URL, {
+      namedExports: {
         createWorkerBuildIndex: () => ({
           buildIndex: async (args) => {
             serviceEvents.push(`build-${++buildIndexCalls}`);
@@ -954,17 +843,12 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
             return Promise.resolve();
           },
         }),
-      };
-    }
-    if (request === 'chokidar') {
-      return { watch: () => ({ on() { return this; }, close() {} }) };
-    }
-    return originalLoad.call(this, request, parent, isMain);
-  };
+      },
+    }],
+  ]);
 
   try {
-    require('../app/src/main/index.js');
-    await new Promise(resolve => setImmediate(resolve));
+    await importMain();
 
     const rebuild = ipcHandlers.get('settings:rebuildIndex');
     const outcome = await Promise.race([
@@ -976,8 +860,7 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
     assert.ok(serviceEvents.indexOf('worker-stop') > serviceEvents.indexOf('stop'));
     assert.ok(serviceEvents.some(event => event.startsWith('build-')));
   } finally {
-    Module._load = originalLoad;
-    delete require.cache[mainPath];
+    restore();
     process.env.HOME = originalHome;
     rmSync(home, { recursive: true, force: true });
   }

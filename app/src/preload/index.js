@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('obelisk', {
   getSessions: (opts) => ipcRenderer.invoke('db:getSessions', opts),

@@ -1,4 +1,4 @@
-const path = require('path');
+import path from 'node:path';
 
 function cleanRecapFilename(filename) {
   if (!filename) return '';
@@ -15,4 +15,4 @@ function buildRecapExportQuery({ cardIdx = 0, archetype = '', filename = '' } = 
   return params.toString();
 }
 
-module.exports = { buildRecapExportQuery, cleanRecapFilename };
+export { buildRecapExportQuery, cleanRecapFilename };

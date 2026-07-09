@@ -46,16 +46,13 @@
       "out/**"
     ],
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**"
+      "node_modules/better-sqlite3/**/*"
     ],
     "extraResources": [
       {
         "from": "../scripts/schema.sql",
         "to": "scripts/schema.sql"
       }
-    ],
-    "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
     ]
   },
   "dependencies": {
@@ -70,5 +67,6 @@
     "vite": "^6.0.0",
     "vue": "^3.4.0",
     "vue-router": "^4.3.0"
-  }
+  },
+  "type": "module"
 }
