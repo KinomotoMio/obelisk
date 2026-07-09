@@ -1,101 +1,14 @@
-import { CLAUDE_DIR, CODEX_DIR, openDb, rebuildMemoryFts, isDir, readLines, fs, path } from './db.mjs';
+import { openDb, rebuildMemoryFts } from './db.mjs';
+import {
+  CLAUDE_DIR, CODEX_DIR, PROJECTS_DIR, fs, path, isDir, readLines,
+  inferProjectPath, discoverJsonlFiles, discoverCodexJsonlFiles, codexDbId, readCodexGuardianThreadInfo,
+} from './parsing.mjs';
 import { persist } from './persist.ts';
 import { parse as claudeParse } from './providers/claude.ts';
 import { parse as codexParse } from './providers/codex.ts';
 
-const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
-const CODEX_SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 
-function legacyProjectPathFromSlug(project) {
-  if (!project) return null;
-  return '/' + project.replace(/-/g, '/').replace(/^\//, '');
-}
-
-function normalizeObservedCwd(cwd) {
-  if (typeof cwd !== 'string' || !cwd.trim() || !path.isAbsolute(cwd)) return null;
-  return path.normalize(cwd);
-}
-
-function projectSlugFromPath(projectPath) {
-  const normalized = normalizeObservedCwd(projectPath);
-  if (!normalized) return null;
-  return '-' + normalized.replace(/^[\\/]+/, '').replace(/[\\/]+/g, '-');
-}
-
-function inferProjectPath(project, observedCwds = []) {
-  const byPath = new Map();
-  for (const cwd of observedCwds) {
-    const normalized = normalizeObservedCwd(cwd);
-    if (!normalized) continue;
-    const current = byPath.get(normalized) || { path: normalized, count: 0, first: byPath.size };
-    current.count++;
-    byPath.set(normalized, current);
-  }
-  const best = [...byPath.values()].sort((a, b) => b.count - a.count || a.first - b.first)[0];
-  return best?.path || legacyProjectPathFromSlug(project);
-}
-
-function discoverJsonlFiles() {
-  const files = [];
-  if (!fs.existsSync(PROJECTS_DIR)) return files;
-  let projects;
-  try { projects = fs.readdirSync(PROJECTS_DIR); } catch (e) { process.stderr.write(`Warning: cannot read projects dir: ${e.message}\n`); return files; }
-  for (const proj of projects) {
-    const projPath = path.join(PROJECTS_DIR, proj);
-    if (!isDir(projPath)) continue;
-    let entries;
-    try { entries = fs.readdirSync(projPath); } catch { continue; }
-    for (const f of entries) {
-      if (f.endsWith('.jsonl'))
-        files.push({ path: path.join(projPath, f), sessionId: f.slice(0, -6), project: proj, isSubagent: false });
-    }
-    for (const sd of entries) {
-      const saDir = path.join(projPath, sd, 'subagents');
-      if (!isDir(saDir)) continue;
-      let saEntries;
-      try { saEntries = fs.readdirSync(saDir); } catch { continue; }
-      for (const sf of saEntries) {
-        if (sf.endsWith('.jsonl'))
-          files.push({ path: path.join(saDir, sf), sessionId: sd, project: proj, isSubagent: true, agentId: sf.slice(0, -6) });
-      }
-      const wfRoot = path.join(saDir, 'workflows');
-      if (!isDir(wfRoot)) continue;
-      let wfDirs;
-      try { wfDirs = fs.readdirSync(wfRoot); } catch { continue; }
-      for (const wfDir of wfDirs) {
-        const wfPath = path.join(wfRoot, wfDir);
-        if (!isDir(wfPath)) continue;
-        let wfEntries;
-        try { wfEntries = fs.readdirSync(wfPath); } catch { continue; }
-        for (const wf of wfEntries) {
-          if (wf.endsWith('.jsonl'))
-            files.push({ path: path.join(wfPath, wf), sessionId: sd, project: proj, isSubagent: true, agentId: wf.slice(0, -6), workflowRunId: wfDir });
-        }
-      }
-    }
-  }
-  return files;
-}
-
-function discoverCodexJsonlFiles() {
-  const files = [];
-  if (!fs.existsSync(CODEX_SESSIONS_DIR)) return files;
-  const walk = (dir) => {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      const fp = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fp);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        files.push({ path: fp, source: 'codex' });
-      }
-    }
-  };
-  walk(CODEX_SESSIONS_DIR);
-  return files;
-}
 
 function needsReindex(db, fp) {
   const mt = fs.statSync(fp).mtimeMs;
@@ -104,129 +17,6 @@ function needsReindex(db, fp) {
   return mt > row.mtime ? { needed: true, skip: row.lines_processed } : { needed: false, skip: 0 };
 }
 
-function codexDbId(id) {
-  if (!id) return null;
-  const raw = String(id).replace(/^codex:/, '');
-  return `codex:${raw}`;
-}
-
-function codexRawId(id) {
-  return id ? String(id).replace(/^codex:/, '') : null;
-}
-
-function codexLineUuid(threadId, lineNum) {
-  return `codex:${codexRawId(threadId)}:${String(lineNum).padStart(6, '0')}`;
-}
-
-function codexCallId(callId) {
-  if (!callId) return null;
-  return `codex:${String(callId).replace(/^codex:/, '')}`;
-}
-
-function codexParentThreadId(meta) {
-  const subagent = meta?.source?.subagent;
-  return subagent?.thread_spawn?.parent_thread_id
-    || meta?.forked_from_id
-    || subagent?.parent_thread_id
-    || null;
-}
-
-function codexIsGuardianThread(meta, records = []) {
-  const subagent = meta?.source?.subagent;
-  if (subagent?.other === 'guardian') return true;
-  if (meta?.thread_source !== 'subagent') return false;
-  return records.some(({ obj }) => obj?.payload?.model === 'codex-auto-review' || obj?.model === 'codex-auto-review');
-}
-
-function readCodexGuardianThreadInfo(filePath) {
-  const records = [];
-  let metaRecord = null;
-  let lineNum = 0;
-  readLines(filePath, (line) => {
-    lineNum++;
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      return;
-    }
-    records.push({ lineNum, obj });
-    if (obj?.type === 'session_meta' && obj.payload?.id) {
-      metaRecord = { lineNum, obj };
-      if (obj.payload?.source?.subagent?.other === 'guardian') return false;
-      if (obj.payload?.thread_source !== 'subagent') return false;
-    }
-    if (metaRecord && codexIsGuardianThread(metaRecord.obj.payload, records)) return false;
-  });
-  const meta = metaRecord?.obj?.payload;
-  if (!meta || !codexIsGuardianThread(meta, records)) return null;
-  return { threadRawId: codexRawId(meta.id), lineNum };
-}
-
-function codexAgentNickname(meta) {
-  return meta?.agent_nickname
-    || meta?.source?.subagent?.thread_spawn?.agent_nickname
-    || null;
-}
-
-function codexAgentRole(meta) {
-  return meta?.agent_role
-    || meta?.source?.subagent?.thread_spawn?.agent_role
-    || null;
-}
-
-function parseCodexJsonInput(value) {
-  if (value === null || value === undefined || value === '') return {};
-  if (typeof value !== 'string') return value;
-  try { return JSON.parse(value); } catch { return value; }
-}
-
-function codexUsage(payload) {
-  const usage = payload?.info?.last_token_usage || payload?.info?.total_token_usage || payload?.last_token_usage || null;
-  if (!usage) return {};
-  return {
-    inputTokens: usage.input_tokens ?? null,
-    outputTokens: usage.output_tokens ?? null,
-  };
-}
-
-function codexEventText(payload) {
-  if (typeof payload?.message === 'string') return payload.message;
-  if (Array.isArray(payload?.text_elements) && payload.text_elements.length) {
-    const parts = payload.text_elements.map(item => typeof item === 'string' ? item : item?.text).filter(Boolean);
-    if (parts.length) return parts.join('\n');
-  }
-  if (typeof payload?.text === 'string') return payload.text;
-  return null;
-}
-
-function codexMessagePayloadText(payload) {
-  if (!Array.isArray(payload?.content)) return null;
-  const parts = [];
-  for (const block of payload.content) {
-    if (typeof block?.text === 'string') parts.push(block.text);
-  }
-  return parts.length ? parts.join('\n') : null;
-}
-
-function codexVisibleMessageKey(role, text) {
-  return `${role || ''}\u0000${text || ''}`;
-}
-
-function codexToolInput(payload) {
-  if (payload?.type === 'custom_tool_call') return parseCodexJsonInput(payload.input);
-  if (payload?.type === 'tool_search_call') return parseCodexJsonInput(payload.arguments);
-  if (payload?.type === 'web_search_call') return { action: payload.action || null };
-  return parseCodexJsonInput(payload?.arguments);
-}
-
-function codexToolOutput(payload) {
-  if (typeof payload?.output === 'string') return payload.output;
-  if (payload?.output !== undefined) return JSON.stringify(payload.output);
-  if (payload?.tools !== undefined) return JSON.stringify(payload.tools);
-  if (payload?.execution !== undefined) return JSON.stringify(payload.execution);
-  return null;
-}
 
 function indexCodexSessionIndex(db) {
   const indexPath = path.join(CODEX_DIR, 'session_index.jsonl');
@@ -416,13 +206,4 @@ function buildIndex({ force = false } = {}) {
   db.close();
 }
 
-export {
-  buildIndex, discoverJsonlFiles, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild,
-  // Pure codex helpers consumed by providers/codex.ts (temporary export; they
-  // move into codex.ts once indexCodexJsonl is removed in the 5c cleanup).
-  discoverCodexJsonlFiles, normalizeObservedCwd, projectSlugFromPath,
-  codexRawId, codexDbId, codexCallId, codexLineUuid, codexParentThreadId,
-  codexIsGuardianThread, codexAgentNickname, codexAgentRole, codexUsage,
-  codexEventText, codexMessagePayloadText, codexVisibleMessageKey,
-  codexToolInput, codexToolOutput,
-};
+export { buildIndex, inferProjectPath, refreshSessionProjectPaths, shouldSkipBuild };

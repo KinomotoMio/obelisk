@@ -12,14 +12,14 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 
-import { trunc, truncJson, readLines } from '../db.mjs';
 import {
+  trunc, truncJson, readLines,
   discoverCodexJsonlFiles, normalizeObservedCwd, projectSlugFromPath,
   codexRawId, codexDbId, codexCallId, codexLineUuid, codexParentThreadId,
   codexIsGuardianThread, codexAgentNickname, codexAgentRole, codexUsage,
   codexEventText, codexMessagePayloadText, codexVisibleMessageKey,
   codexToolInput, codexToolOutput,
-} from '../indexer.mjs';
+} from '../parsing.mjs';
 
 import type { Cursor, DiscoverContext, IndexRecord, IndexUnit, MessageRecord, Provider } from './types.ts';
 
