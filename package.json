@@ -8,7 +8,8 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "build:core": "rm -rf dist && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

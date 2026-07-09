@@ -6,3 +6,4 @@ dist-renderer/
 release/
 .dev.docs
 .claude/
+dist/
