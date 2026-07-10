@@ -9,7 +9,8 @@
     "test": "node --experimental-test-module-mocks --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app/tsconfig.json",
     "lint": "eslint .",
-    "build:core": "rm -rf dist && tsc -p tsconfig.build.json"
+    "build:core": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build:skill": "rm -rf dist/obelisk-skill && tsc -p tsconfig.skill.json && cp scripts/schema.sql dist/obelisk-skill/scripts/ && cp SKILL.md dist/obelisk-skill/ && cp -R references dist/obelisk-skill/references && cp packaging/skill-package.json dist/obelisk-skill/package.json"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

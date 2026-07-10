@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist/obelisk-skill/scripts",
+    "rootDir": "scripts",
+    "declaration": false,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["scripts/**/*.ts", "scripts/**/*.mjs"]
+}
