@@ -191,9 +191,10 @@ Full-text search via FTS5 covers message text across every session layer and ran
 
 The index rebuilds incrementally — only new or modified JSONL files are re-parsed.
 When the optional app is running, it is the active indexer: it watches Claude
-project files, builds in a worker thread, writes `__app_heartbeat__` plus
-`__app_last_successful_build__` into `index_state`, and the skill-side lazy
-build skips work only while both markers are fresh.
+project files and builds in a worker thread. A fresh `__app_heartbeat__` alone
+means the daemon owns writes, so the skill remains read-only; a separate SQLite
+writer lease prevents cross-process writes from overlapping. The
+`__app_last_successful_build__` marker records index freshness, not ownership.
 
 Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire runtime is ~400 lines.
 

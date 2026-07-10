@@ -7,7 +7,27 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { acquireWriterLease } from '../scripts/writer-lease.ts';
+
 const require = createRequire(import.meta.url);
+const { DatabaseSync } = require('node:sqlite');
+
+class SqliteCompatDatabase {
+  constructor(dbFile) {
+    this.db = new DatabaseSync(dbFile);
+  }
+  pragma(statement) { this.db.exec(`PRAGMA ${statement}`); }
+  exec(sql) { return this.db.exec(sql); }
+  close() { return this.db.close(); }
+  prepare(sql) {
+    const stmt = this.db.prepare(sql);
+    return {
+      all: (...params) => stmt.all(...params),
+      get: (...params) => stmt.get(...params),
+      run: (...params) => stmt.run(...params),
+    };
+  }
+}
 
 // The app main process is now an ES module. It runs side-effectfully on import
 // (registers ipcMain handlers, opens windows, etc.) and has no exports, so we
@@ -110,6 +130,7 @@ async function loadMainForWindowFlags(flags) {
 
   class FakeDatabase {
     pragma() {}
+    exec() {}
     close() {}
     prepare() {
       return { get: () => null, all: () => [], run: () => ({}) };
@@ -191,6 +212,7 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
 
   class FakeDatabase {
     pragma() {}
+    exec() {}
     close() {}
     prepare() {
       return { get: () => null, all: () => [], run: () => ({}) };
@@ -245,6 +267,77 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
   }
 });
 
+test('main process forwards committed IDs without reopening after a deferred build', async () => {
+  const originalHome = process.env.HOME;
+  const home = join(tmpdir(), `obelisk-main-deferred-build-${Date.now()}`);
+  mkdirSync(join(home, '.claude', 'projects'), { recursive: true });
+  mkdirSync(join(home, '.codex', 'sessions'), { recursive: true });
+  mkdirSync(join(home, '.obelisk'), { recursive: true });
+  writeFileSync(join(home, '.obelisk', 'obelisk.sqlite'), '');
+  process.env.HOME = home;
+
+  let databaseOpens = 0;
+  let serviceOptions;
+  let notifications = 0;
+
+  class FakeDatabase {
+    constructor() { databaseOpens += 1; }
+    pragma() {}
+    exec() {}
+    close() {}
+    prepare() { return { get: () => null, all: () => [], run: () => ({}) }; }
+  }
+
+  class FakeBrowserWindow {
+    constructor() {
+      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() { notifications += 1; } };
+    }
+    loadFile() {}
+    loadURL() {}
+    close() {}
+    static getAllWindows() { return [{ webContents: { send() { notifications += 1; } } }]; }
+    static fromWebContents() { return null; }
+  }
+
+  const restore = registerMocks([
+    [ELECTRON_URL, { namedExports: electronNamespace({ BrowserWindow: FakeBrowserWindow }) }],
+    [DATABASE_URL, { defaultExport: FakeDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, {
+      namedExports: {
+        createIndexerService: (options) => {
+          serviceOptions = options;
+          return { start() {}, stop() {}, idle: async () => {}, runBuildNow() { return Promise.resolve(); } };
+        },
+      },
+    }],
+    [INDEXER_WORKER_URL, {
+      namedExports: {
+        createWorkerBuildIndex: () => ({
+          buildIndex: async () => ({ deferred: true, reason: 'database_busy', affectedSessionIds: ['session-1'] }),
+          stop() {},
+        }),
+      },
+    }],
+  ]);
+
+  try {
+    await importMain();
+    const opensBeforeBuild = databaseOpens;
+    const notificationsBeforeBuild = notifications;
+    const result = await serviceOptions.buildIndex({ reason: 'writer-lease' });
+
+    assert.equal(result.deferred, true);
+    assert.equal(databaseOpens, opensBeforeBuild);
+    assert.equal(notifications, notificationsBeforeBuild + 2);
+  } finally {
+    restore();
+    process.env.HOME = originalHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('session IPC hides Codex rows by default and supports explicit source opt-in', async () => {
   const originalHome = process.env.HOME;
   const home = join(tmpdir(), `obelisk-main-source-filter-${Date.now()}`);
@@ -257,6 +350,7 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
 
   class FakeDatabase {
     pragma() {}
+    exec() {}
     close() {}
     prepare(sql) {
       return {
@@ -369,31 +463,6 @@ test('main process migrates an existing app database before source-filtered IPC 
 
   const ipcHandlers = new Map();
 
-  // better-sqlite3-compatible adapter over node:sqlite so the real migration
-  // logic (ALTER TABLE ADD COLUMN source, etc.) runs against a real database.
-  class SqliteCompatDatabase {
-    constructor(dbFile) {
-      this.db = new DatabaseSync(dbFile);
-    }
-    pragma(statement) {
-      this.db.exec(`PRAGMA ${statement}`);
-    }
-    exec(sql) {
-      return this.db.exec(sql);
-    }
-    close() {
-      return this.db.close();
-    }
-    prepare(sql) {
-      const stmt = this.db.prepare(sql);
-      return {
-        all: (...params) => stmt.all(...params),
-        get: (...params) => stmt.get(...params),
-        run: (...params) => stmt.run(...params),
-      };
-    }
-  }
-
   class FakeBrowserWindow {
     constructor() {
       this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
@@ -441,6 +510,70 @@ test('main process migrates an existing app database before source-filtered IPC 
   }
 });
 
+test('main process keeps schema and memory mutations behind the writer lease', async () => {
+  const originalHome = process.env.HOME;
+  const home = join(tmpdir(), `obelisk-main-migration-lease-${Date.now()}`);
+  const obeliskDir = join(home, '.obelisk');
+  const dbPath = join(obeliskDir, 'obelisk.sqlite');
+  mkdirSync(obeliskDir, { recursive: true });
+  process.env.HOME = home;
+
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY)');
+  legacy.close();
+
+  const holder = acquireWriterLease({
+    lockPath: join(obeliskDir, 'writer.lock.sqlite'),
+    openDb: lockPath => new DatabaseSync(lockPath),
+  });
+  assert.ok(holder);
+  const ipcHandlers = new Map();
+
+  class FakeBrowserWindow {
+    constructor() {
+      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+    }
+    loadFile() {}
+    loadURL() {}
+    close() {}
+    static getAllWindows() { return []; }
+    static fromWebContents() { return null; }
+  }
+
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
+        BrowserWindow: FakeBrowserWindow,
+        ipcMain: {
+          handle(channel, handler) { ipcHandlers.set(channel, handler); },
+        },
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: SqliteCompatDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
+
+  try {
+    await importMain();
+    const check = new DatabaseSync(dbPath, { readOnly: true });
+    const columns = check.prepare('PRAGMA table_info(sessions)').all().map(column => column.name);
+    check.close();
+    assert.deepEqual(columns, ['id']);
+    assert.throws(
+      () => ipcHandlers.get('db:archiveMemory')(null, 'memory-1', 'test'),
+      /writer is busy/i,
+    );
+  } finally {
+    restore();
+    holder.release();
+    process.env.HOME = originalHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('closing the last macOS window releases background resources until activation', async () => {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   const originalHome = process.env.HOME;
@@ -459,6 +592,7 @@ test('closing the last macOS window releases background resources until activati
 
   class FakeDatabase {
     pragma() {}
+    exec() {}
     close() { serviceEvents.push('db-close'); }
     prepare() {
       return { get: () => null, all: () => [], run: () => ({}) };
@@ -575,13 +709,16 @@ test('settings rebuild reopens the database from the configured Claude path', as
   const openedDbPaths = [];
   const buildCalls = [];
   const serviceEvents = [];
+  let competingLeaseDuringBuild;
 
   class FakeDatabase {
     constructor(dbPath) {
+      this.lockDb = dbPath.endsWith('writer.lock.sqlite') ? new DatabaseSync(dbPath) : null;
       openedDbPaths.push(dbPath);
     }
     pragma() {}
-    close() {}
+    exec(sql) { return this.lockDb?.exec(sql); }
+    close() { this.lockDb?.close(); }
     prepare() {
       return { get: () => null, all: () => [], run: () => ({}) };
     }
@@ -628,6 +765,12 @@ test('settings rebuild reopens the database from the configured Claude path', as
           buildIndex: async (args) => {
             serviceEvents.push('build');
             buildCalls.push(args);
+            const competingLease = acquireWriterLease({
+              lockPath: args.writerLeasePath,
+              openDb: lockPath => new DatabaseSync(lockPath),
+            });
+            competingLeaseDuringBuild = Boolean(competingLease);
+            competingLease?.release();
             writeFileSync(args.dbPath, 'rebuilt temp db');
             return { files: 2, affectedSessionIds: ['session-1', 'session-2'] };
           },
@@ -649,12 +792,21 @@ test('settings rebuild reopens the database from the configured Claude path', as
     assert.equal(buildCalls.at(-1).codexDir, customCodexDir);
     assert.notEqual(buildCalls.at(-1).dbPath, join(home, '.obelisk', 'obelisk.sqlite'));
     assert.equal(buildCalls.at(-1).preserveDbPath, join(home, '.obelisk', 'obelisk.sqlite'));
+    assert.equal(buildCalls.at(-1).writerLeasePath, join(home, '.obelisk', 'writer.lock.sqlite'));
+    assert.equal(buildCalls.at(-1).writerLeaseMode, 'caller-held');
+    assert.equal(competingLeaseDuringBuild, false);
     assert.equal(openedDbPaths.at(-1), join(home, '.obelisk', 'obelisk.sqlite'));
     assert.equal(
       require('node:fs').readFileSync(join(home, '.obelisk', 'obelisk.sqlite'), 'utf8'),
       'rebuilt temp db',
     );
     assert.ok(serviceEvents.indexOf('build') > serviceEvents.indexOf('stop'));
+    const postRebuildLease = acquireWriterLease({
+      lockPath: join(home, '.obelisk', 'writer.lock.sqlite'),
+      openDb: lockPath => new DatabaseSync(lockPath),
+    });
+    assert.ok(postRebuildLease);
+    postRebuildLease.release();
   } finally {
     restore();
     process.env.HOME = originalHome;
@@ -686,10 +838,15 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
   class FakeDatabase {
     constructor(dbPath) {
       this.dbPath = dbPath;
-      openedDbPaths.push(dbPath);
+      this.lockDb = dbPath.endsWith('writer.lock.sqlite') ? new DatabaseSync(dbPath) : null;
+      if (!this.lockDb) openedDbPaths.push(dbPath);
     }
     pragma() {}
-    close() { closedDbPaths.push(this.dbPath); }
+    exec(sql) { return this.lockDb?.exec(sql); }
+    close() {
+      if (this.lockDb) this.lockDb.close();
+      else closedDbPaths.push(this.dbPath);
+    }
     prepare() {
       return { get: () => null, all: () => [], run: () => ({}) };
     }
@@ -788,8 +945,12 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
   let buildIndexCalls = 0;
 
   class FakeDatabase {
+    constructor(dbPath) {
+      this.lockDb = dbPath.endsWith('writer.lock.sqlite') ? new DatabaseSync(dbPath) : null;
+    }
     pragma() {}
-    close() {}
+    exec(sql) { return this.lockDb?.exec(sql); }
+    close() { this.lockDb?.close(); }
     prepare() {
       return { get: () => null, all: () => [], run: () => ({}) };
     }

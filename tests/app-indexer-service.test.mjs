@@ -73,6 +73,34 @@ test('indexer service runs one pending build after an in-flight build finishes',
   assert.deepEqual(calls, ['first', 'pending']);
 });
 
+test('indexer service reschedules a writer-lease deferral without publishing a heartbeat', async () => {
+  const timers = manualTimers();
+  const calls = [];
+  let heartbeats = 0;
+  const service = createIndexerService({
+    buildIndex: async ({ reason, changedPaths }) => {
+      calls.push({ reason, changedPaths });
+      return calls.length === 1 ? { deferred: true, reason: 'writer_busy' } : { deferred: false };
+    },
+    watchProjects: () => null,
+    writeHeartbeat: () => { heartbeats += 1; },
+    timers,
+    stabilityMs: 0,
+  });
+
+  await service.runBuildNow('watch', ['project/session.jsonl']);
+  assert.equal(heartbeats, 0);
+  assert.equal(calls.length, 1);
+
+  timers.flush();
+  await service.idle();
+  assert.deepEqual(calls, [
+    { reason: 'watch', changedPaths: ['project/session.jsonl'] },
+    { reason: 'writer-lease', changedPaths: ['project/session.jsonl'] },
+  ]);
+  assert.equal(heartbeats, 1);
+});
+
 test('indexer service does not log a build cancelled by a service stop', async () => {
   const timers = manualTimers();
   const warnings = [];
@@ -158,6 +186,22 @@ test('indexer service retries watcher setup when the projects directory is missi
 
   timers.flush();
   assert.equal(attempts, 2);
+});
+
+test('indexer service publishes daemon ownership as soon as it starts', () => {
+  const timers = manualTimers();
+  let heartbeats = 0;
+  const service = createIndexerService({
+    buildIndex: async () => ({ deferred: false }),
+    watchProjects: () => null,
+    writeHeartbeat: () => { heartbeats += 1; },
+    timers,
+    stabilityMs: 0,
+  });
+
+  service.start({ buildOnStart: false });
+  assert.equal(heartbeats, 1);
+  service.stop();
 });
 
 test('indexer service watches Claude JSON files through chokidar', async () => {

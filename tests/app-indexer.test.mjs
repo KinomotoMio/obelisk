@@ -31,7 +31,7 @@ class TestDatabase {
   }
 }
 
-test('app indexer builds the Obelisk database from Claude JSONL and records app heartbeat', () => {
+test('app indexer records build success without claiming daemon ownership', () => {
   const home = mkdtempSync(join(tmpdir(), 'obelisk-app-indexer-'));
   const claudeDir = join(home, '.claude');
   const projectDir = join(claudeDir, 'projects', '-tmp-obelisk-app');
@@ -57,7 +57,7 @@ test('app indexer builds the Obelisk database from Claude JSONL and records app 
   assert.deepEqual(firstBuild.affectedSessionIds, [sessionId]);
   assert.equal(firstBuild.ftsRebuilt, true);
   assert.equal(db.prepare("SELECT uuid FROM messages_fts WHERE messages_fts MATCH 'hello'").get().uuid, 'msg-app-1');
-  assert.equal(db.prepare("SELECT jsonl_path FROM index_state WHERE jsonl_path='__app_heartbeat__'").get().jsonl_path, '__app_heartbeat__');
+  assert.equal(db.prepare("SELECT jsonl_path FROM index_state WHERE jsonl_path='__app_heartbeat__'").get(), undefined);
   assert.equal(db.prepare("SELECT jsonl_path FROM index_state WHERE jsonl_path='__app_last_successful_build__'").get().jsonl_path, '__app_last_successful_build__');
   assert.equal(db.prepare('SELECT project_path FROM sessions WHERE id=?').get(sessionId).project_path, '/tmp/obelisk-app');
   db.close();

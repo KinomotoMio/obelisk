@@ -11,9 +11,10 @@
 
 import { createContext, runInNewContext } from 'node:vm';
 
-import { DB_PATH, openDb } from './db.mjs';
-import { buildIndex } from './indexer.mjs';
+import { DB_PATH, openDb, openReadDb, openWriterLeaseDb } from './db.mjs';
+import { buildIndex, shouldSkipBuild } from './indexer.mjs';
 import { createQueryApi, createAttuneApi } from './query.mjs';
+import { acquireWriterLease, writerLockPathFor } from './writer-lease.ts';
 
 export { buildIndex, DB_PATH };
 
@@ -33,7 +34,7 @@ function runInSandbox(api: SandboxApi, scriptContent: string): Promise<unknown> 
 // FTS search over indexed message text. Refreshes the index, then queries.
 export function searchText(text: string, opts?: Record<string, unknown>): unknown {
   buildIndex();
-  const db = openDb();
+  const db = openReadDb();
   try {
     return createQueryApi(db).search(text, opts);
   } finally {
@@ -44,7 +45,7 @@ export function searchText(text: string, opts?: Record<string, unknown>): unknow
 // Execute a read-only CodeAct query script and resolve its returned value.
 export async function executeQuery(scriptContent: string): Promise<unknown> {
   buildIndex();
-  const db = openDb();
+  const db = openReadDb();
   try {
     return await runInSandbox(createQueryApi(db), scriptContent);
   } finally {
@@ -54,11 +55,37 @@ export async function executeQuery(scriptContent: string): Promise<unknown> {
 
 // Execute a memory-mutation CodeAct script (remember/forget only).
 export async function executeAttune(scriptContent: string): Promise<unknown> {
-  buildIndex();
-  const db = openDb();
+  const build = buildIndex() as { reason?: string } | undefined;
+  if (build?.reason === 'daemon_active') {
+    throw new Error('Obelisk daemon owns index writes; attune is read-only until the daemon stops');
+  }
+  if (build?.reason === 'writer_busy' || build?.reason === 'database_busy') {
+    throw new Error('Obelisk index writer is busy; attune was not applied');
+  }
+  const lease = acquireWriterLease({
+    lockPath: writerLockPathFor(DB_PATH),
+    openDb: openWriterLeaseDb,
+    waitMs: 1000,
+  });
+  if (!lease) throw new Error('Obelisk index writer is busy; attune was not applied');
   try {
-    return await runInSandbox(createAttuneApi(db), scriptContent);
+    // Close the heartbeat TOCTOU window after acquiring the hard lease.
+    const ownershipDb = openReadDb();
+    try {
+      const ownership = shouldSkipBuild(ownershipDb, { ignoreRecentBuild: true });
+      if (ownership.reason === 'daemon_active') {
+        throw new Error('Obelisk daemon owns index writes; attune is read-only until the daemon stops');
+      }
+    } finally {
+      ownershipDb.close();
+    }
+    const db = openDb();
+    try {
+      return await runInSandbox(createAttuneApi(db), scriptContent);
+    } finally {
+      db.close();
+    }
   } finally {
-    db.close();
+    lease.release();
   }
 }

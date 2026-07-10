@@ -8,6 +8,7 @@ const DEFAULT_DEBOUNCE_MS = 2000;
 const DEFAULT_STABILITY_MS = 500;
 const DEFAULT_HEARTBEAT_MS = 30000;
 const DEFAULT_WATCH_RETRY_MS = 5000;
+const DEFAULT_DEFERRED_RETRY_MS = 250;
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
@@ -22,6 +23,15 @@ interface Watcher {
   close(): unknown;
 }
 
+interface IndexerBuildResult {
+  deferred?: boolean;
+}
+
+type IndexerBuild = (args: {
+  reason?: string;
+  changedPaths?: string[];
+}) => IndexerBuildResult | void | Promise<IndexerBuildResult | void>;
+
 interface IndexerServiceOptions {
   projectsDir?: string;
   watchDirs?: string | string[];
@@ -29,8 +39,9 @@ interface IndexerServiceOptions {
   stabilityMs?: number;
   heartbeatMs?: number;
   watchRetryMs?: number;
-  buildIndex?: (args: { reason?: string; changedPaths?: string[] }) => unknown;
-  writeHeartbeat?: () => void;
+  deferredRetryMs?: number;
+  buildIndex?: IndexerBuild;
+  writeHeartbeat?: () => unknown;
   watchProjects?: (onChange: (changedPath: string) => void) => Watcher | null;
   chokidar?: any;
   timers?: Timers;
@@ -44,6 +55,7 @@ function createIndexerService({
   stabilityMs = DEFAULT_STABILITY_MS,
   heartbeatMs = DEFAULT_HEARTBEAT_MS,
   watchRetryMs = DEFAULT_WATCH_RETRY_MS,
+  deferredRetryMs = DEFAULT_DEFERRED_RETRY_MS,
   buildIndex,
   writeHeartbeat = () => {},
   watchProjects,
@@ -100,6 +112,7 @@ function createIndexerService({
   let stabilityTimer: TimerHandle | null = null;
   let heartbeatTimer: TimerHandle | null = null;
   let watchRetryTimer: TimerHandle | null = null;
+  let deferredRetryTimer: TimerHandle | null = null;
   let watcher: Watcher | null = null;
   let stopped = false;
   let running = false;
@@ -124,6 +137,15 @@ function createIndexerService({
     return paths;
   };
 
+  const publishHeartbeat = () => {
+    try {
+      return writeHeartbeat();
+    } catch (error) {
+      logger.warn?.(`Obelisk heartbeat failed: ${(error as Error).message}`);
+      return false;
+    }
+  };
+
   const runBuildNow = (reason = "manual", paths: string[] | undefined = undefined) => {
     addChangedPath(paths);
     if (stopped) return idlePromise;
@@ -135,8 +157,18 @@ function createIndexerService({
     pending = false;
     const buildChangedPaths = takeChangedPaths();
     idlePromise = (async () => {
-      await buildIndex({ reason, changedPaths: buildChangedPaths });
-      writeHeartbeat();
+      const result = await buildIndex({ reason, changedPaths: buildChangedPaths });
+      if (result?.deferred) {
+        addChangedPath(buildChangedPaths);
+        if (!stopped && !deferredRetryTimer) {
+          deferredRetryTimer = timers.setTimeout(() => {
+            deferredRetryTimer = null;
+            runBuildNow('writer-lease');
+          }, deferredRetryMs);
+        }
+        return;
+      }
+      publishHeartbeat();
     })()
       .catch((error) => {
         // A build in flight when the service is stopped (e.g. a manual rebuild
@@ -158,6 +190,8 @@ function createIndexerService({
     addChangedPath(changedPath);
     lastReason = reason;
     if (running) pending = true;
+    if (deferredRetryTimer) timers.clearTimeout(deferredRetryTimer);
+    deferredRetryTimer = null;
     if (buildTimer) timers.clearTimeout(buildTimer);
     if (stabilityTimer) timers.clearTimeout(stabilityTimer);
     buildTimer = timers.setTimeout(() => {
@@ -186,15 +220,12 @@ function createIndexerService({
 
   const start = ({ buildOnStart = true } = {}) => {
     stopped = false;
+    publishHeartbeat();
     if (buildOnStart) scheduleBuild('startup');
     startWatching();
     if (typeof timers.setInterval === 'function') {
       heartbeatTimer = timers.setInterval(() => {
-        try {
-          writeHeartbeat();
-        } catch (error) {
-          logger.warn?.(`Obelisk heartbeat failed: ${(error as Error).message}`);
-        }
+        publishHeartbeat();
       }, heartbeatMs);
     }
   };
@@ -208,6 +239,8 @@ function createIndexerService({
     stabilityTimer = null;
     if (watchRetryTimer) timers.clearTimeout(watchRetryTimer);
     watchRetryTimer = null;
+    if (deferredRetryTimer) timers.clearTimeout(deferredRetryTimer);
+    deferredRetryTimer = null;
     if (heartbeatTimer && typeof timers.clearInterval === 'function') timers.clearInterval(heartbeatTimer);
     heartbeatTimer = null;
     if (watcher?.close) watcher.close();

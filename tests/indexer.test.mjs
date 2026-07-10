@@ -56,7 +56,7 @@ test('refreshSessionProjectPaths repairs indexed sessions from message cwd', () 
   db.close();
 });
 
-test('shouldSkipBuild requires both fresh app heartbeat and successful app build', () => {
+test('shouldSkipBuild treats a fresh heartbeat alone as daemon write ownership', () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE index_state (
@@ -68,17 +68,19 @@ test('shouldSkipBuild requires both fresh app heartbeat and successful app build
     100000,
   );
 
-  assert.equal(shouldSkipBuild(db, { now: 110000 }).skip, false);
+  assert.deepEqual(
+    shouldSkipBuild(db, { now: 110000 }),
+    { skip: true, reason: 'daemon_active' },
+  );
+
+  db.prepare('DELETE FROM index_state').run();
 
   db.prepare('INSERT INTO index_state (jsonl_path, mtime, lines_processed) VALUES (?, ?, 0)').run(
     '__app_last_successful_build__',
     100000,
   );
 
-  assert.deepEqual(
-    shouldSkipBuild(db, { now: 110000 }),
-    { skip: true, reason: 'app_successful_build' },
-  );
+  assert.equal(shouldSkipBuild(db, { now: 110000 }).skip, false);
   assert.equal(shouldSkipBuild(db, { now: 200000 }).skip, false);
   db.close();
 });

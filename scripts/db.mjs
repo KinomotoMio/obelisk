@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { CLAUDE_DIR, CODEX_DIR, TEXT_LIMIT, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines } from './parsing.mjs';
+import { configureConnection } from './tx.ts';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,15 +23,23 @@ function openDb() {
   migrateLegacyDbIfNeeded();
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new DatabaseSync(DB_PATH);
-  db.exec('PRAGMA journal_mode=WAL');
-  db.exec('PRAGMA synchronous=NORMAL');
-  // Wait for a contended lock instead of erroring with SQLITE_BUSY: a running
-  // app daemon may be writing the same database while the skill reads/indexes.
-  db.exec('PRAGMA busy_timeout=5000');
+  configureConnection(db, { busyTimeoutMs: 250 });
   migrateExistingColumns(db);
   db.exec(SCHEMA);
   migrateDb(db);
   return db;
+}
+
+// Queries and daemon-arbitration checks must never migrate/configure the index.
+// The caller is responsible for ensuring the database exists first.
+function openReadDb() {
+  const db = new DatabaseSync(DB_PATH, { readOnly: true });
+  db.exec('PRAGMA busy_timeout=250');
+  return db;
+}
+
+function openWriterLeaseDb(lockPath) {
+  return new DatabaseSync(lockPath);
 }
 
 function ensureColumn(db, table, column, definition) {
@@ -65,4 +74,4 @@ function rebuildMemoryFts(db) {
 }
 
 
-export { CLAUDE_DIR, CODEX_DIR, OBELISK_DIR, DB_PATH, TEXT_LIMIT, openDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path, os };
+export { CLAUDE_DIR, CODEX_DIR, OBELISK_DIR, DB_PATH, TEXT_LIMIT, openDb, openReadDb, openWriterLeaseDb, rebuildMemoryFts, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines, fs, path, os };

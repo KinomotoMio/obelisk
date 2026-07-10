@@ -6,6 +6,9 @@ import Database from 'better-sqlite3';
 import { parse as claudeParse } from '../../../scripts/providers/claude.ts';
 import { parse as codexParse } from '../../../scripts/providers/codex.ts';
 import { persist } from '../../../scripts/persist.ts';
+import { runWriteTransaction, configureConnection, betterSqliteTransactionAdapter } from '../../../scripts/tx.ts';
+import { acquireWriterLease, writerLockPathFor } from '../../../scripts/writer-lease.ts';
+import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from '../../../scripts/write-coordinator.ts';
 import {
   inferProjectPath,
   isDir,
@@ -35,15 +38,6 @@ interface FileInfo {
   source?: string;
 }
 
-// A rollback inside a catch must never throw over the real error. SQLite
-// auto-rolls back certain failures (SQLITE_BUSY, disk full, ...); a following
-// explicit ROLLBACK then throws "cannot rollback - no transaction is active",
-// which would both mask the true cause and turn a skippable per-file error into
-// a whole-build failure. Swallow only the rollback's own error.
-function safeRollback(db: { exec: (sql: string) => unknown }) {
-  try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
-}
-
 function resolveSchemaPath() {
   const candidates = [
     path.join(__dirname, 'schema.sql'),
@@ -63,8 +57,7 @@ function installSchema(db, schemaPath = resolveSchemaPath()) {
 function openIndexDb({ dbPath = DEFAULT_DB_PATH, schemaPath = resolveSchemaPath(), DatabaseImpl = Database }: { dbPath?: string; schemaPath?: string; DatabaseImpl?: new (dbPath: string) => any } = {}) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseImpl(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
+  configureConnection(db, { busyTimeoutMs: 250 });
   installSchema(db, schemaPath);
   return db;
 }
@@ -138,7 +131,10 @@ function normalizeChangedPath(projectsDir, changedPath) {
 }
 
 function jsonlFileInfoFromPath(projectsDir, changedPath) {
-  const fp = normalizeChangedPath(projectsDir, changedPath);
+  let fp = normalizeChangedPath(projectsDir, changedPath);
+  if (fp?.toLowerCase().endsWith('.meta.json')) {
+    fp = fp.slice(0, -'.meta.json'.length) + '.jsonl';
+  }
   if (!fp || !fp.endsWith('.jsonl')) return null;
   if (!fs.existsSync(fp)) return null;
   const rel = path.relative(projectsDir, fp);
@@ -365,14 +361,16 @@ function indexCodexSessionIndex(db, { codexDir = DEFAULT_CODEX_DIR } = {}) {
   const indexPath = path.join(codexDir, 'session_index.jsonl');
   if (!fs.existsSync(indexPath)) return;
   readLines(indexPath, (line) => {
+    let item;
     try {
-      const item = JSON.parse(line);
-      if (!item.id || !item.thread_name) return;
-      db.prepare('UPDATE sessions SET title=COALESCE(title, ?), ended_at=COALESCE(ended_at, ?) WHERE id=? AND source=?')
-        .run(item.thread_name, item.updated_at || null, codexDbId(item.id), 'codex');
+      item = JSON.parse(line);
     } catch (error) {
       console.warn(`Warning: malformed Codex session index line: ${(error as Error).message}`);
+      return;
     }
+    if (!item.id || !item.thread_name) return;
+    db.prepare('UPDATE sessions SET title=COALESCE(title, ?), ended_at=COALESCE(ended_at, ?) WHERE id=? AND source=?')
+      .run(item.thread_name, item.updated_at || null, codexDbId(item.id), 'codex');
   });
 }
 
@@ -392,22 +390,25 @@ function refreshSessionProjectPaths(db) {
 }
 
 function indexSubagentMeta(db, fi) {
-  if (!fi.isSubagent) return;
+  if (!fi.isSubagent) return false;
   const mp = fi.path.replace('.jsonl', '.meta.json');
-  if (!fs.existsSync(mp)) return;
+  if (!fs.existsSync(mp)) return false;
+  let meta;
   try {
-    const meta = JSON.parse(fs.readFileSync(mp, 'utf8'));
-    const tok = db.prepare('SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0) as t FROM messages WHERE agent_id=?').get(fi.agentId);
-    const ts = db.prepare('SELECT MIN(timestamp) as t0, MAX(timestamp) as t1 FROM messages WHERE agent_id=?').get(fi.agentId);
-    const dur = ts?.t0 && ts?.t1 ? new Date(ts.t1).getTime() - new Date(ts.t0).getTime() : null;
-    if (fi.workflowRunId) {
-      db.prepare('INSERT OR REPLACE INTO workflow_agents (agent_id,run_id,session_id,agent_type,description) VALUES(?,?,?,?,?)').run(fi.agentId, fi.workflowRunId, fi.sessionId, meta.agentType||null, meta.description||null);
-    } else {
-      db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
-    }
+    meta = JSON.parse(fs.readFileSync(mp, 'utf8'));
   } catch (error) {
     console.warn(`Warning: failed to read subagent meta ${mp}: ${(error as Error).message}`);
+    return false;
   }
+  const tok = db.prepare('SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0) as t FROM messages WHERE agent_id=?').get(fi.agentId);
+  const ts = db.prepare('SELECT MIN(timestamp) as t0, MAX(timestamp) as t1 FROM messages WHERE agent_id=?').get(fi.agentId);
+  const dur = ts?.t0 && ts?.t1 ? new Date(ts.t1).getTime() - new Date(ts.t0).getTime() : null;
+  if (fi.workflowRunId) {
+    db.prepare('INSERT OR REPLACE INTO workflow_agents (agent_id,run_id,session_id,agent_type,description) VALUES(?,?,?,?,?)').run(fi.agentId, fi.workflowRunId, fi.sessionId, meta.agentType||null, meta.description||null);
+  } else {
+    db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
+  }
+  return true;
 }
 
 function indexWorkflows(db, { projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
@@ -426,23 +427,25 @@ function indexWorkflows(db, { projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
       try { wfFiles = fs.readdirSync(wd); } catch { continue; }
       for (const f of wfFiles) {
         if (!f.endsWith('.json')) continue;
+        let wf;
         try {
-          const wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
-          if (!wf.runId) continue;
-          const ac = db.prepare('SELECT COUNT(*) as c FROM workflow_agents WHERE run_id=?').get(wf.runId);
-          db.prepare('INSERT OR REPLACE INTO workflows (run_id,session_id,task_id,script,result_json,timestamp,agent_count,duration_ms,total_tokens,status,workflow_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
-            wf.runId, sd, wf.taskId||null, wf.script||null,
-            wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0,
-            wf.durationMs||null, wf.totalTokens||null, wf.status||null, wf.workflowName||null);
-          const progress = wf.workflowProgress || [];
-          for (const item of progress) {
-            if (item.type !== 'workflow_agent' || !item.agentId) continue;
-            db.prepare('UPDATE workflow_agents SET phase=?, label=?, model=?, state=?, duration_ms=?, tokens=?, tool_calls=? WHERE agent_id=?').run(
-              item.phaseTitle||null, item.label||null, item.model||null, item.state||null,
-              item.durationMs||null, item.tokens||null, item.toolCalls||null, 'agent-' + item.agentId);
-          }
+          wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
         } catch (error) {
-          console.warn(`Warning: failed to index workflow ${f}: ${(error as Error).message}`);
+          console.warn(`Warning: failed to read workflow ${f}: ${(error as Error).message}`);
+          continue;
+        }
+        if (!wf.runId) continue;
+        const ac = db.prepare('SELECT COUNT(*) as c FROM workflow_agents WHERE run_id=?').get(wf.runId);
+        db.prepare('INSERT OR REPLACE INTO workflows (run_id,session_id,task_id,script,result_json,timestamp,agent_count,duration_ms,total_tokens,status,workflow_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
+          wf.runId, sd, wf.taskId||null, wf.script||null,
+          wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0,
+          wf.durationMs||null, wf.totalTokens||null, wf.status||null, wf.workflowName||null);
+        const progress = wf.workflowProgress || [];
+        for (const item of progress) {
+          if (item.type !== 'workflow_agent' || !item.agentId) continue;
+          db.prepare('UPDATE workflow_agents SET phase=?, label=?, model=?, state=?, duration_ms=?, tokens=?, tool_calls=? WHERE agent_id=?').run(
+            item.phaseTitle||null, item.label||null, item.model||null, item.state||null,
+            item.durationMs||null, item.tokens||null, item.toolCalls||null, 'agent-' + item.agentId);
         }
       }
     }
@@ -452,12 +455,14 @@ function indexWorkflows(db, { projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
 function indexHistory(db, { historyPath = DEFAULT_HISTORY_PATH } = {}) {
   if (!fs.existsSync(historyPath)) return;
   readLines(historyPath, (line) => {
+    let item;
     try {
-      const o = JSON.parse(line);
-      if (o.sessionId && o.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(o.title, o.sessionId);
+      item = JSON.parse(line);
     } catch (error) {
       console.warn(`Warning: malformed history line: ${(error as Error).message}`);
+      return;
     }
+    if (item.sessionId && item.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(item.title, item.sessionId);
   });
 }
 
@@ -466,9 +471,13 @@ function rebuildFts(db) {
   db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
 }
 
-function checkpointDb(db) {
+// PASSIVE by default: it checkpoints what it can without blocking concurrent
+// readers/writers, so it is safe to run after every build. A blocking TRUNCATE
+// (which reclaims the -wal file but needs exclusive access and can contend with
+// the daemon + queries) is reserved for maintenance/exit — pass mode explicitly.
+function checkpointDb(db, mode = 'PASSIVE') {
   try {
-    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.pragma(`wal_checkpoint(${mode})`);
   } catch {}
 }
 
@@ -497,13 +506,30 @@ function writeIndexMarker(db, key, value = Date.now()) {
   db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES (?, ?, 0)').run(key, value);
 }
 
-function writeHeartbeat({ dbPath = DEFAULT_DB_PATH, DatabaseImpl = Database } = {}) {
+function writeHeartbeat({
+  dbPath = DEFAULT_DB_PATH,
+  writerLeasePath = writerLockPathFor(dbPath),
+  DatabaseImpl = Database,
+  LockDatabaseImpl = DatabaseImpl,
+} = {}) {
   if (!fs.existsSync(dbPath)) return;
-  const db = new DatabaseImpl(dbPath);
+  const lease = acquireWriterLease({
+    lockPath: writerLeasePath,
+    openDb: lockPath => new LockDatabaseImpl(lockPath),
+  });
+  if (!lease) return false;
   try {
-    writeIndexMarker(db, '__app_heartbeat__');
+    const db = new DatabaseImpl(dbPath);
+    configureConnection(db, { busyTimeoutMs: 0 });
+    const txDb = betterSqliteTransactionAdapter(db);
+    try {
+      runWriteTransaction(txDb, () => writeIndexMarker(db, '__app_heartbeat__'), { label: 'heartbeat' });
+      return true;
+    } finally {
+      db.close();
+    }
   } finally {
-    db.close();
+    lease.release();
   }
 }
 
@@ -515,9 +541,19 @@ interface BuildIndexOptions {
   dbPath?: string;
   schemaPath?: string;
   DatabaseImpl?: new (dbPath: string) => any;
+  LockDatabaseImpl?: new (dbPath: string) => any;
   force?: boolean;
   changedPaths?: string[];
   preserveDbPath?: string | null;
+  writerLeasePath?: string;
+  writerLeaseWaitMs?: number;
+  writerLeaseMode?: 'acquire' | 'caller-held';
+}
+
+interface SkippedFile {
+  path: string;
+  error: string;
+  diagnostics?: unknown;
 }
 
 interface BuildIndexResult {
@@ -525,6 +561,27 @@ interface BuildIndexResult {
   latestSourceMtime: number;
   affectedSessionIds: string[];
   ftsRebuilt: boolean;
+  skipped: number;
+  skippedFiles: SkippedFile[];
+  deferred: boolean;
+  reason?: string;
+}
+
+function deferredBuildResult(
+  reason: string,
+  overrides: Partial<Omit<BuildIndexResult, 'deferred' | 'reason'>> = {},
+): BuildIndexResult {
+  return {
+    files: 0,
+    latestSourceMtime: 0,
+    affectedSessionIds: [],
+    ftsRebuilt: false,
+    skipped: 0,
+    skippedFiles: [],
+    ...overrides,
+    deferred: true,
+    reason,
+  };
 }
 
 function buildIndex({
@@ -535,90 +592,175 @@ function buildIndex({
   dbPath = DEFAULT_DB_PATH,
   schemaPath = resolveSchemaPath(),
   DatabaseImpl = Database,
+  LockDatabaseImpl = DatabaseImpl,
   force = false,
   changedPaths = undefined,
   preserveDbPath = null,
+  writerLeasePath = writerLockPathFor(dbPath),
+  writerLeaseWaitMs = 2000,
+  writerLeaseMode = 'acquire',
 }: BuildIndexOptions = {}): BuildIndexResult {
-  const db = openIndexDb({ dbPath, schemaPath, DatabaseImpl });
-  let messageFtsTriggersDropped = false;
-  if (preserveDbPath && path.resolve(preserveDbPath) !== path.resolve(dbPath)) {
-    copyMemoriesFromDb(db, preserveDbPath);
+  if (writerLeaseMode !== 'acquire' && writerLeaseMode !== 'caller-held') {
+    throw new Error(`Unknown writer lease mode: ${writerLeaseMode}`);
   }
-  const files = [
-    ...discoverJsonlFiles({ projectsDir, changedPaths: force ? undefined : changedPaths }),
-    ...discoverCodexJsonlFiles({ codexDir, changedPaths: force ? undefined : changedPaths }),
-  ];
-  const latestSourceMtime = files.reduce((latest, file) => {
-    try {
-      return Math.max(latest, fs.statSync(file.path).mtimeMs);
-    } catch {
-      return latest;
+  let lease: ReturnType<typeof acquireWriterLease> = null;
+  if (writerLeaseMode === 'acquire') {
+    lease = acquireWriterLease({
+      lockPath: writerLeasePath,
+      openDb: lockPath => new LockDatabaseImpl(lockPath),
+      waitMs: writerLeaseWaitMs,
+    });
+    if (!lease) {
+      return deferredBuildResult('writer_busy');
     }
-  }, 0);
-
+  }
   try {
-    if (force) {
-      dropMessageFtsTriggers(db);
-      messageFtsTriggersDropped = true;
-      db.prepare("DELETE FROM index_state WHERE substr(jsonl_path, 1, 2) != '__'").run();
-      db.prepare("DELETE FROM messages").run();
-      db.prepare("DELETE FROM tool_calls").run();
-      db.prepare("DELETE FROM tool_results").run();
-      db.prepare("DELETE FROM sessions").run();
-      db.prepare("DELETE FROM summaries").run();
-      db.prepare("DELETE FROM subagents").run();
-      db.prepare("DELETE FROM workflows").run();
-      db.prepare("DELETE FROM workflow_agents").run();
-    }
-    const affectedSessionIds = new Set<string>();
-    if (Array.isArray(changedPaths)) {
-      for (const changedPath of changedPaths) {
-        const sessionId = sessionIdFromChangedPath(projectsDir, changedPath);
-        if (sessionId) affectedSessionIds.add(sessionId);
-      }
-    }
-    for (const file of files) {
-      db.exec('BEGIN');
-      try {
-        const indexed = file.source === 'codex' ? indexCodexFile(db, file) : indexClaudeFile(db, file);
-        if (indexed?.sessionId) affectedSessionIds.add(indexed.sessionId);
-        if (file.source !== 'codex') indexSubagentMeta(db, file);
-        db.exec('COMMIT');
-      } catch (error) {
-        safeRollback(db);
-        console.warn(`Warning: failed to index ${file.path}: ${(error as Error).message}`);
-      }
-    }
-    db.exec('BEGIN');
-    let ftsRebuilt = false;
+    const db = openIndexDb({ dbPath, schemaPath, DatabaseImpl });
+    const txDb = betterSqliteTransactionAdapter(db);
+    let messageFtsTriggersDropped = false;
     try {
-      indexWorkflows(db, { projectsDir });
-      refreshSessionProjectPaths(db);
-      indexHistory(db, { historyPath });
-      indexCodexSessionIndex(db, { codexDir });
-      if (messageFtsTriggersDropped) installSchema(db, schemaPath);
-      ftsRebuilt = ensureFtsReady(db, { force });
-      writeIndexMarker(db, '__last_build__');
-      writeIndexMarker(db, '__app_heartbeat__');
-      writeIndexMarker(db, '__app_last_successful_build__');
-      writeIndexMarker(db, '__indexer_owner_app__');
-      if (latestSourceMtime) writeIndexMarker(db, '__last_source_mtime__', latestSourceMtime);
-      db.exec('COMMIT');
-    } catch (error) {
-      safeRollback(db);
-      throw error;
-    }
-    return { files: files.length, latestSourceMtime, affectedSessionIds: [...affectedSessionIds], ftsRebuilt };
-  } finally {
-    if (messageFtsTriggersDropped) {
-      try {
-        installSchema(db, schemaPath);
-      } catch (error) {
-        console.warn(`Warning: failed to restore message FTS triggers: ${(error as Error).message}`);
+      if (preserveDbPath && path.resolve(preserveDbPath) !== path.resolve(dbPath)) {
+        copyMemoriesFromDb(db, preserveDbPath);
       }
+      const files = [
+        ...discoverJsonlFiles({ projectsDir, changedPaths: force ? undefined : changedPaths }),
+        ...discoverCodexJsonlFiles({ codexDir, changedPaths: force ? undefined : changedPaths }),
+      ];
+      const latestSourceMtime = files.reduce((latest, file) => {
+        try {
+          return Math.max(latest, fs.statSync(file.path).mtimeMs);
+        } catch {
+          return latest;
+        }
+      }, 0);
+
+      try {
+        if (force) {
+          runRetryableWriteTransaction(txDb, () => {
+            dropMessageFtsTriggers(db);
+            db.prepare("DELETE FROM index_state WHERE substr(jsonl_path, 1, 2) != '__'").run();
+            db.prepare("DELETE FROM messages").run();
+            db.prepare("DELETE FROM tool_calls").run();
+            db.prepare("DELETE FROM tool_results").run();
+            db.prepare("DELETE FROM sessions").run();
+            db.prepare("DELETE FROM summaries").run();
+            db.prepare("DELETE FROM subagents").run();
+            db.prepare("DELETE FROM workflows").run();
+            db.prepare("DELETE FROM workflow_agents").run();
+          }, { label: 'force-cleanup' });
+          messageFtsTriggersDropped = true;
+        }
+      } catch (error) {
+        if (isBeginBusyFailure(error)) {
+          return deferredBuildResult('database_busy', {
+            files: files.length,
+            latestSourceMtime,
+          });
+        }
+        throw error;
+      }
+      const affectedSessionIds = new Set<string>();
+      const finalizeAffectedSessionIds = new Set<string>();
+      const changedMetaJsonlPaths = new Set<string>();
+      if (Array.isArray(changedPaths)) {
+        for (const changedPath of changedPaths) {
+          const sessionId = sessionIdFromChangedPath(projectsDir, changedPath);
+          const normalizedChangedPath = normalizeChangedPath(projectsDir, changedPath);
+          const isMetaChange = normalizedChangedPath?.toLowerCase().endsWith('.meta.json');
+          if (isMetaChange && normalizedChangedPath) {
+            changedMetaJsonlPaths.add(
+              normalizedChangedPath.slice(0, -'.meta.json'.length) + '.jsonl',
+            );
+          }
+          // Transcript files report their session only after their own transaction
+          // commits. Workflow changes are applied during finalize, so stage those
+          // IDs until the finalize transaction commits. Meta files map back to their
+          // transcript transaction and are reported only after that commit.
+          if (sessionId && !changedPath.toLowerCase().endsWith('.jsonl') && !isMetaChange) {
+            finalizeAffectedSessionIds.add(sessionId);
+          }
+        }
+      }
+      const skipped: SkippedFile[] = [];
+      for (const file of files) {
+        try {
+          // The write is committed before affectedSessionIds is updated, so a
+          // failed/rolled-back file never reports a phantom updated session.
+          const indexed = runRetryableWriteTransaction(txDb, () => {
+            const result = file.source === 'codex' ? indexCodexFile(db, file) : indexClaudeFile(db, file);
+            const metaIndexed = file.source !== 'codex' && indexSubagentMeta(db, file);
+            if (!result?.sessionId && metaIndexed && changedMetaJsonlPaths.has(file.path)) {
+              return { sessionId: file.sessionId, path: file.path };
+            }
+            return result;
+          }, { label: `file:${file.path}` });
+          if (indexed?.sessionId) affectedSessionIds.add(indexed.sessionId);
+        } catch (error) {
+          if (isBeginBusyFailure(error)) {
+            return deferredBuildResult('database_busy', {
+              files: files.length,
+              latestSourceMtime,
+              affectedSessionIds: [...affectedSessionIds],
+              skipped: skipped.length,
+              skippedFiles: skipped,
+            });
+          }
+          if (hasUnusableTransaction(error)) throw error;
+          skipped.push({ path: file.path, error: (error as Error).message, diagnostics: (error as { obelisk?: unknown }).obelisk });
+          console.warn(`Warning: failed to index ${file.path}: ${(error as Error).message}`);
+        }
+      }
+      let ftsRebuilt = false;
+      // Finalize is one transaction; a failure here fails the whole build (the
+      // index would otherwise be left inconsistent).
+      try {
+        runRetryableWriteTransaction(txDb, () => {
+          indexWorkflows(db, { projectsDir });
+          refreshSessionProjectPaths(db);
+          indexHistory(db, { historyPath });
+          indexCodexSessionIndex(db, { codexDir });
+          if (messageFtsTriggersDropped) installSchema(db, schemaPath);
+          ftsRebuilt = ensureFtsReady(db, { force });
+          writeIndexMarker(db, '__last_build__');
+          writeIndexMarker(db, '__app_last_successful_build__');
+          writeIndexMarker(db, '__indexer_owner_app__');
+          if (latestSourceMtime) writeIndexMarker(db, '__last_source_mtime__', latestSourceMtime);
+        }, { label: 'finalize' });
+      } catch (error) {
+        if (isBeginBusyFailure(error)) {
+          return deferredBuildResult('database_busy', {
+            files: files.length,
+            latestSourceMtime,
+            affectedSessionIds: [...affectedSessionIds],
+            skipped: skipped.length,
+            skippedFiles: skipped,
+          });
+        }
+        throw error;
+      }
+      for (const sessionId of finalizeAffectedSessionIds) affectedSessionIds.add(sessionId);
+      return {
+        files: files.length,
+        latestSourceMtime,
+        affectedSessionIds: [...affectedSessionIds],
+        ftsRebuilt,
+        skipped: skipped.length,
+        skippedFiles: skipped,
+        deferred: false,
+      };
+    } finally {
+      if (messageFtsTriggersDropped) {
+        try {
+          installSchema(db, schemaPath);
+        } catch (error) {
+          console.warn(`Warning: failed to restore message FTS triggers: ${(error as Error).message}`);
+        }
+      }
+      checkpointDb(db);
+      db.close();
     }
-    checkpointDb(db);
-    db.close();
+  } finally {
+    lease?.release();
   }
 }
 

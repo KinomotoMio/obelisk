@@ -11,7 +11,8 @@
     "dist": "electron-vite build && electron-builder --mac --win --linux",
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
-    "dist:linux": "electron-vite build && electron-builder --linux"
+    "dist:linux": "electron-vite build && electron-builder --linux",
+    "test:electron": "electron-vite build && electron --no-sandbox tests/electron-concurrency.mjs"
   },
   "build": {
     "appId": "com.obelisk.app",

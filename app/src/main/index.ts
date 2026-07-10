@@ -9,6 +9,7 @@ import { writeHeartbeat } from './indexer.ts';
 import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
+import { acquireWriterLease, writerLockPathFor } from '../../../scripts/writer-lease.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,16 @@ let db;
 let indexerService;
 let indexerWorker;
 
+type WriterLeaseMode = 'acquire' | 'caller-held';
+
+function acquireAppWriterLease(dbPath: string, waitMs = 0) {
+  return acquireWriterLease({
+    lockPath: writerLockPathFor(dbPath),
+    openDb: lockPath => new Database(lockPath),
+    waitMs,
+  });
+}
+
 function getConfiguredClaudeDir() {
   const persisted = loadPersistedSettings();
   return persisted.claudeDir || DEFAULT_CLAUDE_DIR;
@@ -60,15 +71,25 @@ function getPathsForClaudeDir(claudeDir = getConfiguredClaudeDir(), codexDir = g
   };
 }
 
-function migrateLegacyDbIfNeeded(paths = getPathsForClaudeDir()) {
+function migrateLegacyDbIfNeeded(
+  paths = getPathsForClaudeDir(),
+  { writerLeaseMode = 'acquire' }: { writerLeaseMode?: WriterLeaseMode } = {},
+) {
   if (fs.existsSync(paths.dbPath)) return;
   const legacyDbPath = path.join(paths.claudeDir, 'obelisk.sqlite');
   if (!fs.existsSync(legacyDbPath)) return;
+  const lease = writerLeaseMode === 'acquire' ? acquireAppWriterLease(paths.dbPath) : null;
+  if (writerLeaseMode === 'acquire' && !lease) return false;
   try {
+    if (fs.existsSync(paths.dbPath)) return true;
     fs.mkdirSync(path.dirname(paths.dbPath), { recursive: true });
     fs.copyFileSync(legacyDbPath, paths.dbPath);
+    return true;
   } catch (error) {
     console.warn?.(`Obelisk legacy DB migration skipped: ${(error as Error).message}`);
+    return false;
+  } finally {
+    lease?.release();
   }
 }
 
@@ -151,13 +172,38 @@ function closeDb() {
   db = null;
 }
 
-function openDb(dbPath = getPathsForClaudeDir().dbPath) {
+function openDb(
+  dbPath = getPathsForClaudeDir().dbPath,
+  { writerLeaseMode = 'acquire' }: { writerLeaseMode?: WriterLeaseMode } = {},
+) {
   closeDb();
   if (!fs.existsSync(dbPath)) return null;
   db = new Database(dbPath, { readonly: false });
-  db.pragma('journal_mode = WAL');
-  migrateDb(db);
+  db.pragma('busy_timeout = 5000');
+  const lease = writerLeaseMode === 'acquire' ? acquireAppWriterLease(dbPath) : null;
+  if (writerLeaseMode === 'caller-held' || lease) {
+    try {
+      db.pragma('journal_mode = WAL');
+      migrateDb(db);
+    } finally {
+      lease?.release();
+    }
+  }
   return db;
+}
+
+function runAppDbWrite(work: () => void): boolean {
+  if (!db) return false;
+  const lease = acquireAppWriterLease(getPathsForClaudeDir().dbPath, 250);
+  if (!lease) {
+    throw new Error('Obelisk index writer is busy; memory change was not applied');
+  }
+  try {
+    work();
+    return true;
+  } finally {
+    lease.release();
+  }
 }
 
 function notifyIndexUpdated(result: { affectedSessionIds?: unknown } = {}) {
@@ -200,8 +246,14 @@ function startIndexerService({ buildOnStart = false } = {}) {
         projectsDir: paths.projectsDir,
         dbPath: paths.dbPath,
       });
-      openDb(paths.dbPath);
-      notifyIndexUpdated(result);
+      if (result?.deferred) {
+        if (Array.isArray(result.affectedSessionIds) && result.affectedSessionIds.length) {
+          notifyIndexUpdated(result);
+        }
+      } else {
+        openDb(paths.dbPath);
+        notifyIndexUpdated(result);
+      }
       return result;
     },
     writeHeartbeat: () => writeHeartbeat({ dbPath: paths.dbPath }),
@@ -520,16 +572,16 @@ ipcMain.handle('db:readMemoryFile', (_, filePath) => {
 });
 
 ipcMain.handle('db:archiveMemory', (_, id, reason) => {
-  if (!db) return false;
-  db.prepare(`UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?`)
-    .run(new Date().toISOString(), reason || 'Archived via panel', id);
-  return true;
+  return runAppDbWrite(() => {
+    db.prepare(`UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?`)
+      .run(new Date().toISOString(), reason || 'Archived via panel', id);
+  });
 });
 
 ipcMain.handle('db:restoreMemory', (_, id) => {
-  if (!db) return false;
-  db.prepare(`UPDATE memories SET deleted_at = NULL, deleted_reason = NULL WHERE id = ?`).run(id);
-  return true;
+  return runAppDbWrite(() => {
+    db.prepare(`UPDATE memories SET deleted_at = NULL, deleted_reason = NULL WHERE id = ?`).run(id);
+  });
 });
 
 ipcMain.handle('db:getProjects', (_, opts = {}) => {
@@ -830,8 +882,27 @@ ipcMain.handle('settings:rebuildIndex', async () => {
     indexerWorker = createWorkerBuildIndex();
   }
   cleanupDbFiles(tempDbPath);
+  let writerLease: ReturnType<typeof acquireWriterLease> = null;
   try {
-    migrateLegacyDbIfNeeded(paths);
+    const writerLeasePath = writerLockPathFor(paths.dbPath);
+    writerLease = acquireWriterLease({
+      lockPath: writerLeasePath,
+      openDb: lockPath => new Database(lockPath),
+      waitMs: 2000,
+    });
+    if (!writerLease) {
+      return {
+        files: 0,
+        latestSourceMtime: 0,
+        affectedSessionIds: [],
+        ftsRebuilt: false,
+        skipped: 0,
+        skippedFiles: [],
+        deferred: true,
+        reason: 'writer_busy',
+      };
+    }
+    migrateLegacyDbIfNeeded(paths, { writerLeaseMode: 'caller-held' });
     const result = await indexerWorker.buildIndex({
       reason: 'manual-rebuild',
       force: true,
@@ -840,21 +911,30 @@ ipcMain.handle('settings:rebuildIndex', async () => {
       projectsDir: paths.projectsDir,
       dbPath: tempDbPath,
       preserveDbPath: fs.existsSync(paths.dbPath) ? paths.dbPath : null,
+      writerLeasePath,
+      writerLeaseMode: 'caller-held',
     });
+    if (result?.deferred) return result;
     closeDb();
     replaceDbWithTemp(tempDbPath, paths.dbPath);
-    openDb(paths.dbPath);
+    openDb(paths.dbPath, { writerLeaseMode: 'caller-held' });
     notifyIndexUpdated(result);
     return result;
   } finally {
-    cleanupDbFiles(tempDbPath);
-    if (!db) {
-      try {
-        openDb(paths.dbPath);
-      } catch (error) {
-        console.warn?.(`Obelisk DB reopen after rebuild failed: ${(error as Error).message}`);
+    try {
+      cleanupDbFiles(tempDbPath);
+      if (!db) {
+        try {
+          openDb(paths.dbPath, {
+            writerLeaseMode: writerLease ? 'caller-held' : 'acquire',
+          });
+        } catch (error) {
+          console.warn?.(`Obelisk DB reopen after rebuild failed: ${(error as Error).message}`);
+        }
       }
+    } finally {
+      writerLease?.release();
+      if (shouldRestartWatcher) startIndexerService({ buildOnStart: false });
     }
-    if (shouldRestartWatcher) startIndexerService({ buildOnStart: false });
   }
 });
