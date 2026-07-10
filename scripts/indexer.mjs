@@ -9,6 +9,15 @@ import { parse as codexParse } from './providers/codex.ts';
 
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
 
+// A rollback inside a catch must never throw over the real error. SQLite
+// auto-rolls back certain failures (SQLITE_BUSY, disk full, ...); a following
+// explicit ROLLBACK then throws "cannot rollback - no transaction is active",
+// which would both mask the true cause and turn a skippable per-file error into
+// a whole-build failure. Swallow only the rollback's own error.
+function safeRollback(db) {
+  try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+}
+
 
 function needsReindex(db, fp) {
   const mt = fs.statSync(fp).mtimeMs;
@@ -193,7 +202,7 @@ function buildIndex({ force = false } = {}) {
       }
       db.exec('COMMIT');
     } catch (e) {
-      db.exec('ROLLBACK');
+      safeRollback(db);
       process.stderr.write(`Warning: failed to index ${f.path}: ${e.message}\n`);
     }
   }
@@ -208,7 +217,7 @@ function buildIndex({ force = false } = {}) {
     db.prepare("INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES ('__last_build__', ?, 0)").run(Date.now());
     db.exec('COMMIT');
   } catch (e) {
-    db.exec('ROLLBACK');
+    safeRollback(db);
     process.stderr.write(`Warning: failed to finalize index: ${e.message}\n`);
   }
   db.close();

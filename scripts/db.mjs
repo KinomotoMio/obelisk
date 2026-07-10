@@ -24,6 +24,9 @@ function openDb() {
   const db = new DatabaseSync(DB_PATH);
   db.exec('PRAGMA journal_mode=WAL');
   db.exec('PRAGMA synchronous=NORMAL');
+  // Wait for a contended lock instead of erroring with SQLITE_BUSY: a running
+  // app daemon may be writing the same database while the skill reads/indexes.
+  db.exec('PRAGMA busy_timeout=5000');
   migrateExistingColumns(db);
   db.exec(SCHEMA);
   migrateDb(db);

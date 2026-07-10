@@ -35,6 +35,15 @@ interface FileInfo {
   source?: string;
 }
 
+// A rollback inside a catch must never throw over the real error. SQLite
+// auto-rolls back certain failures (SQLITE_BUSY, disk full, ...); a following
+// explicit ROLLBACK then throws "cannot rollback - no transaction is active",
+// which would both mask the true cause and turn a skippable per-file error into
+// a whole-build failure. Swallow only the rollback's own error.
+function safeRollback(db: { exec: (sql: string) => unknown }) {
+  try { db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+}
+
 function resolveSchemaPath() {
   const candidates = [
     path.join(__dirname, 'schema.sql'),
@@ -576,7 +585,7 @@ function buildIndex({
         if (file.source !== 'codex') indexSubagentMeta(db, file);
         db.exec('COMMIT');
       } catch (error) {
-        db.exec('ROLLBACK');
+        safeRollback(db);
         console.warn(`Warning: failed to index ${file.path}: ${(error as Error).message}`);
       }
     }
@@ -596,7 +605,7 @@ function buildIndex({
       if (latestSourceMtime) writeIndexMarker(db, '__last_source_mtime__', latestSourceMtime);
       db.exec('COMMIT');
     } catch (error) {
-      db.exec('ROLLBACK');
+      safeRollback(db);
       throw error;
     }
     return { files: files.length, latestSourceMtime, affectedSessionIds: [...affectedSessionIds], ftsRebuilt };
