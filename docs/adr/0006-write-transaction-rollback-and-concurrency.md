@@ -17,14 +17,15 @@ failed statement can replay part of a transaction.
 **Decision.** Use one transaction primitive plus two explicit coordination
 layers.
 
-- `scripts/tx.ts` owns the binding-agnostic `runWriteTransaction(db, work)`.
+- `packages/core/src/tx.ts` owns the binding-agnostic
+  `runWriteTransaction(db, work)`.
   Adapters expose transaction state from better-sqlite3's `inTransaction` and
   node:sqlite's `isTransaction`. The primitive performs `BEGIN IMMEDIATE`, runs
   `work` exactly once, commits, and attempts rollback only when the binding says
   a transaction is active or its state is unknown. Cleanup never masks the
   primary exception. Diagnostics record phase, SQLite code, rollback outcome,
   transaction state, label, and attempts.
-- Retry is an upper-layer policy in `scripts/write-coordinator.ts`, never hidden
+- Retry is an upper-layer policy in `packages/core/src/write-coordinator.ts`, never hidden
   inside the transaction primitive. Only an idempotent whole transaction that
   failed during work/commit with `SQLITE_BUSY*` and is confirmed inactive may be
   retried. The default is three attempts within a one-second budget with short

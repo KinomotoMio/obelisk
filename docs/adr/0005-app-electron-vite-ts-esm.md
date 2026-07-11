@@ -20,8 +20,9 @@ decisions within this:
   security) does not support ESM preload. Source stays ESM; only the preload
   output format is CJS. `main` loads `../preload/index.js`.
 - **The app consumes the Core from source**: electron-vite/rollup bundles
-  `scripts/providers/*` + `scripts/persist` (and their `scripts/parsing.mjs`
-  dependency) into the app's main/worker build, injecting `better-sqlite3`. This
+  `packages/core/src/providers/*` + `packages/core/src/persist.ts` (and their
+  `packages/core/src/parsing.ts` dependency) into the app's main/worker build,
+  injecting `better-sqlite3`. This
   works because the provider→parsing import graph is node:sqlite-free (ADR-0001),
   so nothing drags `node:sqlite` into the app. The `dist/` from `build:core`
   (ADR-0003) remains for the skill artifact; the app does not need it.
@@ -30,17 +31,17 @@ decisions within this:
 - **The app main + preload source is TypeScript with types at its seams**, but
   under a *deliberately more lenient* project than the runtime core. `app/tsconfig.json`
   keeps `strict` on yet sets `noImplicitAny: false`, because the app mostly
-  orchestrates the already-strictly-typed core (`scripts/`), and annotating every
+  orchestrates the already-strictly-typed core (`packages/core/src/`), and annotating every
   internal SQLite-handle helper would be high-cost, low-value churn. Types are
   added where they matter: the core-consumption seam (`BuildIndexOptions`/
   `BuildIndexResult`, `FileInfo`), the service/worker factories, and the IPC
   bridge. Module-to-module specifiers use the real `.ts` extension (mirroring
-  `scripts/`, since Node's type-stripping does not rewrite `.js`→`.ts`), which
+  Core source, since Node's type-stripping does not rewrite `.js`→`.ts`), which
   needs `allowImportingTsExtensions` (safe under the project's `noEmit`); the
   worker's *runtime* path stays `indexer-worker.js` because that is the built
   output. `@types/better-sqlite3` is a devDependency for the injected binding.
 
-**Two-tier typechecking.** `npm run typecheck` runs the root project (`scripts/` +
+**Two-tier typechecking.** `npm run typecheck` runs the root project (`packages/core/src/` +
 `tests/`, fully strict including `noImplicitAny`) and then the app project. The
 root project **excludes the app-importing tests** (`tests/app-*.test.mjs`,
 `tests/recap-capture-query.test.mjs`): those tests import app source, which would

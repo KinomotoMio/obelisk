@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
 
 function runRuntime(args, { home }) {
-  return spawnSync(process.execPath, ['packages/core/src/runtime.mjs', ...args], {
+  return spawnSync(process.execPath, ['packages/core/src/runtime.ts', ...args], {
     cwd: repoRoot,
     env: { ...process.env, HOME: home },
     encoding: 'utf8',

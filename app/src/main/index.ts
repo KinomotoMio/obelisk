@@ -130,6 +130,7 @@ function replaceDbWithTemp(tempDbPath, dbPath) {
 function resolveSchemaPath() {
   const candidates = [
     path.join(__dirname, 'schema.sql'),
+    path.join(__dirname, '..', '..', '..', 'packages', 'core', 'src', 'schema.sql'),
     path.join(__dirname, '..', 'scripts', 'schema.sql'),
     process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'schema.sql') : null,
   ].filter((c): c is string => Boolean(c));

@@ -7,5 +7,5 @@
     "declaration": false,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["packages/core/src/**/*.ts", "packages/core/src/**/*.mjs"]
+  "include": ["packages/core/src/**/*.ts"]
 }

@@ -1,12 +1,14 @@
 // node:sqlite lifecycle and migrations for the Core package.
 import { createRequire } from 'node:module';
-import { CLAUDE_DIR, CODEX_DIR, TEXT_LIMIT, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines } from './parsing.mjs';
+import { CLAUDE_DIR, CODEX_DIR, TEXT_LIMIT, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines } from './parsing.ts';
 import { configureConnection } from './tx.ts';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { DatabaseSync } = require('node:sqlite');
+
+type SqliteDb = any;
 
 const OBELISK_DIR = path.join(os.homedir(), '.obelisk');
 const LEGACY_DB_PATH = path.join(CLAUDE_DIR, 'obelisk.sqlite');
@@ -39,20 +41,20 @@ function openReadDb() {
   return db;
 }
 
-function openWriterLeaseDb(lockPath) {
+function openWriterLeaseDb(lockPath: string): SqliteDb {
   return new DatabaseSync(lockPath);
 }
 
-function ensureColumn(db, table, column, definition) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+function ensureColumn(db: SqliteDb, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((c: { name: string }) => c.name);
   if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
-function tableExists(db, table) {
+function tableExists(db: SqliteDb, table: string): boolean {
   return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table));
 }
 
-function migrateExistingColumns(db) {
+function migrateExistingColumns(db: SqliteDb): void {
   if (tableExists(db, 'sessions')) ensureColumn(db, 'sessions', 'source', "TEXT DEFAULT 'claude'");
   if (tableExists(db, 'messages')) {
     ensureColumn(db, 'messages', 'content_type', 'TEXT');
@@ -66,11 +68,11 @@ function migrateExistingColumns(db) {
   }
 }
 
-function migrateDb(db) {
+function migrateDb(db: SqliteDb): void {
   migrateExistingColumns(db);
 }
 
-function rebuildMemoryFts(db) {
+function rebuildMemoryFts(db: SqliteDb): void {
   db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
 }
 

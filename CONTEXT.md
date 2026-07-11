@@ -31,7 +31,7 @@ promoted to an external tool surface.
 A pure per-source module (claude, codex, later opencode, pi, …) that discovers a
 source's transcript files and parses one into a stream of records. It never opens
 or writes a database; adding a source means adding one adapter. The shared pure
-parse/discover helpers live in `scripts/parsing.mjs`, which imports only
+parse/discover helpers live in `packages/core/src/parsing.ts`, which imports only
 node:fs/path/os — deliberately node:sqlite-free so the compiled providers can be
 consumed by the app (whose Electron runtime has no `node:sqlite`).
 _Avoid_: parse core, parser, ingest

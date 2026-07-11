@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createQueryApi, createAttuneApi } from '../packages/core/src/query.mjs';
+import { createQueryApi, createAttuneApi } from '../packages/core/src/query.ts';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');

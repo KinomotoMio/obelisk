@@ -17,7 +17,7 @@ import {
   codexRawId,
   codexParentThreadId,
   readCodexGuardianThreadInfo,
-} from '../../../packages/core/src/parsing.mjs';
+} from '../../../packages/core/src/parsing.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,7 +41,7 @@ interface FileInfo {
 function resolveSchemaPath() {
   const candidates = [
     path.join(__dirname, 'schema.sql'),
-    path.join(__dirname, '..', '..', '..', 'scripts', 'schema.sql'),
+    path.join(__dirname, '..', '..', '..', 'packages', 'core', 'src', 'schema.sql'),
     process.resourcesPath ? path.join(process.resourcesPath, 'scripts', 'schema.sql') : null,
   ].filter((c): c is string => Boolean(c));
   const found = candidates.find(p => fs.existsSync(p));

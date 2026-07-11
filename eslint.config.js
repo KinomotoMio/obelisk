@@ -1,5 +1,5 @@
 // Flat ESLint config for the Obelisk root (Core + skill runtime + tests).
-// Scope: the ESM/TS sources under scripts/ and tests/. The Electron app has its
+// Scope: the ESM/TS sources under packages/core/src/ and tests/. The Electron app has its
 // own package and toolchain and is intentionally excluded (see docs/adr/0003).
 
 import js from '@eslint/js';

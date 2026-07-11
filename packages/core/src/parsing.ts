@@ -1,7 +1,7 @@
 // Core's pure parse/discover helpers — node:sqlite-free by construction, so the compiled
 // providers can be consumed by the app (better-sqlite3 / a Node without
-// node:sqlite). Moved verbatim from db.mjs and indexer.mjs (Phase 5d-1); they use
-// only node:fs/path/os. Kept as .mjs (plain ESM) for a low-risk verbatim move.
+// node:sqlite). Originally extracted verbatim from db/indexer; it now exposes a
+// typed seam while remaining limited to node:fs/path/os.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
@@ -14,18 +14,41 @@ const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const CODEX_SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 const TEXT_LIMIT = 10000;
 
-// ---- from db.mjs (message/text helpers) ----
-function trunc(s) {
+type JsonRecord = Record<string, any>;
+type JsonValue = any;
+
+interface ClaudeJsonlFile {
+  path: string;
+  sessionId: string;
+  project: string;
+  isSubagent: boolean;
+  agentId?: string;
+  workflowRunId?: string;
+  source?: 'claude';
+}
+
+interface CodexJsonlFile {
+  path: string;
+  source: 'codex';
+}
+
+interface CodexLineRecord {
+  lineNum: number;
+  obj: JsonRecord;
+}
+
+// ---- message/text helpers ----
+function trunc(s: any): any {
   return typeof s === 'string' && s.length > TEXT_LIMIT ? s.slice(0, TEXT_LIMIT) : s;
 }
 
-function truncJson(obj, limit = TEXT_LIMIT) {
+function truncJson(obj: JsonValue, limit = TEXT_LIMIT): string | null {
   if (obj === null || obj === undefined) return null;
-  const walk = (v) => {
+  const walk = (v: JsonValue): JsonValue => {
     if (typeof v === 'string') return v.length > limit ? v.slice(0, limit) + '...[truncated]' : v;
     if (Array.isArray(v)) return v.map(walk);
     if (typeof v === 'object' && v !== null) {
-      const out = {};
+      const out: JsonRecord = {};
       for (const [k, val] of Object.entries(v)) out[k] = walk(val);
       return out;
     }
@@ -34,10 +57,10 @@ function truncJson(obj, limit = TEXT_LIMIT) {
   return JSON.stringify(walk(obj));
 }
 
-function extractText(content) {
+function extractText(content: JsonValue): string | null {
   if (typeof content === 'string') return trunc(content);
   if (!Array.isArray(content)) return null;
-  const parts = [];
+  const parts: string[] = [];
   for (const b of content) {
     if (b.type === 'text' && b.text) parts.push(b.text);
     else if (b.type === 'thinking' && b.thinking) parts.push(b.thinking);
@@ -45,10 +68,10 @@ function extractText(content) {
   return parts.length ? trunc(parts.join('\n')) : null;
 }
 
-function extractContentType(content) {
+function extractContentType(content: JsonValue): string {
   if (typeof content === 'string') return 'text';
   if (!Array.isArray(content) || !content.length) return 'unknown';
-  const types = new Set();
+  const types = new Set<string>();
   let sawUnknown = false;
   for (const b of content) {
     if (!b || typeof b !== 'object') { sawUnknown = true; continue; }
@@ -63,20 +86,20 @@ function extractContentType(content) {
 
 const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<(?:task-notification|system-reminder)\b|<local-command(?:\b|-))/;
 
-function extractMessageIsMeta(record, text = extractText(record?.message?.content)) {
+function extractMessageIsMeta(record: JsonRecord, text: string | null = extractText(record?.message?.content)): 0 | 1 {
   const msg = record?.message || {};
   if (record?.isMeta === true || msg.isMeta === true) return 1;
   return typeof text === 'string' && COMMAND_ENVELOPE_RE.test(text) ? 1 : 0;
 }
 
-function filePath(name, input) {
+function filePath(name: string, input: JsonRecord | null | undefined): string | null {
   if (!input) return null;
   return ['Read', 'Edit', 'Write', 'NotebookEdit'].includes(name) ? (input.file_path || null) : null;
 }
 
-function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
+function isDir(p: string): boolean { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
 
-function readLines(filePath, callback) {
+function readLines(filePath: string, callback: (line: string) => boolean | void): void {
   const fd = fs.openSync(filePath, 'r');
   const bufSize = 64 * 1024;
   const buf = Buffer.alloc(bufSize);
@@ -86,7 +109,7 @@ function readLines(filePath, callback) {
     while ((bytesRead = fs.readSync(fd, buf, 0, bufSize)) > 0) {
       const chunk = remainder + buf.toString('utf8', 0, bytesRead);
       const lines = chunk.split('\n');
-      remainder = lines.pop();
+      remainder = lines.pop() ?? '';
       for (const line of lines) {
         if (line && callback(line) === false) return;
       }
@@ -97,25 +120,25 @@ function readLines(filePath, callback) {
   }
 }
 
-// ---- from indexer.mjs (project-path + discovery helpers) ----
-function legacyProjectPathFromSlug(project) {
+// ---- project-path + discovery helpers ----
+function legacyProjectPathFromSlug(project: string | null | undefined): string | null {
   if (!project) return null;
   return '/' + project.replace(/-/g, '/').replace(/^\//, '');
 }
 
-function normalizeObservedCwd(cwd) {
+function normalizeObservedCwd(cwd: unknown): string | null {
   if (typeof cwd !== 'string' || !cwd.trim() || !path.isAbsolute(cwd)) return null;
   return path.normalize(cwd);
 }
 
-function projectSlugFromPath(projectPath) {
+function projectSlugFromPath(projectPath: string | null): string | null {
   const normalized = normalizeObservedCwd(projectPath);
   if (!normalized) return null;
   return '-' + normalized.replace(/^[\\/]+/, '').replace(/[\\/]+/g, '-');
 }
 
-function inferProjectPath(project, observedCwds = []) {
-  const byPath = new Map();
+function inferProjectPath(project: string | null | undefined, observedCwds: unknown[] = []): string | null {
+  const byPath = new Map<string, { path: string; count: number; first: number }>();
   for (const cwd of observedCwds) {
     const normalized = normalizeObservedCwd(cwd);
     if (!normalized) continue;
@@ -127,11 +150,11 @@ function inferProjectPath(project, observedCwds = []) {
   return best?.path || legacyProjectPathFromSlug(project);
 }
 
-function discoverJsonlFiles() {
-  const files = [];
+function discoverJsonlFiles(): ClaudeJsonlFile[] {
+  const files: ClaudeJsonlFile[] = [];
   if (!fs.existsSync(PROJECTS_DIR)) return files;
   let projects;
-  try { projects = fs.readdirSync(PROJECTS_DIR); } catch (e) { process.stderr.write(`Warning: cannot read projects dir: ${e.message}\n`); return files; }
+  try { projects = fs.readdirSync(PROJECTS_DIR); } catch (e) { process.stderr.write(`Warning: cannot read projects dir: ${e instanceof Error ? e.message : String(e)}\n`); return files; }
   for (const proj of projects) {
     const projPath = path.join(PROJECTS_DIR, proj);
     if (!isDir(projPath)) continue;
@@ -169,10 +192,10 @@ function discoverJsonlFiles() {
   return files;
 }
 
-function discoverCodexJsonlFiles() {
-  const files = [];
+function discoverCodexJsonlFiles(): CodexJsonlFile[] {
+  const files: CodexJsonlFile[] = [];
   if (!fs.existsSync(CODEX_SESSIONS_DIR)) return files;
-  const walk = (dir) => {
+  const walk = (dir: string): void => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
@@ -188,27 +211,27 @@ function discoverCodexJsonlFiles() {
   return files;
 }
 
-// ---- from indexer.mjs (codex pure helpers) ----
-function codexDbId(id) {
+// ---- Codex pure helpers ----
+function codexDbId(id: unknown): string | null {
   if (!id) return null;
   const raw = String(id).replace(/^codex:/, '');
   return `codex:${raw}`;
 }
 
-function codexRawId(id) {
+function codexRawId(id: unknown): string | null {
   return id ? String(id).replace(/^codex:/, '') : null;
 }
 
-function codexLineUuid(threadId, lineNum) {
+function codexLineUuid(threadId: unknown, lineNum: number): string {
   return `codex:${codexRawId(threadId)}:${String(lineNum).padStart(6, '0')}`;
 }
 
-function codexCallId(callId) {
+function codexCallId(callId: unknown): string | null {
   if (!callId) return null;
   return `codex:${String(callId).replace(/^codex:/, '')}`;
 }
 
-function codexParentThreadId(meta) {
+function codexParentThreadId(meta: JsonRecord): string | null {
   const subagent = meta?.source?.subagent;
   return subagent?.thread_spawn?.parent_thread_id
     || meta?.forked_from_id
@@ -216,20 +239,20 @@ function codexParentThreadId(meta) {
     || null;
 }
 
-function codexIsGuardianThread(meta, records = []) {
+function codexIsGuardianThread(meta: JsonRecord, records: CodexLineRecord[] = []): boolean {
   const subagent = meta?.source?.subagent;
   if (subagent?.other === 'guardian') return true;
   if (meta?.thread_source !== 'subagent') return false;
   return records.some(({ obj }) => obj?.payload?.model === 'codex-auto-review' || obj?.model === 'codex-auto-review');
 }
 
-function readCodexGuardianThreadInfo(filePath) {
-  const records = [];
-  let metaRecord = null;
+function readCodexGuardianThreadInfo(filePath: string): { threadRawId: string; lineNum: number } | null {
+  const records: CodexLineRecord[] = [];
+  let metaRecord: CodexLineRecord | null = null;
   let lineNum = 0;
   readLines(filePath, (line) => {
     lineNum++;
-    let obj;
+    let obj: JsonRecord;
     try {
       obj = JSON.parse(line);
     } catch {
@@ -243,30 +266,32 @@ function readCodexGuardianThreadInfo(filePath) {
     }
     if (metaRecord && codexIsGuardianThread(metaRecord.obj.payload, records)) return false;
   });
-  const meta = metaRecord?.obj?.payload;
+  const capturedMeta = metaRecord as CodexLineRecord | null;
+  const meta = capturedMeta?.obj?.payload;
   if (!meta || !codexIsGuardianThread(meta, records)) return null;
-  return { threadRawId: codexRawId(meta.id), lineNum };
+  const threadRawId = codexRawId(meta.id);
+  return threadRawId ? { threadRawId, lineNum } : null;
 }
 
-function codexAgentNickname(meta) {
+function codexAgentNickname(meta: JsonRecord): string | null {
   return meta?.agent_nickname
     || meta?.source?.subagent?.thread_spawn?.agent_nickname
     || null;
 }
 
-function codexAgentRole(meta) {
+function codexAgentRole(meta: JsonRecord): string | null {
   return meta?.agent_role
     || meta?.source?.subagent?.thread_spawn?.agent_role
     || null;
 }
 
-function parseCodexJsonInput(value) {
+function parseCodexJsonInput(value: JsonValue): JsonValue {
   if (value === null || value === undefined || value === '') return {};
   if (typeof value !== 'string') return value;
   try { return JSON.parse(value); } catch { return value; }
 }
 
-function codexUsage(payload) {
+function codexUsage(payload: JsonRecord) {
   const usage = payload?.info?.last_token_usage || payload?.info?.total_token_usage || payload?.last_token_usage || null;
   if (!usage) return {};
   return {
@@ -275,37 +300,37 @@ function codexUsage(payload) {
   };
 }
 
-function codexEventText(payload) {
+function codexEventText(payload: JsonRecord): string | null {
   if (typeof payload?.message === 'string') return payload.message;
   if (Array.isArray(payload?.text_elements) && payload.text_elements.length) {
-    const parts = payload.text_elements.map(item => typeof item === 'string' ? item : item?.text).filter(Boolean);
+    const parts = payload.text_elements.map((item: JsonValue) => typeof item === 'string' ? item : item?.text).filter(Boolean);
     if (parts.length) return parts.join('\n');
   }
   if (typeof payload?.text === 'string') return payload.text;
   return null;
 }
 
-function codexMessagePayloadText(payload) {
+function codexMessagePayloadText(payload: JsonRecord): string | null {
   if (!Array.isArray(payload?.content)) return null;
-  const parts = [];
+  const parts: string[] = [];
   for (const block of payload.content) {
     if (typeof block?.text === 'string') parts.push(block.text);
   }
   return parts.length ? parts.join('\n') : null;
 }
 
-function codexVisibleMessageKey(role, text) {
+function codexVisibleMessageKey(role: unknown, text: unknown): string {
   return `${role || ''}\u0000${text || ''}`;
 }
 
-function codexToolInput(payload) {
+function codexToolInput(payload: JsonRecord): JsonValue {
   if (payload?.type === 'custom_tool_call') return parseCodexJsonInput(payload.input);
   if (payload?.type === 'tool_search_call') return parseCodexJsonInput(payload.arguments);
   if (payload?.type === 'web_search_call') return { action: payload.action || null };
   return parseCodexJsonInput(payload?.arguments);
 }
 
-function codexToolOutput(payload) {
+function codexToolOutput(payload: JsonRecord): string | null {
   if (typeof payload?.output === 'string') return payload.output;
   if (payload?.output !== undefined) return JSON.stringify(payload.output);
   if (payload?.tools !== undefined) return JSON.stringify(payload.tools);

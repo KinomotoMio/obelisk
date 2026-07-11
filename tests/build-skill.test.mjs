@@ -27,12 +27,12 @@ function walk(dir) {
 test('build:skill produces a runnable, readable, .ts-free skill artifact', () => {
   execFileSync('npm', ['run', 'build:skill'], { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' });
 
-  // Structure: compiled Core + copied .mjs + schema + docs + package.json.
+  // Structure: compiled Core + schema + docs + package.json.
   for (const rel of [
     'package.json', 'SKILL.md', 'references/api-reference.md',
     'scripts/core.js', 'scripts/persist.js', 'scripts/providers/claude.js',
-    'scripts/providers/codex.js', 'scripts/runtime.mjs', 'scripts/indexer.mjs',
-    'scripts/db.mjs', 'scripts/parsing.mjs', 'scripts/query.mjs', 'scripts/schema.sql',
+    'scripts/providers/codex.js', 'scripts/runtime.js', 'scripts/indexer.js',
+    'scripts/db.js', 'scripts/parsing.js', 'scripts/query.js', 'scripts/schema.sql',
   ]) {
     assert.ok(existsSync(join(skillDir, rel)), `artifact missing ${rel}`);
   }
@@ -56,7 +56,7 @@ test('build:skill produces a runnable, readable, .ts-free skill artifact', () =>
     writeFileSync(join(projDir, 'smoke.jsonl'),
       JSON.stringify({ uuid: 'm1', type: 'user', timestamp: '2026-06-10T10:00:00Z', cwd: '/tmp/proj', message: { role: 'user', content: 'hello artifact' } }) + '\n');
     const env = { ...process.env, HOME: home };
-    const runtime = join(skillDir, 'scripts', 'runtime.mjs');
+    const runtime = join(skillDir, 'scripts', 'runtime.js');
 
     const build = spawnSync(process.execPath, [runtime, '--build'], { env, encoding: 'utf8' });
     assert.equal(build.status, 0, build.stderr || build.stdout);
@@ -65,6 +65,24 @@ test('build:skill produces a runnable, readable, .ts-free skill artifact', () =>
     assert.equal(search.status, 0, search.stderr || search.stdout);
     const hits = JSON.parse(search.stdout);
     assert.equal(hits[0]?.message?.text, 'hello artifact', 'compiled artifact indexed and found the message');
+
+    const memoryPath = join(home, 'artifact-memory.md');
+    const attunePath = join(home, 'attune.mjs');
+    writeFileSync(memoryPath, '# Artifact memory\n');
+    writeFileSync(attunePath, `return remember(${JSON.stringify({
+      path: memoryPath,
+      session_id: 'smoke',
+      summary: 'Artifact release smoke memory',
+    })});`);
+    const attune = spawnSync(process.execPath, [runtime, '--attune', attunePath], { env, encoding: 'utf8' });
+    assert.equal(attune.status, 0, attune.stderr || attune.stdout);
+    assert.match(JSON.parse(attune.stdout).id, /^mem-/);
+
+    const queryPath = join(home, 'query.mjs');
+    writeFileSync(queryPath, "return memories({ sessionId: 'smoke', query: 'Artifact release smoke' });");
+    const query = spawnSync(process.execPath, [runtime, '--query', queryPath], { env, encoding: 'utf8' });
+    assert.equal(query.status, 0, query.stderr || query.stdout);
+    assert.equal(JSON.parse(query.stdout)[0]?.summary, 'Artifact release smoke memory');
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

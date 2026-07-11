@@ -19,7 +19,7 @@ import {
   codexIsGuardianThread, codexAgentNickname, codexAgentRole, codexUsage,
   codexEventText, codexMessagePayloadText, codexVisibleMessageKey,
   codexToolInput, codexToolOutput,
-} from '../parsing.mjs';
+} from '../parsing.ts';
 
 import type { Cursor, DiscoverContext, IndexRecord, IndexUnit, MessageRecord, Provider } from './types.ts';
 

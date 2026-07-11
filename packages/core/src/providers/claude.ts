@@ -13,7 +13,7 @@ const fs = require('node:fs');
 import {
   extractText, extractContentType, extractMessageIsMeta,
   filePath, trunc, truncJson, readLines, discoverJsonlFiles,
-} from '../parsing.mjs';
+} from '../parsing.ts';
 
 import type { Cursor, DiscoverContext, IndexRecord, IndexUnit, Provider } from './types.ts';
 

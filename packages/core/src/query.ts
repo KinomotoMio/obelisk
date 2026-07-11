@@ -1,16 +1,58 @@
 // Query and attune sandbox helpers for the Core package.
-import { readLines, fs, path } from './db.mjs';
+import { readLines, fs, path } from './db.ts';
 
-function normalizeOpts(optsOrScalar, scalarKey = 'sessionId') {
+type SqliteDb = any;
+type DbRow = Record<string, any>;
+
+interface QueryOptions extends Record<string, any> {
+  limit?: number;
+  sessionId?: string;
+  sessions?: string[];
+  project?: string;
+  after?: string;
+  before?: string;
+  cwd?: string;
+  branch?: string;
+  source?: string;
+  includeMeta?: boolean;
+  query?: string;
+  projectLimit?: number;
+  memoryLimit?: number;
+}
+
+interface ColumnAliases {
+  sessionId: string;
+  project: string;
+  timestamp: string;
+  branch: string;
+  source?: string;
+}
+
+interface RememberInput {
+  path: string;
+  session_id?: string;
+  message_start?: string;
+  message_end?: string;
+  summary: string;
+  project?: string;
+  anchors?: unknown;
+}
+
+interface ForgetInput {
+  id: string;
+  reason: string;
+}
+
+function normalizeOpts(optsOrScalar: QueryOptions | string | number | null | undefined, scalarKey = 'sessionId'): QueryOptions {
   if (optsOrScalar == null) return {};
   if (typeof optsOrScalar === 'string') return { [scalarKey]: optsOrScalar };
   if (typeof optsOrScalar === 'number') return { limit: optsOrScalar };
   return optsOrScalar;
 }
 
-function buildWhere(opts, aliases) {
-  const clauses = [];
-  const params = [];
+function buildWhere(opts: QueryOptions, aliases: ColumnAliases) {
+  const clauses: string[] = [];
+  const params: any[] = [];
   if (opts.sessionId) { clauses.push(`${aliases.sessionId} = ?`); params.push(opts.sessionId); }
   if (opts.sessions?.length) {
     clauses.push(`${aliases.sessionId} IN (${opts.sessions.map(() => '?').join(',')})`);
@@ -29,7 +71,7 @@ function buildWhere(opts, aliases) {
 
 const BASH_EXIT_PAT = 'Exit code %';
 
-function assertReadOnlySql(sql) {
+function assertReadOnlySql(sql: unknown): void {
   const text = String(sql || '').trim();
   if (!/^(SELECT|WITH)\b/i.test(text)) {
     throw new Error('sql() only supports read-only SELECT/WITH queries');
@@ -41,7 +83,7 @@ function assertReadOnlySql(sql) {
 
 const CJK_TEXT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
-function assertEnglishMemoryText(value, label) {
+function assertEnglishMemoryText(value: unknown, label: string): void {
   const text = String(value || '');
   if (!text.trim()) return;
   if (CJK_TEXT_RE.test(text)) {
@@ -50,7 +92,7 @@ function assertEnglishMemoryText(value, label) {
   }
 }
 
-function buildSafeFtsQuery(text) {
+function buildSafeFtsQuery(text: unknown): string {
   const tokens = String(text || '').match(/[\p{Letter}\p{Number}]+/gu) || [];
   return tokens
     .slice(0, 12)
@@ -58,23 +100,23 @@ function buildSafeFtsQuery(text) {
     .join(' ');
 }
 
-function createQueryApi(db) {
-  const q = (sql, ...p) => {
+function createQueryApi(db: SqliteDb) {
+  const q = (sql: string, ...p: any[]) => {
     assertReadOnlySql(sql);
     return db.prepare(sql).all(...p);
   };
 
-  const normalizeOverviewOpts = (optsOrScalar) => {
+  const normalizeOverviewOpts = (optsOrScalar: QueryOptions | string | number | null | undefined): QueryOptions => {
     if (optsOrScalar == null) return {};
     if (typeof optsOrScalar === 'string') return { project: optsOrScalar };
     if (typeof optsOrScalar === 'number') return { limit: optsOrScalar };
     return optsOrScalar;
   };
 
-  const search = (text, opts = {}) => {
+  const search = (text: string, opts: QueryOptions = {}) => {
     const { limit = 20, sessionId, project, after, before, cwd, source, includeMeta = false } = opts;
     let where = 'WHERE mf.text MATCH ?';
-    const filterParams = [];
+    const filterParams: any[] = [];
     if (sessionId) { where += ' AND mf.session_id=?'; filterParams.push(sessionId); }
     if (project)   { where += ' AND s.project LIKE ?'; filterParams.push(project); }
     if (after)     { where += ' AND m.timestamp>?';    filterParams.push(after); }
@@ -89,7 +131,7 @@ function createQueryApi(db) {
              rank
       FROM messages_fts mf JOIN messages m ON m.uuid=mf.uuid LEFT JOIN sessions s ON s.id=m.session_id
       ${where} ORDER BY rank LIMIT ?`);
-    const runMatch = (matchText) => stmt.all(matchText, ...filterParams, limit);
+    const runMatch = (matchText: string): DbRow[] => stmt.all(matchText, ...filterParams, limit);
     // Honor raw FTS5 syntax when the query is valid, but never crash on ordinary
     // input (hyphens, punctuation) that FTS5 would parse as operators: fall back
     // to safe per-token quoting, the same tokenization memories() uses.
@@ -100,11 +142,11 @@ function createQueryApi(db) {
       const safe = buildSafeFtsQuery(text);
       rows = safe ? runMatch(safe) : [];
     }
-    return rows.map(r => {
+    return rows.map((r: DbRow) => {
       const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
       const ctx = db.prepare(
         `SELECT uuid,text,content_type,is_meta,role,timestamp,model,COALESCE(source, 'claude') as source FROM messages WHERE session_id=? AND uuid!=? ${metaClause} ORDER BY ABS(JULIANDAY(timestamp)-JULIANDAY(?)) LIMIT 6`
-      ).all(r.session_id, r.uuid, r.timestamp).sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+      ).all(r.session_id, r.uuid, r.timestamp).sort((a: DbRow, b: DbRow) => a.timestamp < b.timestamp ? -1 : 1);
       const sourceValue = r.m_source || r.s_source || 'claude';
       return {
         message: { uuid: r.uuid, text: r.text, content_type: r.content_type, is_meta: r.is_meta || 0, role: r.role, timestamp: r.timestamp, model: r.model, cwd: r.cwd, source: sourceValue },
@@ -115,14 +157,14 @@ function createQueryApi(db) {
     });
   };
 
-  const context = (uuid) => {
+  const context = (uuid: string) => {
     const msg = db.prepare('SELECT * FROM messages WHERE uuid=?').get(uuid);
     if (!msg) return null;
     const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(msg.session_id);
-    const chain = [];
+    const chain: DbRow[] = [];
     let cur = msg;
     while (cur?.parent_uuid) { cur = db.prepare('SELECT * FROM messages WHERE uuid=?').get(cur.parent_uuid); if (cur) chain.unshift(cur); }
-    let subagent = msg.agent_id ? db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(msg.agent_id) : null;
+    const subagent = msg.agent_id ? db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(msg.agent_id) : null;
     let workflow = null;
     if (msg.agent_id) {
       const wa = db.prepare('SELECT * FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
@@ -131,33 +173,33 @@ function createQueryApi(db) {
     return { message: msg, parentChain: chain, session, subagent, workflow };
   };
 
-  const trace = (uuid) => {
-    const chain = [];
+  const trace = (uuid: string) => {
+    const chain: DbRow[] = [];
     let cur = db.prepare('SELECT * FROM messages WHERE uuid=?').get(uuid);
     while (cur) { chain.unshift(cur); cur = cur.parent_uuid ? db.prepare('SELECT * FROM messages WHERE uuid=?').get(cur.parent_uuid) : null; }
     return chain;
   };
 
-  const thread = (sid, opts = {}) => {
+  const thread = (sid: string, opts: QueryOptions = {}) => {
     const includeMeta = opts?.includeMeta === true;
     const metaClause = includeMeta ? '' : 'AND COALESCE(is_meta,0)=0';
     return db.prepare(`SELECT * FROM messages WHERE session_id=? ${metaClause} ORDER BY timestamp`).all(sid);
   };
 
-  const subagents = (optsOrSid) => {
+  const subagents = (optsOrSid?: QueryOptions | string) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 100 } = opts;
     const needsJoin = opts.project || opts.branch || opts.source;
     const { where, params } = buildWhere(opts, { sessionId: 'sa.session_id', project: 's.project', timestamp: 'sa.session_id', branch: 's.git_branch', source: 's.source' });
     params.push(limit);
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=sa.session_id' : '';
-    return db.prepare(`SELECT sa.* FROM subagents sa ${join} WHERE ${where} LIMIT ?`).all(...params).map(r => {
+    return db.prepare(`SELECT sa.* FROM subagents sa ${join} WHERE ${where} LIMIT ?`).all(...params).map((r: DbRow) => {
       const c = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id=?').get(r.agent_id);
       return { ...r, messageCount: c?.c || 0 };
     });
   };
 
-  const workflows = (optsOrSid) => {
+  const workflows = (optsOrSid?: QueryOptions | string) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 100 } = opts;
     const needsJoin = opts.project || opts.branch || opts.source;
@@ -167,36 +209,36 @@ function createQueryApi(db) {
     return db.prepare(`SELECT w.* FROM workflows w ${join} WHERE ${where} ORDER BY w.timestamp DESC LIMIT ?`).all(...params);
   };
 
-  const workflowTree = (runId) => {
+  const workflowTree = (runId: string) => {
     const wf = db.prepare('SELECT * FROM workflows WHERE run_id=?').get(runId);
     if (!wf) return null;
     let result = null;
-    try { result = JSON.parse(wf.result_json); } catch {}
-    const agents = db.prepare('SELECT * FROM workflow_agents WHERE run_id=?').all(runId).map(a => {
+    try { result = JSON.parse(wf.result_json); } catch { /* keep the raw result nullable */ }
+    const agents = db.prepare('SELECT * FROM workflow_agents WHERE run_id=?').all(runId).map((a: DbRow) => {
       const mc = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id=?').get(a.agent_id);
       return { ...a, messageCount: mc?.c || 0 };
     });
     return { ...wf, result, agents };
   };
 
-  const fileHistory = (fp, opts = {}) => {
+  const fileHistory = (fp: string, opts: QueryOptions = {}) => {
     const { limit = 200, after, before, source } = opts;
     let where = 'tc.file_path=?';
-    const params = [fp];
+    const params: any[] = [fp];
     if (after)  { where += ' AND m.timestamp > ?'; params.push(after); }
     if (before) { where += ' AND m.timestamp < ?'; params.push(before); }
     if (source && source !== 'all') { where += " AND COALESCE(s.source, 'claude') = ?"; params.push(source); }
     params.push(limit);
     return db.prepare(
       `SELECT tc.*,s.title as s_title,s.project as s_project,m.timestamp as ts FROM tool_calls tc LEFT JOIN sessions s ON s.id=tc.session_id LEFT JOIN messages m ON m.uuid=tc.message_uuid WHERE ${where} ORDER BY m.timestamp LIMIT ?`
-    ).all(...params).map(r => ({
+    ).all(...params).map((r: DbRow) => ({
       toolCall: { id: r.id, message_uuid: r.message_uuid, name: r.name, input_json: r.input_json },
       session: { id: r.session_id, title: r.s_title, project: r.s_project },
       timestamp: r.ts,
     }));
   };
 
-  const failures = (optsOrSid) => {
+  const failures = (optsOrSid?: QueryOptions | string) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 50 } = opts;
     const needsJoin = opts.project || opts.branch || opts.source;
@@ -205,7 +247,7 @@ function createQueryApi(db) {
     const errorCond = `(tr.is_error = 1 OR tr.content LIKE '${BASH_EXIT_PAT}')`;
     const allParams = [...filterParams, limit];
     const rows = db.prepare(`SELECT tr.* FROM tool_results tr ${join} LEFT JOIN messages rm ON rm.uuid=tr.message_uuid WHERE ${errorCond} AND ${where} ORDER BY rm.timestamp DESC LIMIT ?`).all(...allParams);
-    return rows.map(r => {
+    return rows.map((r: DbRow) => {
       const tc = db.prepare('SELECT * FROM tool_calls WHERE id=?').get(r.tool_use_id);
       const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(r.session_id);
       const rm = db.prepare('SELECT * FROM messages WHERE uuid=?').get(r.message_uuid);
@@ -214,7 +256,7 @@ function createQueryApi(db) {
     });
   };
 
-  const sessions = (optsOrN) => {
+  const sessions = (optsOrN?: QueryOptions | number | string) => {
     const opts = normalizeOpts(optsOrN, 'sessionId');
     const { limit = 50 } = opts;
     const { where, params } = buildWhere(opts, { sessionId: 's.id', project: 's.project', timestamp: 's.started_at', branch: 's.git_branch', source: 's.source' });
@@ -224,7 +266,7 @@ function createQueryApi(db) {
 
   const recent = (n = 10) => sessions({ limit: n });
 
-  const summaries = (optsOrSid) => {
+  const summaries = (optsOrSid?: QueryOptions | string) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 100 } = opts;
     const { where, params } = buildWhere(opts, { sessionId: 'su.session_id', project: 's.project', timestamp: 'su.timestamp', branch: 's.git_branch', source: 's.source' });
@@ -232,21 +274,21 @@ function createQueryApi(db) {
     return db.prepare(`SELECT su.*, s.title as session_title, s.project FROM summaries su LEFT JOIN sessions s ON s.id=su.session_id WHERE ${where} ORDER BY su.timestamp DESC LIMIT ?`).all(...params);
   };
 
-  const overview = (optsOrScalar) => {
+  const overview = (optsOrScalar?: QueryOptions | string | number) => {
     const opts = normalizeOverviewOpts(optsOrScalar);
     const cwd = process.cwd();
     const sessionLimit = opts.limit ?? 8;
     const projectLimit = opts.projectLimit ?? 20;
     const memoryLimit = opts.memoryLimit ?? 100;
 
-    const projectDescriptor = (row, source, confidence) => row ? ({
+    const projectDescriptor = (row: DbRow | null, source: string, confidence: string) => row ? ({
       project: row.project,
       project_path: row.project_path || null,
       source,
       confidence,
     }) : null;
 
-    const latestProjectByPattern = (pattern) => {
+    const latestProjectByPattern = (pattern: string): DbRow | undefined => {
       const fromSessions = db.prepare(`
         SELECT project, project_path
         FROM sessions
@@ -278,8 +320,8 @@ function createQueryApi(db) {
         GROUP BY project, project_path
       `).all();
       const byProjectPath = paths
-        .filter(r => cwd === r.project_path || cwd.startsWith(r.project_path + path.sep))
-        .sort((a, b) => b.project_path.length - a.project_path.length || String(b.last_seen || '').localeCompare(String(a.last_seen || '')))[0];
+        .filter((r: DbRow) => cwd === r.project_path || cwd.startsWith(r.project_path + path.sep))
+        .sort((a: DbRow, b: DbRow) => b.project_path.length - a.project_path.length || String(b.last_seen || '').localeCompare(String(a.last_seen || '')))[0];
       if (byProjectPath) return projectDescriptor(byProjectPath, 'cwd_project_path', 'exact');
 
       const byMessageCwd = db.prepare(`
@@ -332,7 +374,7 @@ function createQueryApi(db) {
       LEFT JOIN memory_stats ms ON ms.project = n.project
       ORDER BY COALESCE(ss.last_session_at, ms.last_memory_at) DESC
       LIMIT ?
-    `).all(projectLimit).map(row => {
+    `).all(projectLimit).map((row: DbRow) => {
       const branches = db.prepare(`
         SELECT git_branch
         FROM sessions
@@ -340,7 +382,7 @@ function createQueryApi(db) {
         GROUP BY git_branch
         ORDER BY MAX(COALESCE(ended_at, started_at)) DESC
         LIMIT 5
-      `).all(row.project).map(r => r.git_branch);
+      `).all(row.project).map((r: DbRow) => r.git_branch);
       return { ...row, recent_branches: branches };
     });
 
@@ -408,7 +450,7 @@ function createQueryApi(db) {
     };
   };
 
-  const resolveJsonlPath = (messageUuid) => {
+  const resolveJsonlPath = (messageUuid: string): string | null => {
     const msg = db.prepare('SELECT session_id, agent_id, source FROM messages WHERE uuid=?').get(messageUuid);
     if (!msg) return null;
     if (msg.source === 'codex' || String(messageUuid).startsWith('codex:')) {
@@ -444,7 +486,7 @@ function createQueryApi(db) {
     return null;
   };
 
-  const findCodexRawLine = (jsonlPath, uuid) => {
+  const findCodexRawLine = (jsonlPath: string | null, uuid: string): string | null => {
     const match = /^codex:[^:]+:(\d+)$/.exec(String(uuid));
     if (!match || !jsonlPath || !fs.existsSync(jsonlPath)) return null;
     const targetLine = Number(match[1]);
@@ -459,18 +501,18 @@ function createQueryApi(db) {
     return found;
   };
 
-  const findRawLine = (jsonlPath, uuid) => {
+  const findRawLine = (jsonlPath: string | null, uuid: string): string | null => {
     if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
     if (String(uuid).startsWith('codex:')) return findCodexRawLine(jsonlPath, uuid);
     let found = null;
     readLines(jsonlPath, (line) => {
       if (!line.includes(uuid)) return;
-      try { const obj = JSON.parse(line); if (obj.uuid === uuid) { found = line; return false; } } catch {}
+      try { const obj = JSON.parse(line); if (obj.uuid === uuid) { found = line; return false; } } catch { /* skip malformed JSONL lines */ }
     });
     return found;
   };
 
-  const raw = (messageUuid, opts = {}) => {
+  const raw = (messageUuid: string, opts: { offset?: number; limit?: number } = {}) => {
     const { offset = 0, limit = 10000 } = opts;
     const jsonlPath = resolveJsonlPath(messageUuid);
     const line = findRawLine(jsonlPath, messageUuid);
@@ -484,7 +526,7 @@ function createQueryApi(db) {
     };
   };
 
-  const memories = (optsOrSid) => {
+  const memories = (optsOrSid?: QueryOptions | string) => {
     const opts = normalizeOpts(optsOrSid);
     const { limit = 50, query } = opts;
     assertEnglishMemoryText(query, 'memories() query');
@@ -496,7 +538,7 @@ function createQueryApi(db) {
       branch: 's.git_branch',
       source: 's.source',
     });
-    let where = baseWhere + ' AND mem.deleted_at IS NULL';
+    const where = baseWhere + ' AND mem.deleted_at IS NULL';
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=mem.session_id' : '';
     const hasQuery = String(query || '').trim().length > 0;
     const ftsQuery = buildSafeFtsQuery(query);
@@ -521,8 +563,8 @@ function createQueryApi(db) {
   return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw, memories, overview };
 }
 
-function createAttuneApi(db) {
-  const resolveMemoryPath = (memoryPath, sessionId) => {
+function createAttuneApi(db: SqliteDb) {
+  const resolveMemoryPath = (memoryPath: string, sessionId?: string): string => {
     let base = null;
     if (sessionId) {
       base = db.prepare('SELECT project_path FROM sessions WHERE id=?').get(sessionId)?.project_path || null;
@@ -540,7 +582,7 @@ function createAttuneApi(db) {
     return resolved;
   };
 
-  const normalizeAnchors = (anchors) => {
+  const normalizeAnchors = (anchors: unknown): string | null => {
     if (anchors == null) return null;
     let parsed = anchors;
     if (typeof anchors === 'string') {
@@ -561,7 +603,7 @@ function createAttuneApi(db) {
     return parsed.length ? JSON.stringify(parsed) : null;
   };
 
-  const remember = ({ path: memoryPath, session_id, message_start, message_end, summary, project, anchors }) => {
+  const remember = ({ path: memoryPath, session_id, message_start, message_end, summary, project, anchors }: RememberInput) => {
     if (!memoryPath || !summary) throw new Error('remember() requires path and summary');
     assertEnglishMemoryText(summary, 'remember() summary');
     const normalizedPath = resolveMemoryPath(memoryPath, session_id);
@@ -574,7 +616,7 @@ function createAttuneApi(db) {
     return { id, path: normalizedPath, project: proj, anchors: normalizedAnchors, created_at };
   };
 
-  const forget = ({ id, reason }) => {
+  const forget = ({ id, reason }: ForgetInput) => {
     const deletionReason = String(reason || '').trim();
     if (!id || !deletionReason) throw new Error('forget() requires id and reason');
     const row = db.prepare('SELECT id, deleted_at, deleted_reason FROM memories WHERE id=?').get(id);

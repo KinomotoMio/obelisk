@@ -1,20 +1,48 @@
 // Passive-pull indexing orchestration for the Core package.
-import { DB_PATH, openDb, openReadDb, openWriterLeaseDb, rebuildMemoryFts } from './db.mjs';
+import { DB_PATH, openDb, openReadDb, openWriterLeaseDb, rebuildMemoryFts } from './db.ts';
 import {
   CLAUDE_DIR, CODEX_DIR, PROJECTS_DIR, fs, path, isDir, readLines,
   inferProjectPath, discoverJsonlFiles, discoverCodexJsonlFiles, codexDbId, readCodexGuardianThreadInfo,
-} from './parsing.mjs';
+} from './parsing.ts';
 import { persist } from './persist.ts';
 import { nodeSqliteTransactionAdapter } from './tx.ts';
 import { acquireWriterLease, writerLockPathFor } from './writer-lease.ts';
 import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from './write-coordinator.ts';
 import { parse as claudeParse } from './providers/claude.ts';
 import { parse as codexParse } from './providers/codex.ts';
+import type { Cursor, IndexRecord } from './providers/types.ts';
 
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
 
+type SqliteDb = any;
+type JsonRecord = Record<string, any>;
 
-function needsReindex(db, fp) {
+interface ClaudeFileInfo {
+  path: string;
+  sessionId: string;
+  project: string;
+  isSubagent: boolean;
+  agentId?: string;
+  workflowRunId?: string;
+}
+
+interface SkippedFile {
+  path: string;
+  error: string;
+  diagnostics?: unknown;
+}
+
+interface BuildCheckOptions {
+  now?: number;
+  ignoreRecentBuild?: boolean;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+
+function needsReindex(db: SqliteDb, fp: string) {
   const mt = fs.statSync(fp).mtimeMs;
   const row = db.prepare('SELECT mtime, lines_processed FROM index_state WHERE jsonl_path = ?').get(fp);
   if (!row) return { needed: true, skip: 0 };
@@ -22,15 +50,15 @@ function needsReindex(db, fp) {
 }
 
 
-function indexCodexSessionIndex(db) {
+function indexCodexSessionIndex(db: SqliteDb): void {
   const indexPath = path.join(CODEX_DIR, 'session_index.jsonl');
   if (!fs.existsSync(indexPath)) return;
   readLines(indexPath, (line) => {
-    let item;
+    let item: JsonRecord;
     try {
       item = JSON.parse(line);
     } catch (e) {
-      process.stderr.write(`Warning: malformed Codex session index line: ${e.message}\n`);
+      process.stderr.write(`Warning: malformed Codex session index line: ${errorMessage(e)}\n`);
       return;
     }
     if (!item.id || !item.thread_name) return;
@@ -39,7 +67,7 @@ function indexCodexSessionIndex(db) {
   });
 }
 
-function refreshSessionProjectPaths(db) {
+function refreshSessionProjectPaths(db: SqliteDb): void {
   const sessions = db.prepare('SELECT id, project FROM sessions').all();
   const cwdStmt = db.prepare(`
     SELECT cwd
@@ -49,21 +77,21 @@ function refreshSessionProjectPaths(db) {
   `);
   const update = db.prepare('UPDATE sessions SET project_path = ? WHERE id = ?');
   for (const session of sessions) {
-    const cwds = cwdStmt.all(session.id).map(row => row.cwd);
+    const cwds = cwdStmt.all(session.id).map((row: JsonRecord) => row.cwd);
     const projectPath = inferProjectPath(session.project, cwds);
     if (projectPath) update.run(projectPath, session.id);
   }
 }
 
-function indexSubagentMeta(db, fi) {
+function indexSubagentMeta(db: SqliteDb, fi: ClaudeFileInfo): void {
   if (!fi.isSubagent) return;
   const mp = fi.path.replace('.jsonl', '.meta.json');
   if (!fs.existsSync(mp)) return;
-  let meta;
+  let meta: JsonRecord;
   try {
     meta = JSON.parse(fs.readFileSync(mp, 'utf8'));
   } catch (e) {
-    process.stderr.write(`Warning: failed to read subagent meta ${mp}: ${e.message}\n`);
+    process.stderr.write(`Warning: failed to read subagent meta ${mp}: ${errorMessage(e)}\n`);
     return;
   }
   const tok = db.prepare('SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0) as t FROM messages WHERE agent_id=?').get(fi.agentId);
@@ -76,7 +104,7 @@ function indexSubagentMeta(db, fi) {
   }
 }
 
-function indexWorkflows(db) {
+function indexWorkflows(db: SqliteDb): void {
   if (!fs.existsSync(PROJECTS_DIR)) return;
   let projects;
   try { projects = fs.readdirSync(PROJECTS_DIR); } catch { return; }
@@ -92,11 +120,11 @@ function indexWorkflows(db) {
       try { wfFiles = fs.readdirSync(wd); } catch { continue; }
       for (const f of wfFiles) {
         if (!f.endsWith('.json')) continue;
-        let wf;
+        let wf: JsonRecord;
         try {
           wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
         } catch (e) {
-          process.stderr.write(`Warning: failed to read workflow ${f}: ${e.message}\n`);
+          process.stderr.write(`Warning: failed to read workflow ${f}: ${errorMessage(e)}\n`);
           continue;
         }
         if (!wf.runId) continue;
@@ -117,14 +145,14 @@ function indexWorkflows(db) {
   }
 }
 
-function indexHistory(db) {
+function indexHistory(db: SqliteDb): void {
   if (!fs.existsSync(HISTORY_PATH)) return;
   readLines(HISTORY_PATH, (line) => {
-    let item;
+    let item: JsonRecord;
     try {
       item = JSON.parse(line);
     } catch (e) {
-      process.stderr.write(`Warning: malformed history line: ${e.message}\n`);
+      process.stderr.write(`Warning: malformed history line: ${errorMessage(e)}\n`);
       return;
     }
     if (item.sessionId && item.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(item.title, item.sessionId);
@@ -134,7 +162,7 @@ function indexHistory(db) {
 const BUILD_DEBOUNCE_MS = 30000;
 const APP_HEARTBEAT_FRESH_MS = 60000;
 
-function shouldSkipBuild(db, { now = Date.now(), ignoreRecentBuild = false } = {}) {
+function shouldSkipBuild(db: SqliteDb, { now = Date.now(), ignoreRecentBuild = false }: BuildCheckOptions = {}) {
   const appHeartbeat = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__app_heartbeat__'").get();
   if (appHeartbeat && now - appHeartbeat.mtime < APP_HEARTBEAT_FRESH_MS) {
     return { skip: true, reason: 'daemon_active' };
@@ -148,12 +176,12 @@ function shouldSkipBuild(db, { now = Date.now(), ignoreRecentBuild = false } = {
   return { skip: false };
 }
 
-function isMissingIndexStateTable(error) {
+function isMissingIndexStateTable(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /no such table:\s*(?:main\.)?index_state\b/i.test(message);
 }
 
-function inspectBuildOwnership({ force = false } = {}) {
+function inspectBuildOwnership({ force = false }: { force?: boolean } = {}) {
   if (!fs.existsSync(DB_PATH)) return { skip: false };
   const db = openReadDb();
   try {
@@ -170,12 +198,12 @@ function inspectBuildOwnership({ force = false } = {}) {
 
 // A one-shot record stream that retracts a session, for routing guardian sweeps
 // through persist (the single db writer) instead of deleting rows directly.
-function* guardianDelete(sessionId) {
+function* guardianDelete(sessionId: string): Generator<IndexRecord, Cursor> {
   yield { kind: 'delete-session', sessionId };
   return null;
 }
 
-function buildIndex({ force = false } = {}) {
+function buildIndex({ force = false }: { force?: boolean } = {}) {
   const ownership = inspectBuildOwnership({ force });
   if (ownership.skip) return ownership;
   const lease = acquireWriterLease({
@@ -190,7 +218,7 @@ function buildIndex({ force = false } = {}) {
 
     const db = openDb();
     const txDb = nodeSqliteTransactionAdapter(db);
-    const skippedFiles = [];
+    const skippedFiles: SkippedFile[] = [];
     try {
       try {
         if (force) {
@@ -232,7 +260,8 @@ function buildIndex({ force = false } = {}) {
               } else {
                 const guardian = readCodexGuardianThreadInfo(f.path);
                 if (guardian) {
-                  persist(db, { key: f.path, sessionId: '' }, guardianDelete(codexDbId(guardian.threadRawId)));
+                  const sessionId = codexDbId(guardian.threadRawId);
+                  if (sessionId) persist(db, { key: f.path, sessionId: '' }, guardianDelete(sessionId));
                 }
               }
             } else {
@@ -253,8 +282,10 @@ function buildIndex({ force = false } = {}) {
           }
           if (hasUnusableTransaction(e)) throw e;
           // A per-file failure is skippable: log and move on.
-          skippedFiles.push({ path: f.path, error: e.message, diagnostics: e.obelisk });
-          process.stderr.write(`Warning: failed to index ${f.path}: ${e.message}\n`);
+          const error = e as { message?: unknown; obelisk?: unknown } | null;
+          const message = errorMessage(e);
+          skippedFiles.push({ path: f.path, error: message, diagnostics: error?.obelisk });
+          process.stderr.write(`Warning: failed to index ${f.path}: ${message}\n`);
         }
       }
       // Finalize is one transaction and is NOT swallowed: a finalize failure fails

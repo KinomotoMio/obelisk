@@ -6,8 +6,9 @@
 > adapters* (driven by the multi-provider roadmap), and there is *one* shared
 > persist layer, not one per binding.
 
-**Context.** Obelisk had two divergent full indexers — `scripts/indexer.mjs`
-(`node:sqlite`, skill/runtime) and `app/indexer.js` (`better-sqlite3`, Electron
+**Context.** Obelisk had two divergent full indexers — the former
+`scripts/indexer.mjs` (`node:sqlite`, skill/runtime) and `app/indexer.js`
+(`better-sqlite3`, Electron
 app) — that duplicated the same Claude and Codex JSONL parsing and had silently
 diverged in write semantics (`INSERT OR REPLACE` vs `ON CONFLICT DO UPDATE`,
 message-count accumulation). Two forces shape the fix: (1) the roadmap will add

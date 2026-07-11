@@ -27,7 +27,7 @@ test('a passive query does not mutate the index while a fresh daemon owns writes
 
   const queryPath = join(home, 'query.mjs');
   writeFileSync(queryPath, "return 'read-only';");
-  const result = spawnSync(process.execPath, ['packages/core/src/runtime.mjs', '--query', queryPath], {
+  const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--query', queryPath], {
     cwd: repoRoot,
     env: { ...process.env, HOME: home },
     encoding: 'utf8',
@@ -55,7 +55,7 @@ test('attune refuses to mutate the index while a fresh daemon owns writes', () =
 
   const attunePath = join(home, 'attune.mjs');
   writeFileSync(attunePath, 'return true;');
-  const result = spawnSync(process.execPath, ['packages/core/src/runtime.mjs', '--attune', attunePath], {
+  const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--attune', attunePath], {
     cwd: repoRoot,
     env: { ...process.env, HOME: home },
     encoding: 'utf8',
@@ -86,7 +86,7 @@ test('a passive query stays read-only when another process holds the writer leas
   try {
     const queryPath = join(home, 'query.mjs');
     writeFileSync(queryPath, "return 'writer-busy';");
-    const result = spawnSync(process.execPath, ['packages/core/src/runtime.mjs', '--query', queryPath], {
+    const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--query', queryPath], {
       cwd: repoRoot,
       env: { ...process.env, HOME: home },
       encoding: 'utf8',
@@ -120,7 +120,7 @@ test('a passive query fails closed when daemon ownership cannot be read', () => 
   try {
     const queryPath = join(home, 'query.mjs');
     writeFileSync(queryPath, "return 'ownership-unknown';");
-    const result = spawnSync(process.execPath, ['packages/core/src/runtime.mjs', '--query', queryPath], {
+    const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--query', queryPath], {
       cwd: repoRoot,
       env: { ...process.env, HOME: home },
       encoding: 'utf8',

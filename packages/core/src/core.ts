@@ -1,19 +1,18 @@
 // Obelisk Core package (see docs/adr/0003-core-typescript-esm-precompiled.md).
 //
-// The single shared implementation behind every transport. runtime.mjs (skill),
+// The single shared implementation behind every transport. runtime.js (skill),
 // and later the CLI and MCP server, are thin shells over these four functions;
 // none of them re-implement retrieval or own the DB lifecycle.
 //
 // Authored in TypeScript with erasable-only syntax so Node can run it directly
-// via type stripping in development, while the skill artifact ships the tsc
-// output (Phase 6). The heavy internals (db/indexer/query) remain .mjs for now
-// and are migrated in later phases; Core is the typed seam over them.
+// via type stripping in development, while the skill artifact ships readable,
+// non-bundled tsc output. Core source lives in the @obelisk/core workspace.
 
 import { createContext, runInNewContext } from 'node:vm';
 
-import { DB_PATH, openDb, openReadDb, openWriterLeaseDb } from './db.mjs';
-import { buildIndex, shouldSkipBuild } from './indexer.mjs';
-import { createQueryApi, createAttuneApi } from './query.mjs';
+import { DB_PATH, openDb, openReadDb, openWriterLeaseDb } from './db.ts';
+import { buildIndex, shouldSkipBuild } from './indexer.ts';
+import { createQueryApi, createAttuneApi } from './query.ts';
 import { acquireWriterLease, writerLockPathFor } from './writer-lease.ts';
 
 export { buildIndex, DB_PATH };

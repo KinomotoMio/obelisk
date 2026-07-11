@@ -1,7 +1,7 @@
 # Obelisk -- Helper API Reference
 
-Detailed reference for globals available inside `runtime.mjs --query` and
-`runtime.mjs --attune` scripts.
+Detailed reference for globals available inside `runtime.js --query` and
+`runtime.js --attune` scripts.
 
 - Use `references/schema.md` for raw SQL table/field/join checks.
 - Use `references/query-patterns.md` for copyable retrieval plans.
@@ -16,7 +16,7 @@ memory mutation helpers.
 
 ### Read Helpers
 
-These globals are available only in `runtime.mjs --query` scripts:
+These globals are available only in `runtime.js --query` scripts:
 
 ```js
 sql, search, context, trace, thread, raw,
@@ -31,7 +31,7 @@ helpers is treated as `sessionId`; passing a number is treated as `limit`.
 
 ### Mutation Helpers
 
-These globals are available only in `runtime.mjs --attune` scripts:
+These globals are available only in `runtime.js --attune` scripts:
 
 ```js
 remember, forget
@@ -413,7 +413,7 @@ not a counting primitive.
 #### `remember(record)`
 
 Register a human-approved markdown memory file. Available only in
-`runtime.mjs --attune` scripts.
+`runtime.js --attune` scripts.
 
 | Param | Type | Description |
 | --- | --- | --- |
@@ -439,7 +439,7 @@ Returns:
 #### `forget(record)`
 
 Archive a human-approved memory record. Available only in
-`runtime.mjs --attune` scripts.
+`runtime.js --attune` scripts.
 
 | Param | Type | Description |
 | --- | --- | --- |
