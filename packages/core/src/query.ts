@@ -1,8 +1,8 @@
 // Query and attune sandbox helpers for the Core package.
 import { readLines, fs, path } from './db.ts';
+import type { SqliteDb, SqliteRow } from './sqlite-types.ts';
 
-type SqliteDb = any;
-type DbRow = Record<string, any>;
+type DbRow = SqliteRow;
 
 interface QueryOptions extends Record<string, any> {
   limit?: number;
@@ -162,7 +162,7 @@ function createQueryApi(db: SqliteDb) {
     if (!msg) return null;
     const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(msg.session_id);
     const chain: DbRow[] = [];
-    let cur = msg;
+    let cur: DbRow | undefined = msg;
     while (cur?.parent_uuid) { cur = db.prepare('SELECT * FROM messages WHERE uuid=?').get(cur.parent_uuid); if (cur) chain.unshift(cur); }
     const subagent = msg.agent_id ? db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(msg.agent_id) : null;
     let workflow = null;
@@ -176,7 +176,7 @@ function createQueryApi(db: SqliteDb) {
   const trace = (uuid: string) => {
     const chain: DbRow[] = [];
     let cur = db.prepare('SELECT * FROM messages WHERE uuid=?').get(uuid);
-    while (cur) { chain.unshift(cur); cur = cur.parent_uuid ? db.prepare('SELECT * FROM messages WHERE uuid=?').get(cur.parent_uuid) : null; }
+    while (cur) { chain.unshift(cur); cur = cur.parent_uuid ? db.prepare('SELECT * FROM messages WHERE uuid=?').get(cur.parent_uuid) : undefined; }
     return chain;
   };
 

@@ -17,7 +17,7 @@ const TEXT_LIMIT = 10000;
 type JsonRecord = Record<string, any>;
 type JsonValue = any;
 
-interface ClaudeJsonlFile {
+export interface ClaudeJsonlFile {
   path: string;
   sessionId: string;
   project: string;
@@ -27,7 +27,7 @@ interface ClaudeJsonlFile {
   source?: 'claude';
 }
 
-interface CodexJsonlFile {
+export interface CodexJsonlFile {
   path: string;
   source: 'codex';
 }

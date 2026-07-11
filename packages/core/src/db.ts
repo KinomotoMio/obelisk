@@ -2,13 +2,12 @@
 import { createRequire } from 'node:module';
 import { CLAUDE_DIR, CODEX_DIR, TEXT_LIMIT, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines } from './parsing.ts';
 import { configureConnection } from './tx.ts';
+import type { NodeSqliteDb, SqliteDb } from './sqlite-types.ts';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { DatabaseSync } = require('node:sqlite');
-
-type SqliteDb = any;
 
 const OBELISK_DIR = path.join(os.homedir(), '.obelisk');
 const LEGACY_DB_PATH = path.join(CLAUDE_DIR, 'obelisk.sqlite');
@@ -22,7 +21,7 @@ function migrateLegacyDbIfNeeded() {
   fs.copyFileSync(LEGACY_DB_PATH, DB_PATH);
 }
 
-function openDb() {
+function openDb(): NodeSqliteDb {
   migrateLegacyDbIfNeeded();
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new DatabaseSync(DB_PATH);
@@ -35,18 +34,18 @@ function openDb() {
 
 // Queries and daemon-arbitration checks must never migrate/configure the index.
 // The caller is responsible for ensuring the database exists first.
-function openReadDb() {
+function openReadDb(): NodeSqliteDb {
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
   db.exec('PRAGMA busy_timeout=250');
   return db;
 }
 
-function openWriterLeaseDb(lockPath: string): SqliteDb {
+function openWriterLeaseDb(lockPath: string): NodeSqliteDb {
   return new DatabaseSync(lockPath);
 }
 
 function ensureColumn(db: SqliteDb, table: string, column: string, definition: string): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((c: { name: string }) => c.name);
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
   if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 

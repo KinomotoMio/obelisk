@@ -10,7 +10,7 @@
 //     that consumes the records and writes them (index_state, FTS, upsert).
 //
 // This file defines only the shapes crossing that boundary. Record fields mirror
-// the columns in scripts/schema.sql; keep them in sync. Types only — no runtime
+// the columns in packages/core/src/schema.sql; keep them in sync. Types only — no runtime
 // code — so consumers must import with `import type`.
 
 // Opaque per-unit resume/watermark token. The orchestration stores it verbatim
@@ -47,7 +47,7 @@ export interface DiscoverContext {
 }
 
 /** Discriminated union of everything an adapter's parse can emit. Each record
- * kind maps to one schema table (see scripts/schema.sql); `delete-session` is
+ * kind maps to one schema table (see packages/core/src/schema.sql); `delete-session` is
  * the exception — a retraction op, not a table. Sources without a table
  * (history.jsonl, codex session_index.jsonl) are not records: adapters fold them
  * into the SessionRecord they already emit. */

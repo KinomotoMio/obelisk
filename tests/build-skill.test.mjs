@@ -32,7 +32,8 @@ test('build:skill produces a runnable, readable, .ts-free skill artifact', () =>
     'package.json', 'SKILL.md', 'references/api-reference.md',
     'scripts/core.js', 'scripts/persist.js', 'scripts/providers/claude.js',
     'scripts/providers/codex.js', 'scripts/runtime.js', 'scripts/indexer.js',
-    'scripts/db.js', 'scripts/parsing.js', 'scripts/query.js', 'scripts/schema.sql',
+    'scripts/db.js', 'scripts/parsing.js', 'scripts/query.js',
+    'scripts/sqlite-types.js', 'scripts/schema.sql',
   ]) {
     assert.ok(existsSync(join(skillDir, rel)), `artifact missing ${rel}`);
   }

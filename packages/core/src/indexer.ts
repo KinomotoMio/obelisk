@@ -11,20 +11,12 @@ import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransactio
 import { parse as claudeParse } from './providers/claude.ts';
 import { parse as codexParse } from './providers/codex.ts';
 import type { Cursor, IndexRecord } from './providers/types.ts';
+import type { ClaudeJsonlFile } from './parsing.ts';
+import type { NodeSqliteDb, SqliteRow } from './sqlite-types.ts';
 
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
 
-type SqliteDb = any;
 type JsonRecord = Record<string, any>;
-
-interface ClaudeFileInfo {
-  path: string;
-  sessionId: string;
-  project: string;
-  isSubagent: boolean;
-  agentId?: string;
-  workflowRunId?: string;
-}
 
 interface SkippedFile {
   path: string;
@@ -42,7 +34,7 @@ function errorMessage(error: unknown): string {
 }
 
 
-function needsReindex(db: SqliteDb, fp: string) {
+function needsReindex(db: NodeSqliteDb, fp: string) {
   const mt = fs.statSync(fp).mtimeMs;
   const row = db.prepare('SELECT mtime, lines_processed FROM index_state WHERE jsonl_path = ?').get(fp);
   if (!row) return { needed: true, skip: 0 };
@@ -50,7 +42,7 @@ function needsReindex(db: SqliteDb, fp: string) {
 }
 
 
-function indexCodexSessionIndex(db: SqliteDb): void {
+function indexCodexSessionIndex(db: NodeSqliteDb): void {
   const indexPath = path.join(CODEX_DIR, 'session_index.jsonl');
   if (!fs.existsSync(indexPath)) return;
   readLines(indexPath, (line) => {
@@ -67,7 +59,7 @@ function indexCodexSessionIndex(db: SqliteDb): void {
   });
 }
 
-function refreshSessionProjectPaths(db: SqliteDb): void {
+function refreshSessionProjectPaths(db: NodeSqliteDb): void {
   const sessions = db.prepare('SELECT id, project FROM sessions').all();
   const cwdStmt = db.prepare(`
     SELECT cwd
@@ -77,13 +69,13 @@ function refreshSessionProjectPaths(db: SqliteDb): void {
   `);
   const update = db.prepare('UPDATE sessions SET project_path = ? WHERE id = ?');
   for (const session of sessions) {
-    const cwds = cwdStmt.all(session.id).map((row: JsonRecord) => row.cwd);
+    const cwds = cwdStmt.all(session.id).map((row: SqliteRow) => row.cwd);
     const projectPath = inferProjectPath(session.project, cwds);
     if (projectPath) update.run(projectPath, session.id);
   }
 }
 
-function indexSubagentMeta(db: SqliteDb, fi: ClaudeFileInfo): void {
+function indexSubagentMeta(db: NodeSqliteDb, fi: ClaudeJsonlFile): void {
   if (!fi.isSubagent) return;
   const mp = fi.path.replace('.jsonl', '.meta.json');
   if (!fs.existsSync(mp)) return;
@@ -104,7 +96,7 @@ function indexSubagentMeta(db: SqliteDb, fi: ClaudeFileInfo): void {
   }
 }
 
-function indexWorkflows(db: SqliteDb): void {
+function indexWorkflows(db: NodeSqliteDb): void {
   if (!fs.existsSync(PROJECTS_DIR)) return;
   let projects;
   try { projects = fs.readdirSync(PROJECTS_DIR); } catch { return; }
@@ -145,7 +137,7 @@ function indexWorkflows(db: SqliteDb): void {
   }
 }
 
-function indexHistory(db: SqliteDb): void {
+function indexHistory(db: NodeSqliteDb): void {
   if (!fs.existsSync(HISTORY_PATH)) return;
   readLines(HISTORY_PATH, (line) => {
     let item: JsonRecord;
@@ -162,7 +154,7 @@ function indexHistory(db: SqliteDb): void {
 const BUILD_DEBOUNCE_MS = 30000;
 const APP_HEARTBEAT_FRESH_MS = 60000;
 
-function shouldSkipBuild(db: SqliteDb, { now = Date.now(), ignoreRecentBuild = false }: BuildCheckOptions = {}) {
+function shouldSkipBuild(db: NodeSqliteDb, { now = Date.now(), ignoreRecentBuild = false }: BuildCheckOptions = {}) {
   const appHeartbeat = db.prepare("SELECT mtime FROM index_state WHERE jsonl_path='__app_heartbeat__'").get();
   if (appHeartbeat && now - appHeartbeat.mtime < APP_HEARTBEAT_FRESH_MS) {
     return { skip: true, reason: 'daemon_active' };

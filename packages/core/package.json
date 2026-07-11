@@ -14,6 +14,7 @@
     "./providers/codex": "./dist/providers/codex.js",
     "./providers/types": "./dist/providers/types.js",
     "./query": "./dist/query.js",
+    "./sqlite-types": "./dist/sqlite-types.js",
     "./tx": "./dist/tx.js",
     "./write-coordinator": "./dist/write-coordinator.js",
     "./writer-lease": "./dist/writer-lease.js"
