@@ -37,7 +37,7 @@ The skill directory is provided as `$SKILL_DIR` at invocation time.
 Fast keyword search:
 
 ```bash
-node $SKILL_DIR/scripts/runtime.mjs --search "keyword"
+node $SKILL_DIR/scripts/runtime.js --search "keyword"
 ```
 
 Custom query:
@@ -46,7 +46,7 @@ Custom query:
 2. Run:
 
    ```bash
-   node $SKILL_DIR/scripts/runtime.mjs --query /tmp/q.mjs
+   node $SKILL_DIR/scripts/runtime.js --query /tmp/q.mjs
    ```
 
 3. Parse JSON stdout and answer with concise evidence.
@@ -315,7 +315,7 @@ return remember({
 Run the registration script with:
 
 ```bash
-node $SKILL_DIR/scripts/runtime.mjs --attune /tmp/register-memory.mjs
+node $SKILL_DIR/scripts/runtime.js --attune /tmp/register-memory.mjs
 ```
 
 `--attune` exposes only memory mutation helpers: `remember()` and `forget()`.

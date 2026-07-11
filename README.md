@@ -42,22 +42,28 @@ For live app refresh, Obelisk watches `~/.claude/projects` and `~/.codex/session
 You can use obelisk like:
 
 ```
-/obelisk 上次 auth bug 最后到底改了哪些文件，为什么这么改
-/obelisk 这个文件最近在哪些 sessions 里被反复修改
-/obelisk 找出最近失败的 tool calls，它们分别发生在哪些任务里
-/obelisk 那个 review workflow 的 subagents 各自结论是什么
-/obelisk recap this week
+/obelisk-skill 上次 auth bug 最后到底改了哪些文件，为什么这么改
+/obelisk-skill 这个文件最近在哪些 sessions 里被反复修改
+/obelisk-skill 找出最近失败的 tool calls，它们分别发生在哪些任务里
+/obelisk-skill 那个 review workflow 的 subagents 各自结论是什么
+/obelisk-skill recap this week
 ```
 
 ### Install
 
-
-
 ```bash
-npx skills add tommy0103/obelisk
+npx skills add tommy0103/obelisk-skill
 ```
 
-Or manually: copy the skill into `.claude/skills/obelisk/`.
+Or manually: copy `obelisk-skill/` into your project's `.claude/skills/`
+
+Then in any Claude Code session:
+
+```
+/obelisk-skill <your question>
+```
+
+First run builds the index (~5 seconds for 100 sessions). After that it rebuilds incrementally.
 
 ### How it works
 
@@ -66,7 +72,7 @@ You ask a question
   ↓
 Agent writes a JS query against the SQLite index
   ↓
-Runs it via node runtime.mjs --query <script>
+Runs it via node $SKILL_DIR/scripts/runtime.js --query <script>
   ↓
 Reads the JSON result, answers in natural language
 ```
@@ -75,7 +81,7 @@ Core API: `search()`, `context()`, `sql()`, plus structured helpers (`sessions`,
 
 ### Memory layer
 
-When a retrieval produces a conclusion worth keeping, the agent proposes a markdown memory file. After user approval, it registers the file with `runtime.mjs --remember`. Memories are recalled via `memories()` in future sessions — a synthesis cache, not a replacement for raw evidence.
+When a retrieval produces a conclusion worth keeping, the agent proposes a markdown memory file. After user approval, it registers the file with `runtime.js --attune <script>`. Memories are recalled via `memories()` in future sessions — a synthesis cache, not a replacement for raw evidence.
 
 ## App: A surface for human
 
@@ -110,30 +116,88 @@ Full-text search via FTS5 covers all layers.
 ## Structure
 
 ```
-scripts/              # Skill runtime (zero npm deps, Node 22 built-in sqlite)
-├── schema.sql        # Executable SQLite schema
-├── runtime.mjs       # Indexer + query runtime
-├── db.mjs            # Schema init, migrations
-├── indexer.mjs       # JSONL discovery + incremental indexing
-└── query.mjs         # Query API (search, sessions, memories, etc)
+packages/core/                # @obelisk/core npm workspace (TypeScript + ESM)
+├── src/
+│   ├── providers/
+│   │   ├── types.ts          # Provider + IndexRecord contract
+│   │   ├── claude.ts         # Claude Code adapter (line-incremental)
+│   │   └── codex.ts          # Codex adapter (full-reparse)
+│   ├── persist.ts            # Binding-agnostic record writer (upsert/merge)
+│   ├── tx.ts                 # Write transaction + connection config
+│   ├── write-coordinator.ts  # Bounded retry policy
+│   ├── writer-lease.ts       # Cross-process single-writer lease (SQLite lock DB)
+│   ├── core.ts               # buildIndex / searchText / executeQuery / executeAttune
+│   ├── indexer.ts            # Skill orchestration (discover → persist → finalize)
+│   ├── parsing.ts            # Pure helpers (node:sqlite-free, app-consumable)
+│   ├── db.ts                 # node:sqlite lifecycle + migrations
+│   ├── query.ts              # Query/attune sandbox API (helpers)
+│   ├── runtime.ts            # Thin CLI shell (--build/--search/--query/--attune)
+│   └── schema.sql            # SQLite schema (single source of truth)
+├── package.json
+└── dist/                     # Generated package JS, declarations, and schema
 
-references/           # Agent-readable docs (progressive disclosure)
+references/                   # Agent-readable docs (progressive disclosure)
 ├── schema.md
+├── api-reference.md
 ├── query-patterns.md
 ├── retrieval-semantics.md
+├── pitfalls.md
 ├── recap-patterns.md
-├── recap/            # Per-card pattern + writing references
-└── pitfalls.md
+├── recap-writing.md
+└── recap/                    # Per-card pattern + writing references
+    ├── overview.md
+    ├── pattern1-cover.md … pattern5-closing.md
+    └── writing1-cover.md … writing5-closing.md
 
-SKILL.md              # Skill definition + API + retrieval strategy
+app/                          # Electron desktop app (electron-vite + Vue)
+├── src/main/                 # TypeScript main process (consumes shared core)
+├── src/preload/              # CJS preload (sandbox)
+├── src/renderer/             # Vue renderer
+└── electron.vite.config.ts
+
+packaging/                    # Skill publish infrastructure
+├── skill-package.json
+├── skill-README.md
+├── skill-LICENSE             # MIT (relicensed for the skill artifact)
+└── publish-skill.sh
+
+SKILL.md                      # Skill definition (installed with the artifact)
+CONTEXT.md                    # Project glossary
+docs/adr/                     # Architecture decision records (0001–0006)
 ```
+
+The optional `/obelisk recap` flow is loaded only for explicit `/obelisk recap` intent.
+It starts at `references/recap/overview.md` and proceeds card-by-card:
+
+- `references/recap/pattern1-cover.md` + `references/recap/writing1-cover.md`
+- `references/recap/pattern2-thinking.md` + `references/recap/writing2-thinking.md`
+- `references/recap/pattern3-vibe.md` + `references/recap/writing3-vibe.md`
+- `references/recap/pattern4-workflow.md` + `references/recap/writing4-workflow.md`
+- `references/recap/pattern5-closing.md` + `references/recap/writing5-closing.md`
+
+### Generated build outputs
+
+- `packages/core/dist/` is produced by `npm run build:core`. It is the compiled
+  `@obelisk/core` package: JavaScript, type declarations, and `schema.sql`.
+- `dist/obelisk-skill/` is produced by `npm run build:skill`. It is the
+  install-ready skill artifact: readable plain JavaScript under `scripts/`,
+  `SKILL.md`, references, and the skill package metadata.
+
+Both directories are generated and should not be edited by hand. The Electron
+app imports `packages/core/src/` directly so electron-vite can bundle Core.
 
 ## Implementation Notes
 
-- Index rebuilds incrementally — only new/modified JSONL files are re-parsed
-- Skill side uses Node 22 built-in `node:sqlite`; zero npm dependencies
-- Older `~/.claude/obelisk.sqlite` databases are copied forward to `~/.obelisk/obelisk.sqlite` on first open
-- `~/.obelisk/recap/` watched for new recap JSON files (agent writes, app renders)
+The index rebuilds incrementally — only new or modified JSONL files are re-parsed.
+When the optional app is running, it is the active indexer: it watches Claude
+project files and builds in a worker thread. A fresh `__app_heartbeat__` alone
+means the daemon owns writes, so the skill remains read-only; a separate SQLite
+writer lease prevents cross-process writes from overlapping. The
+`__app_last_successful_build__` marker records index freshness, not ownership.
+
+Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire runtime is ~400 lines.
+
+20K lines of scattered JSONL → something the agent can search() and sql() against in milliseconds.
 
 ---
 

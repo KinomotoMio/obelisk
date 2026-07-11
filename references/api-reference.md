@@ -1,7 +1,7 @@
 # Obelisk -- Helper API Reference
 
-Detailed reference for globals available inside `runtime.mjs --query` and
-`runtime.mjs --attune` scripts.
+Detailed reference for globals available inside `runtime.js --query` and
+`runtime.js --attune` scripts.
 
 - Use `references/schema.md` for raw SQL table/field/join checks.
 - Use `references/query-patterns.md` for copyable retrieval plans.
@@ -16,7 +16,7 @@ memory mutation helpers.
 
 ### Read Helpers
 
-These globals are available only in `runtime.mjs --query` scripts:
+These globals are available only in `runtime.js --query` scripts:
 
 ```js
 sql, search, context, trace, thread, raw,
@@ -31,7 +31,7 @@ helpers is treated as `sessionId`; passing a number is treated as `limit`.
 
 ### Mutation Helpers
 
-These globals are available only in `runtime.mjs --attune` scripts:
+These globals are available only in `runtime.js --attune` scripts:
 
 ```js
 remember, forget
@@ -75,6 +75,11 @@ Array<{
 Use `context(uuid)` or `trace(uuid)` for causal/parent-chain expansion. Lower
 FTS rank sorts earlier; prefer returned order unless deliberately inspecting
 FTS ranking.
+
+Valid FTS5 syntax in `text` is honored. Input that FTS5 would reject as
+malformed (for example a hyphenated term like `foo-bar`) does not error: it
+falls back to safe per-token quoting — the same tokenization `memories()` uses —
+so ordinary text never crashes the query.
 
 #### `context(uuid)`
 
@@ -368,7 +373,11 @@ well as `Edit`/`Write`.
 Returns:
 
 ```js
-Array<{ toolCall, session, timestamp }>
+Array<{
+  toolCall: { id, message_uuid, name, input_json },
+  session: { id, title, project },
+  timestamp
+}>
 ```
 
 Use raw SQL with `ORDER BY m.timestamp DESC` when you need newest-first file
@@ -404,7 +413,7 @@ not a counting primitive.
 #### `remember(record)`
 
 Register a human-approved markdown memory file. Available only in
-`runtime.mjs --attune` scripts.
+`runtime.js --attune` scripts.
 
 | Param | Type | Description |
 | --- | --- | --- |
@@ -430,7 +439,7 @@ Returns:
 #### `forget(record)`
 
 Archive a human-approved memory record. Available only in
-`runtime.mjs --attune` scripts.
+`runtime.js --attune` scripts.
 
 | Param | Type | Description |
 | --- | --- | --- |

@@ -1,0 +1,7 @@
+{
+  "name": "obelisk-skill",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Obelisk skill artifact — readable compiled Core (providers + persist + runtime) over local Claude Code and Codex history. Built by `npm run build:skill`; sources live in the main repo.",
+  "license": "MIT"
+}
