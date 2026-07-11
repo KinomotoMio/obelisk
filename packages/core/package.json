@@ -23,7 +23,7 @@
     "src/schema.sql"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/schema.sql dist/schema.sql",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }
