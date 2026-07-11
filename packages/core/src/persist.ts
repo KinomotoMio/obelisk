@@ -13,11 +13,12 @@
 // return value is the new cursor, persisted verbatim into index_state.
 
 import type { Cursor, IndexRecord, IndexUnit } from './providers/types.ts';
+import type { SqliteDb } from './sqlite-types.ts';
 
 const minStr = (a: string | null, b: string | null) => (a == null ? b : b == null ? a : a < b ? a : b);
 const maxStr = (a: string | null, b: string | null) => (a == null ? b : b == null ? a : a > b ? a : b);
 
-function statements(db: any) {
+function statements(db: SqliteDb) {
   return {
     msg: db.prepare(`
       INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source)
@@ -50,7 +51,7 @@ function statements(db: any) {
 }
 
 // Cascade-delete every row belonging to a session/thread (guardian retraction).
-function deleteSession(db: any, sessionId: string) {
+function deleteSession(db: SqliteDb, sessionId: string) {
   db.prepare('DELETE FROM tool_results WHERE session_id=? OR message_uuid IN (SELECT uuid FROM messages WHERE session_id=? OR agent_id=?)').run(sessionId, sessionId, sessionId);
   db.prepare('DELETE FROM tool_calls WHERE session_id=? OR message_uuid IN (SELECT uuid FROM messages WHERE session_id=? OR agent_id=?)').run(sessionId, sessionId, sessionId);
   db.prepare('DELETE FROM messages WHERE session_id=? OR agent_id=?').run(sessionId, sessionId);
@@ -61,7 +62,7 @@ function deleteSession(db: any, sessionId: string) {
 
 // Consume one unit's record stream into the database and return the new cursor
 // (also written to index_state). `db` is any SQLite handle sharing prepare/run.
-export function persist(db: any, unit: IndexUnit, gen: Generator<IndexRecord, Cursor>): Cursor {
+export function persist(db: SqliteDb, unit: IndexUnit, gen: Generator<IndexRecord, Cursor>): Cursor {
   const st = statements(db);
 
   const write = (r: IndexRecord) => {
