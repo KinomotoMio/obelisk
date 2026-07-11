@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildIndex } from '../app/src/main/indexer.ts';
-import { acquireWriterLease, writerLockPathFor } from '../scripts/writer-lease.ts';
+import { acquireWriterLease, writerLockPathFor } from '../packages/core/src/writer-lease.ts';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');

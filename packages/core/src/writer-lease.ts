@@ -1,4 +1,4 @@
-// Cross-process single-writer lease for a complete Obelisk index build. The
+// Cross-process single-writer lease shared by every Obelisk mutation. The
 // lock lives in a dedicated SQLite database so node:sqlite and better-sqlite3
 // share identical locking semantics on every supported platform.
 

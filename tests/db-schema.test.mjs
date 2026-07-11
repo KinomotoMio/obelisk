@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import { extractContentType, extractMessageIsMeta } from '../scripts/db.mjs';
+import { extractContentType, extractMessageIsMeta } from '../packages/core/src/db.mjs';
 
 async function readExecutableSchema() {
-  return readFile(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
+  return readFile(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8');
 }
 
 async function readSchemaReference() {
@@ -21,7 +21,7 @@ async function readSkill() {
 }
 
 test('db module loads the executable schema from scripts/schema.sql', async () => {
-  const source = await readFile(new URL('../scripts/db.mjs', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../packages/core/src/db.mjs', import.meta.url), 'utf8');
 
   assert.match(source, /schema\.sql/);
   assert.doesNotMatch(source, /CREATE TABLE IF NOT EXISTS sessions/);

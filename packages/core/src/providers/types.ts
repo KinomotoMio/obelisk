@@ -1,4 +1,4 @@
-// Phase 5 target contract (see docs/adr/0001).
+// Core provider contract (see docs/adr/0001).
 //
 // The indexing layer splits along two orthogonal axes:
 //   - Provider axis: pure per-source adapters (claude, codex, later opencode,

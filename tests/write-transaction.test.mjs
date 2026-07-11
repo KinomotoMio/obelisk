@@ -5,8 +5,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { nodeSqliteTransactionAdapter, runWriteTransaction } from '../scripts/tx.ts';
-import { hasUnusableTransaction, isBeginBusyFailure, isRetryableWriteFailure } from '../scripts/write-coordinator.ts';
+import { nodeSqliteTransactionAdapter, runWriteTransaction } from '../packages/core/src/tx.ts';
+import { hasUnusableTransaction, isBeginBusyFailure, isRetryableWriteFailure } from '../packages/core/src/write-coordinator.ts';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');

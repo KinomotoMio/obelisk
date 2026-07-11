@@ -1,3 +1,4 @@
+// Passive-pull indexing orchestration for the Core package.
 import { DB_PATH, openDb, openReadDb, openWriterLeaseDb, rebuildMemoryFts } from './db.mjs';
 import {
   CLAUDE_DIR, CODEX_DIR, PROJECTS_DIR, fs, path, isDir, readLines,

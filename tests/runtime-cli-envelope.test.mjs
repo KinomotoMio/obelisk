@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function runRuntime(args, { home }) {
-  return spawnSync(process.execPath, ['scripts/runtime.mjs', ...args], {
+  return spawnSync(process.execPath, ['packages/core/src/runtime.mjs', ...args], {
     cwd: repoRoot,
     env: { ...process.env, HOME: home },
     encoding: 'utf8',

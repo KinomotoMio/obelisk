@@ -1,0 +1,29 @@
+{
+  "name": "@obelisk/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared indexing and query core for Obelisk transports.",
+  "exports": {
+    ".": "./dist/core.js",
+    "./db": "./dist/db.js",
+    "./indexer": "./dist/indexer.js",
+    "./parsing": "./dist/parsing.js",
+    "./persist": "./dist/persist.js",
+    "./providers/claude": "./dist/providers/claude.js",
+    "./providers/codex": "./dist/providers/codex.js",
+    "./providers/types": "./dist/providers/types.js",
+    "./query": "./dist/query.js",
+    "./tx": "./dist/tx.js",
+    "./write-coordinator": "./dist/write-coordinator.js",
+    "./writer-lease": "./dist/writer-lease.js"
+  },
+  "files": [
+    "dist",
+    "src/schema.sql"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

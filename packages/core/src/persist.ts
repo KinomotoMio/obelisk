@@ -1,4 +1,4 @@
-// Shared persist layer (see docs/adr/0001).
+// Shared Core persist layer (see docs/adr/0001).
 //
 // Provider-agnostic and binding-agnostic: it consumes the IndexRecord stream
 // from any adapter's parse() and writes rows into the injected database handle

@@ -1,11 +1,3 @@
 {
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "noEmit": false,
-    "outDir": "dist",
-    "rootDir": "scripts",
-    "declaration": true,
-    "rewriteRelativeImportExtensions": true
-  },
-  "include": ["scripts/providers/**/*.ts", "scripts/persist.ts"]
+  "extends": "./packages/core/tsconfig.build.json"
 }

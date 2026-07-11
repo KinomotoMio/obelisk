@@ -51,7 +51,7 @@
     ],
     "extraResources": [
       {
-        "from": "../scripts/schema.sql",
+        "from": "../packages/core/src/schema.sql",
         "to": "scripts/schema.sql"
       }
     ]

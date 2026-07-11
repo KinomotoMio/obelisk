@@ -5,11 +5,11 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createQueryApi, createAttuneApi } from '../scripts/query.mjs';
+import { createQueryApi, createAttuneApi } from '../packages/core/src/query.mjs';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
-const SCHEMA = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
+const SCHEMA = readFileSync(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8');
 
 function memoryDb({ projectPath = '/tmp/quiet-zero-test' } = {}) {
   const db = new DatabaseSync(':memory:');

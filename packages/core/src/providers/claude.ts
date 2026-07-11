@@ -1,4 +1,4 @@
-// Claude Code provider adapter (see docs/adr/0001).
+// Claude Code provider adapter in Core (see docs/adr/0001).
 //
 // Pure: discovers Claude transcript files and parses one into a record stream.
 // It never touches the Obelisk database. The per-line logic mirrors the original

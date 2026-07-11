@@ -1,4 +1,4 @@
-// Codex provider adapter (see docs/adr/0001).
+// Codex provider adapter in Core (see docs/adr/0001).
 //
 // Pure: discovers Codex rollout files and parses one into a record stream. It
 // never touches the Obelisk database. Unlike claude, codex is a FULL-REPARSE

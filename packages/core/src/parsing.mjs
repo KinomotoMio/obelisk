@@ -1,4 +1,4 @@
-// Pure parse/discover helpers — node:sqlite-free by construction, so the compiled
+// Core's pure parse/discover helpers — node:sqlite-free by construction, so the compiled
 // providers can be consumed by the app (better-sqlite3 / a Node without
 // node:sqlite). Moved verbatim from db.mjs and indexer.mjs (Phase 5d-1); they use
 // only node:fs/path/os. Kept as .mjs (plain ESM) for a low-risk verbatim move.

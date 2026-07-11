@@ -9,7 +9,7 @@ import { writeHeartbeat } from './indexer.ts';
 import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
-import { acquireWriterLease, writerLockPathFor } from '../../../scripts/writer-lease.ts';
+import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

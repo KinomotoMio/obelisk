@@ -9,12 +9,12 @@ import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parse } from '../scripts/providers/claude.ts';
-import { persist } from '../scripts/persist.ts';
+import { parse } from '../packages/core/src/providers/claude.ts';
+import { persist } from '../packages/core/src/persist.ts';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
-const SCHEMA = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
+const SCHEMA = readFileSync(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8');
 
 function fixtureUnit() {
   const dir = mkdtempSync(join(tmpdir(), 'obelisk-persist-'));

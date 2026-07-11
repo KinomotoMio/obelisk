@@ -3,9 +3,9 @@
   "compilerOptions": {
     "noEmit": false,
     "outDir": "dist/obelisk-skill/scripts",
-    "rootDir": "scripts",
+    "rootDir": "packages/core/src",
     "declaration": false,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["scripts/**/*.ts", "scripts/**/*.mjs"]
+  "include": ["packages/core/src/**/*.ts", "packages/core/src/**/*.mjs"]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Skill transport: a thin CLI shell over Obelisk Core (scripts/core.ts).
+// Skill transport: a thin CLI shell over the Obelisk Core package.
 // It only parses args, reads script files, prints JSON, and owns the uniform
 // { error, stack } + exit-1 error envelope. All logic lives in Core.
 

@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { parse as claudeParse } from '../../../scripts/providers/claude.ts';
-import { parse as codexParse } from '../../../scripts/providers/codex.ts';
-import { persist } from '../../../scripts/persist.ts';
-import { runWriteTransaction, configureConnection, betterSqliteTransactionAdapter } from '../../../scripts/tx.ts';
-import { acquireWriterLease, writerLockPathFor } from '../../../scripts/writer-lease.ts';
-import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from '../../../scripts/write-coordinator.ts';
+import { parse as claudeParse } from '../../../packages/core/src/providers/claude.ts';
+import { parse as codexParse } from '../../../packages/core/src/providers/codex.ts';
+import { persist } from '../../../packages/core/src/persist.ts';
+import { runWriteTransaction, configureConnection, betterSqliteTransactionAdapter } from '../../../packages/core/src/tx.ts';
+import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
+import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from '../../../packages/core/src/write-coordinator.ts';
 import {
   inferProjectPath,
   isDir,
@@ -17,7 +17,7 @@ import {
   codexRawId,
   codexParentThreadId,
   readCodexGuardianThreadInfo,
-} from '../../../scripts/parsing.mjs';
+} from '../../../packages/core/src/parsing.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

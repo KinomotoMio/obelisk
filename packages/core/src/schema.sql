@@ -1,3 +1,4 @@
+-- Shared Obelisk Core schema.
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY, title TEXT, project TEXT, project_path TEXT,
   started_at TEXT, ended_at TEXT, git_branch TEXT, version TEXT,

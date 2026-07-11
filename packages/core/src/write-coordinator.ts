@@ -1,4 +1,4 @@
-// Bounded retry policy above the transaction primitive. Callers opt in only for
+// Core's bounded retry policy above the transaction primitive. Callers opt in only for
 // idempotent work; BEGIN contention and an uncertain/live transaction are never
 // retried here.
 

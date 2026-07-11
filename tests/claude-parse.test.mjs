@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parse } from '../scripts/providers/claude.ts';
+import { parse } from '../packages/core/src/providers/claude.ts';
 
 function writeFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'obelisk-claude-parse-'));

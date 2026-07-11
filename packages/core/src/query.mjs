@@ -1,3 +1,4 @@
+// Query and attune sandbox helpers for the Core package.
 import { readLines, fs, path } from './db.mjs';
 
 function normalizeOpts(optsOrScalar, scalarKey = 'sessionId') {

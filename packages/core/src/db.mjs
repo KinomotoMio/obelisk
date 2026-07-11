@@ -1,3 +1,4 @@
+// node:sqlite lifecycle and migrations for the Core package.
 import { createRequire } from 'node:module';
 import { CLAUDE_DIR, CODEX_DIR, TEXT_LIMIT, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines } from './parsing.mjs';
 import { configureConnection } from './tx.ts';

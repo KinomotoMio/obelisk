@@ -1,4 +1,4 @@
-// Obelisk Core (see docs/adr/0003-core-typescript-esm-precompiled.md).
+// Obelisk Core package (see docs/adr/0003-core-typescript-esm-precompiled.md).
 //
 // The single shared implementation behind every transport. runtime.mjs (skill),
 // and later the CLI and MCP server, are thin shells over these four functions;

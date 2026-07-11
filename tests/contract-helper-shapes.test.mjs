@@ -23,11 +23,11 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createQueryApi, createAttuneApi } from '../scripts/query.mjs';
+import { createQueryApi, createAttuneApi } from '../packages/core/src/query.mjs';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
-const SCHEMA = readFileSync(new URL('../scripts/schema.sql', import.meta.url), 'utf8');
+const SCHEMA = readFileSync(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8');
 const API_REFERENCE = readFileSync(new URL('../references/api-reference.md', import.meta.url), 'utf8');
 
 // Every key asserted below is recorded here so the doc-sync guard can confirm

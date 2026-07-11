@@ -1,4 +1,4 @@
-// Binding-agnostic SQLite write plumbing shared by the skill and app indexers
+// Binding-agnostic SQLite write plumbing shared from the Core package
 // (docs/adr/0006). The injected db must expose `exec(sql)`; this works for both
 // node:sqlite (skill/CLI) and better-sqlite3 (app), same injection model as
 // `persist`.

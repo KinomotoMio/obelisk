@@ -9,7 +9,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parse } from '../scripts/providers/codex.ts';
+import { parse } from '../packages/core/src/providers/codex.ts';
 
 function writeFixture(lines) {
   const dir = mkdtempSync(join(tmpdir(), 'obelisk-codex-parse-'));

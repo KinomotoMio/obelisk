@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { acquireWriterLease } from '../scripts/writer-lease.ts';
+import { acquireWriterLease } from '../packages/core/src/writer-lease.ts';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
