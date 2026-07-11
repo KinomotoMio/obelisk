@@ -7,185 +7,184 @@
 
 [![stars](https://img.shields.io/github/stars/tommy0103/obelisk?style=flat-square)](https://github.com/tommy0103/obelisk/stargazers)
 [![version](https://img.shields.io/github/v/tag/tommy0103/obelisk?label=version&style=flat-square)](https://github.com/tommy0103/obelisk/releases)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
-Every past session, subagent, and workflow -- queryable by your agent.
-
-**Humans should not browse session history. Agents should query it.**
+Every past Claude Code and Codex session -- queryable by your agent, browsable by you.
 
 </div>
 
 <br />
 
+## Two sides of the same index
+
+Obelisk has two sides that share one SQLite index:
+
+**Skill side** — an agent skill that lets coding agents search and query their own session history. The agent writes JS queries, runs them locally, answers in plain language.
+
+**App side** — an Electron desktop app for humans to browse sessions, manage memories, view usage stats, and see weekly recap cards.
+
+Both read from the same `~/.obelisk/obelisk.sqlite` database. The indexer reads Claude Code transcripts from `~/.claude/projects` and Codex transcripts from `~/.codex/sessions`.
+
+## Codex support
+
+Obelisk indexes Claude Code and Codex into the same SQLite schema instead of keeping separate databases. Rows carry a `source` value (`claude` or `codex`), and Codex IDs are prefixed with `codex:` so they cannot collide with Claude session IDs.
+
+Codex root threads become normal Obelisk sessions. Codex child threads are attached through the same `subagents` table when parent-thread metadata is available. Codex does not emit Claude-style workflow metadata, so workflow tables may be empty for Codex-only history.
+
+For live app refresh, Obelisk watches `~/.claude/projects` and `~/.codex/sessions`. It does not watch the whole `~/.codex` root. Codex's `session_index.jsonl` is used as lightweight title/update metadata during indexing, not as the message transcript source.
+
+## Skill: agent-first retrieval
+
 <div align="center">
-  <img src=".github/assets/demo.png" alt="Obelisk in action" width="540">
-  <br />
-  <p>Ask in plain language. The agent writes the query, runs it, answers.</p>
+  <img src=".github/assets/demo.png" alt="Obelisk App" width="720">
 </div>
 
-## Not a session browser
-
-Most history tools help humans find old chats.
-
-Obelisk is built for agents. It exposes past work as structured data: sessions,
-messages, tool calls, subagents, workflows, file history, failures, parent
-chains, and human-approved markdown memories. The agent writes the query, runs
-it locally, and answers in plain language.
-
-You don't manage history. You ask questions about past work.
-
-## Why Obelisk
-
-| Session library | Obelisk |
-|---|---|
-| Find an old chat | Answer a question about past work |
-| Human browses snippets | Agent writes and runs a query |
-| Search result list | Structured context and reasoning |
-| Sessions as documents | Sessions as queryable memory |
-| Good for recall | Good for investigation |
-
-## What you can ask
+You can use obelisk like:
 
 ```
-/obelisk 上次 auth bug 最后到底改了哪些文件，为什么这么改
-/obelisk 这个文件最近在哪些 sessions 里被反复修改
-/obelisk 找出最近失败的 tool calls，它们分别发生在哪些任务里
-/obelisk 那个 review workflow 的 subagents 各自结论是什么
-/obelisk 我之前有没有试过这个方案，结果为什么放弃了
+/obelisk-skill 上次 auth bug 最后到底改了哪些文件，为什么这么改
+/obelisk-skill 这个文件最近在哪些 sessions 里被反复修改
+/obelisk-skill 找出最近失败的 tool calls，它们分别发生在哪些任务里
+/obelisk-skill 那个 review workflow 的 subagents 各自结论是什么
+/obelisk-skill recap this week
 ```
 
-Anything Claude Code has done before -- sessions, tool calls, subagents, workflows -- becomes structured, queryable memory. Ask in your own words.
-
-## Install
+### Install
 
 ```bash
 npx skills add tommy0103/obelisk-skill
 ```
 
-Or manually: copy `obelisk/` into your project's `.claude/skills/`.
+Or manually: copy `obelisk-skill/` into your project's `.claude/skills/`
 
 Then in any Claude Code session:
 
 ```
-/obelisk <your question>
+/obelisk-skill <your question>
 ```
 
 First run builds the index (~5 seconds for 100 sessions). After that it rebuilds incrementally.
 
-### Requires
-
-- Node.js 22+ (uses built-in node:sqlite with FTS5)
-- Claude Code with skills support.
-
-## How it works
+### How it works
 
 ```
 You ask a question
   ↓
 Agent writes a JS query against the SQLite index
   ↓
-Runs it via node runtime.mjs --query <script>
+Runs it via node $SKILL_DIR/scripts/runtime.js --query <script>
   ↓
-Reads the JSON result, answers you in natural language
+Reads the JSON result, answers in natural language
 ```
 
-When a retrieval produces a memory worth keeping, the agent proposes a markdown
-memory file. After user approval, it registers that file with the narrow
-`runtime.mjs --attune <script>` runtime, which exposes only memory mutation
-helpers such as `remember()` and `forget()`.
+Core API: `search()`, `context()`, `sql()`, plus structured helpers (`sessions`, `memories`, `summaries`, `workflows`, `failures`, `fileHistory`, etc).
 
-Memory is a synthesis cache, not a replacement for raw sessions. The agent can
-decide whether to use, ignore, or verify a memory during an answer. Persistent
-changes still require human approval, but explicit corrections count: if you say
-a memory is wrong, outdated, or should be replaced, the agent can archive or
-update the exact matching record without a second confirmation.
+### Memory layer
 
-**The core idea: don't make humans browse, tag, or organize sessions.**
-Don't invent a rigid query DSL either.
+When a retrieval produces a conclusion worth keeping, the agent proposes a markdown memory file. After user approval, it registers the file with `runtime.js --attune <script>`. Memories are recalled via `memories()` in future sessions — a synthesis cache, not a replacement for raw evidence.
 
-Agents can write code. So Obelisk gives them a small local query runtime over
-your past work.
+## App: A surface for human
 
-The agent starts from a small core API, then uses structured shortcuts and
-references only when the question needs them:
+A companion desktop app for browsing what the skill indexes.
 
-**Core primitives** — the main CodeAct surface:
+<div align="center">
+  <img src=".github/assets/app-screenshot.png" alt="Obelisk App" width="720">
+</div>
 
-- `search(text)` — FTS5 full-text search, returns matches with surrounding context plus message `content_type` and `is_meta`
-- `context(uuid)` — full story around a message (parent chain, subagent/workflow metadata)
-- `sql(query, ...params)` — read-only SQL for structured queries
+- **Sessions** — browse all sessions with search, project filtering, readable tool calls (diffs, terminal output, file viewers)
+- **Memory** — list and detail views for registered memory files
+- **Activity** — GitHub-style heatmap, weekly/cumulative token charts
+- **Recap** — shareable weekly/monthly recap cards with archetype theming
+- **Settings** — data source configuration, auto-refresh, rebuild index
 
-**Structured shortcuts** — overview, session, memory, summary, subagent,
-workflow, file-history, failure, raw-window, and parent-chain helpers over the
-same SQLite data.
-
-**References** — agent reads on demand when the task needs deeper structure:
-
-- `references/schema.md` — full SQLite schema and API reference
-- `references/query-patterns.md` — copyable CodeAct recipes for common retrieval tasks
-- `references/retrieval-semantics.md` — query design frame for scoped and synthesis retrieval
-- `references/recap/overview.md` — optional `/obelisk recap` card-by-card entrypoint
-- `references/recap/pattern1-cover.md` and `references/recap/writing1-cover.md`
-- `references/recap/pattern2-thinking.md` and `references/recap/writing2-thinking.md`
-- `references/recap/pattern3-vibe.md` and `references/recap/writing3-vibe.md`
-- `references/recap/pattern4-workflow.md` and `references/recap/writing4-workflow.md`
-- `references/recap/pattern5-closing.md` and `references/recap/writing5-closing.md`
-- `references/pitfalls.md` — scope, FTS, ordering, compact/raw, and field-name traps
-
-The executable SQLite schema lives in `scripts/schema.sql`; `references/schema.md`
-is the human/agent explanation of that contract.
-
-The design is progressive disclosure with guardrails: the main skill keeps the
-core contract and high-risk pitfalls visible, while longer recipes and the full
-schema stay out of the first prompt until the agent needs them.
-The optional recap references are only for the explicit `/obelisk recap` intent;
-they are not part of the ordinary retrieval path. `references/recap/overview.md`
-drives a card-by-card loop: read one card's retrieval pattern, gather that
-card's evidence, read its writing reference, update the JSON, then continue.
-This keeps schema, taste, and query planning from competing in one large prompt.
+macOS only. Download from [Releases](https://github.com/tommy0103/obelisk/releases).
 
 ## What gets indexed
 
 | Layer | Source | What's captured |
 |-------|--------|----------------|
-| **Sessions** | `<project>/<sessionId>.jsonl` | Title, project, timestamps, git branch |
+| **Sessions** | Claude `<project>/<sessionId>.jsonl`; Codex `sessions/YYYY/MM/DD/*.jsonl` | Title, project, timestamps, git branch, source |
 | **Messages** | user + assistant turns | Full text, model, token usage, parent chain |
-| **Tool calls** | every tool invocation | Tool name, input, file paths touched |
-| **Subagents** | `subagents/agent-<id>.jsonl` | Agent type, description, full conversation |
-| **Workflows** | `workflows/wf_<runId>.json` | Script, structured result, agent count |
-| **Workflow agents** | `subagents/workflows/wf_<runId>/` | Per-agent transcripts linked to workflow |
-| **Memories** | markdown files registered by the agent after user approval | Prior conclusions linked to source sessions/messages and optional anchors |
+| **Tool calls** | every tool invocation | Tool name, input, file paths |
+| **Subagents** | Claude `subagents/agent-<id>.jsonl`; Codex child threads | Agent type, description, full conversation |
+| **Workflows** | Claude `workflows/wf_<runId>.json` | Script, result, agent count |
+| **Workflow agents** | Claude `subagents/workflows/wf_<runId>/` | Per-agent transcripts |
+| **Memories** | registered markdown files | Conclusions linked to source sessions |
 
-Full-text search via FTS5 covers message text across every session layer and ranked memory recall over registered memory summaries, while the SQLite tables preserve the structure agents need for investigation.
+Full-text search via FTS5 covers all layers.
 
 ## Structure
 
 ```
-.claude/skills/obelisk/
-├── SKILL.md              # Skill definition + simple API + examples
-├── scripts/
-│   ├── schema.sql        # Executable SQLite schema
-│   └── runtime.mjs       # Indexer + query runtime (zero deps)
-└── references/
-    ├── schema.md          # Full table schema + advanced API reference
-    ├── query-patterns.md  # Copyable retrieval recipes
-    ├── retrieval-semantics.md # Query design frame for retrieval semantics
-    ├── recap-patterns.md  # Compatibility pointer to references/recap/overview.md
-    ├── recap-writing.md   # Compatibility pointer to per-card recap writing docs
-    ├── recap/
-    │   ├── overview.md
-    │   ├── pattern1-cover.md
-    │   ├── writing1-cover.md
-    │   ├── pattern2-thinking.md
-    │   ├── writing2-thinking.md
-    │   ├── pattern3-vibe.md
-    │   ├── writing3-vibe.md
-    │   ├── pattern4-workflow.md
-    │   ├── writing4-workflow.md
-    │   ├── pattern5-closing.md
-    │   └── writing5-closing.md
-    └── pitfalls.md        # Scope, FTS, ordering, and compactness traps
+packages/core/                # @obelisk/core npm workspace (TypeScript + ESM)
+├── src/
+│   ├── providers/
+│   │   ├── types.ts          # Provider + IndexRecord contract
+│   │   ├── claude.ts         # Claude Code adapter (line-incremental)
+│   │   └── codex.ts          # Codex adapter (full-reparse)
+│   ├── persist.ts            # Binding-agnostic record writer (upsert/merge)
+│   ├── tx.ts                 # Write transaction + connection config
+│   ├── write-coordinator.ts  # Bounded retry policy
+│   ├── writer-lease.ts       # Cross-process single-writer lease (SQLite lock DB)
+│   ├── core.ts               # buildIndex / searchText / executeQuery / executeAttune
+│   ├── indexer.ts            # Skill orchestration (discover → persist → finalize)
+│   ├── parsing.ts            # Pure helpers (node:sqlite-free, app-consumable)
+│   ├── db.ts                 # node:sqlite lifecycle + migrations
+│   ├── query.ts              # Query/attune sandbox API (helpers)
+│   ├── runtime.ts            # Thin CLI shell (--build/--search/--query/--attune)
+│   └── schema.sql            # SQLite schema (single source of truth)
+├── package.json
+└── dist/                     # Generated package JS, declarations, and schema
+
+references/                   # Agent-readable docs (progressive disclosure)
+├── schema.md
+├── api-reference.md
+├── query-patterns.md
+├── retrieval-semantics.md
+├── pitfalls.md
+├── recap-patterns.md
+├── recap-writing.md
+└── recap/                    # Per-card pattern + writing references
+    ├── overview.md
+    ├── pattern1-cover.md … pattern5-closing.md
+    └── writing1-cover.md … writing5-closing.md
+
+app/                          # Electron desktop app (electron-vite + Vue)
+├── src/main/                 # TypeScript main process (consumes shared core)
+├── src/preload/              # CJS preload (sandbox)
+├── src/renderer/             # Vue renderer
+└── electron.vite.config.ts
+
+packaging/                    # Skill publish infrastructure
+├── skill-package.json
+├── skill-README.md
+├── skill-LICENSE             # MIT (relicensed for the skill artifact)
+└── publish-skill.sh
+
+SKILL.md                      # Skill definition (installed with the artifact)
+CONTEXT.md                    # Project glossary
+docs/adr/                     # Architecture decision records (0001–0006)
 ```
+
+The optional `/obelisk recap` flow is loaded only for explicit `/obelisk recap` intent.
+It starts at `references/recap/overview.md` and proceeds card-by-card:
+
+- `references/recap/pattern1-cover.md` + `references/recap/writing1-cover.md`
+- `references/recap/pattern2-thinking.md` + `references/recap/writing2-thinking.md`
+- `references/recap/pattern3-vibe.md` + `references/recap/writing3-vibe.md`
+- `references/recap/pattern4-workflow.md` + `references/recap/writing4-workflow.md`
+- `references/recap/pattern5-closing.md` + `references/recap/writing5-closing.md`
+
+### Generated build outputs
+
+- `packages/core/dist/` is produced by `npm run build:core`. It is the compiled
+  `@obelisk/core` package: JavaScript, type declarations, and `schema.sql`.
+- `dist/obelisk-skill/` is produced by `npm run build:skill`. It is the
+  install-ready skill artifact: readable plain JavaScript under `scripts/`,
+  `SKILL.md`, references, and the skill package metadata.
+
+Both directories are generated and should not be edited by hand. The Electron
+app imports `packages/core/src/` directly so electron-vite can bundle Core.
 
 ## Implementation Notes
 
@@ -204,4 +203,4 @@ Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire
 
 ## License
 
-MIT @tommy0103
+AGPL-3.0 @tommy0103
