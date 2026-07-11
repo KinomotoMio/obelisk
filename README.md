@@ -59,7 +59,7 @@ Anything Claude Code has done before -- sessions, tool calls, subagents, workflo
 ## Install
 
 ```bash
-npx skills add tommy0103/obelisk
+npx skills add tommy0103/obelisk-skill
 ```
 
 Or manually: copy `obelisk/` into your project's `.claude/skills/`.
