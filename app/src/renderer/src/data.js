@@ -2,7 +2,7 @@
 // All DB access goes through this module.
 
 import { markRaw } from 'vue';
-import { state, clearUndo } from './store.js';
+import { state } from './store.js';
 
 /**
  * Load initial data from the DB and populate state.memories, state.sessions,

@@ -8,7 +8,6 @@ const SessionList = () => import('./views/SessionList.vue');
 const SessionDetail = () => import('./views/SessionDetail.vue');
 const SubagentDetail = () => import('./views/SubagentDetail.vue');
 const MemoryList = () => import('./views/MemoryList.vue');
-const MemoryDetail = () => import('./views/MemoryDetail.vue');
 const Activity = () => import('./views/Activity.vue');
 const Recap = () => import('./views/RecapList.vue');
 const RecapDetail = () => import('./views/RecapDetail.vue');
@@ -42,7 +41,7 @@ const routes = [
   {
     path: '/memory/:id',
     name: 'MemoryDetail',
-    component: MemoryDetail,
+    component: MemoryList,
     props: true
   },
   {

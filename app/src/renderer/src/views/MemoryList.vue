@@ -1,11 +1,13 @@
 <script setup>
-import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue';
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { state, FOLDER_SVG, clearUndo } from '../store.js';
+import { state, FOLDER_SVG, setSelection, clearSelection } from '../store.js';
 import { highlightPlain, escapeHTML, formatProjectLabel, fmtListTime, fmtRelative, renderMarkdown } from '../utils.js';
 import { loadMemoryMarkdown, archiveMemory, restoreMemory } from '../data.js';
+import { resolveMemoryShortcut } from '../keyboard-shortcuts.mjs';
 
 defineOptions({ name: 'MemoryList' });
+const props = defineProps({ id: String });
 
 const router = useRouter();
 const listWrapRef = ref(null);
@@ -29,12 +31,12 @@ const showProjectPrefix = computed(() => state.projectFilter === 'all');
 
 // --- Detail state ---
 
-const detailMemory = ref(null);
+const detailMemory = computed(() => props.id ? state.memories.find(memory => memory.id === props.id) : null);
 const detailMarkdown = ref(null);
 const showSource = ref(false);
 const loadingMarkdown = ref(false);
 
-const showDetail = computed(() => detailMemory.value !== null);
+const showDetail = computed(() => Boolean(props.id));
 
 // --- Row helpers ---
 
@@ -100,18 +102,31 @@ function projectLabel(m) {
 
 // --- Selection ---
 
-function toggleSelection(id) {
+function toggleSelection(id, { range = false } = {}) {
   const s = new Set(state.selection);
-  if (s.has(id)) s.delete(id);
-  else s.add(id);
-  state.selection = s;
+  if (range && state.cursorId) {
+    const ids = visibleMemories.value.map(memory => memory.id);
+    const from = ids.indexOf(state.cursorId);
+    const to = ids.indexOf(id);
+    if (from !== -1 && to !== -1) {
+      const [start, end] = from < to ? [from, to] : [to, from];
+      for (let index = start; index <= end; index++) s.add(ids[index]);
+    }
+  } else if (s.has(id)) {
+    s.delete(id);
+  } else {
+    s.add(id);
+  }
+  state.cursorId = id;
+  setSelection(s);
 }
 
 // --- Cursor navigation ---
 
-function moveCursor(direction) {
+function moveCursor(direction, extendSelection = false) {
   const items = visibleMemories.value;
   if (!items.length) return;
+  const previousId = state.cursorId;
   const curIdx = items.findIndex(m => m.id === state.cursorId);
   let next;
   if (curIdx === -1) {
@@ -121,7 +136,11 @@ function moveCursor(direction) {
     if (next < 0) next = 0;
     if (next >= items.length) next = items.length - 1;
   }
-  state.cursorId = items[next].id;
+  const nextId = items[next].id;
+  if (extendSelection && previousId) {
+    setSelection([...state.selection, previousId, nextId]);
+  }
+  state.cursorId = nextId;
   nextTick(() => ensureVisible());
 }
 
@@ -140,23 +159,29 @@ function ensureVisible() {
 
 // --- Open detail ---
 
-async function openDetail(m) {
-  detailMemory.value = m;
+let detailLoadVersion = 0;
+async function loadDetail(memory) {
+  const version = ++detailLoadVersion;
   showSource.value = false;
-  loadingMarkdown.value = true;
   detailMarkdown.value = null;
+  loadingMarkdown.value = Boolean(memory);
 
-  if (m.markdown === null && m.path) {
-    m.markdown = await loadMemoryMarkdown(m.path);
+  if (memory?.markdown == null && memory.path) {
+    memory.markdown = await loadMemoryMarkdown(memory.path);
   }
-  detailMarkdown.value = m.markdown;
+  if (version !== detailLoadVersion) return;
+  detailMarkdown.value = memory?.markdown ?? null;
   loadingMarkdown.value = false;
 }
 
+watch(detailMemory, loadDetail, { immediate: true });
+
+function openDetail(m) {
+  router.push({ name: 'MemoryDetail', params: { id: m.id } });
+}
+
 function closeDetail() {
-  detailMemory.value = null;
-  detailMarkdown.value = null;
-  showSource.value = false;
+  router.push({ name: 'MemoryList' });
 }
 
 function toggleSourceView() {
@@ -165,7 +190,11 @@ function toggleSourceView() {
 
 // --- Row click ---
 
-function onRowClick(m) {
+function onRowClick(m, event) {
+  if (event.shiftKey || event.metaKey || event.ctrlKey) {
+    toggleSelection(m.id, { range: event.shiftKey });
+    return;
+  }
   state.cursorId = m.id;
   openDetail(m);
 }
@@ -175,16 +204,17 @@ function onRowClick(m) {
 const undoSnapshot = ref(null);
 let undoTimer = null;
 
-async function doArchive(ids) {
+async function mutateMemories(ids, action) {
   const targets = ids || (state.cursorId ? [state.cursorId] : []);
   if (!targets.length) return;
-  undoSnapshot.value = { action: 'archive', ids: [...targets] };
+  undoSnapshot.value = { action, ids: [...targets] };
   undoCountdown.value = 5;
   for (const id of targets) {
-    await archiveMemory(id);
+    if (action === 'archive') await archiveMemory(id);
+    else await restoreMemory(id);
   }
+  clearSelection();
   startUndoTimer();
-  // Move cursor if needed
   if (targets.includes(state.cursorId)) {
     const items = visibleMemories.value;
     if (items.length) state.cursorId = items[0].id;
@@ -195,24 +225,8 @@ async function doArchive(ids) {
   }
 }
 
-async function doRestore(ids) {
-  const targets = ids || (state.cursorId ? [state.cursorId] : []);
-  if (!targets.length) return;
-  undoSnapshot.value = { action: 'restore', ids: [...targets] };
-  undoCountdown.value = 5;
-  for (const id of targets) {
-    await restoreMemory(id);
-  }
-  startUndoTimer();
-  if (targets.includes(state.cursorId)) {
-    const items = visibleMemories.value;
-    if (items.length) state.cursorId = items[0].id;
-    else state.cursorId = null;
-  }
-  if (showDetail.value && targets.includes(detailMemory.value?.id)) {
-    closeDetail();
-  }
-}
+const doArchive = (ids) => mutateMemories(ids, 'archive');
+const doRestore = (ids) => mutateMemories(ids, 'restore');
 
 async function undoAction() {
   if (!undoSnapshot.value) return;
@@ -261,51 +275,28 @@ const renderedMarkdown = computed(() => {
 // --- Keyboard handler ---
 
 function onKeydown(e) {
-  // Do not handle if user is typing in an input
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const tagName = e.target?.tagName;
+  const command = resolveMemoryShortcut(e, {
+    isTextInput: tagName === 'INPUT' || tagName === 'TEXTAREA' || e.target?.isContentEditable,
+    showDetail: showDetail.value,
+    hasUndo: Boolean(undoSnapshot.value),
+    hasCursor: Boolean(state.cursorId),
+  });
+  if (!command) return;
 
-  if (showDetail.value) {
-    if (e.key === 'Escape') { e.preventDefault(); closeDetail(); return; }
-    if (e.key === 'd' || e.key === 'D') { e.preventDefault(); detailArchiveRestore(); return; }
-    return;
-  }
-
-  switch (e.key) {
-    case 'j':
-      e.preventDefault();
-      moveCursor(1);
-      break;
-    case 'k':
-      e.preventDefault();
-      moveCursor(-1);
-      break;
-    case 'Enter':
-      e.preventDefault();
-      if (state.cursorId) {
-        const m = visibleMemories.value.find(x => x.id === state.cursorId);
-        if (m) openDetail(m);
-      }
-      break;
-    case 'x':
-      e.preventDefault();
-      if (state.cursorId) toggleSelection(state.cursorId);
-      break;
-    case 'd':
-    case 'D':
-      e.preventDefault();
-      if (state.view === 'archived') {
-        doRestore(state.selection.size ? [...state.selection] : (state.cursorId ? [state.cursorId] : []));
-      } else {
-        doArchive(state.selection.size ? [...state.selection] : (state.cursorId ? [state.cursorId] : []));
-      }
-      break;
-    case 'z':
-      if ((e.metaKey || e.ctrlKey) && undoSnapshot.value) {
-        e.preventDefault();
-        undoAction();
-      }
-      break;
-  }
+  e.preventDefault();
+  if (command.type === 'move-cursor') moveCursor(command.direction, command.extend);
+  else if (command.type === 'open-detail') {
+    const memory = visibleMemories.value.find(item => item.id === state.cursorId);
+    if (memory) openDetail(memory);
+  } else if (command.type === 'toggle-selection') toggleSelection(state.cursorId);
+  else if (command.type === 'mutate-selection') {
+    const targets = state.selection.size ? [...state.selection] : (state.cursorId ? [state.cursorId] : []);
+    if (state.view === 'archived') doRestore(targets);
+    else doArchive(targets);
+  } else if (command.type === 'undo') undoAction();
+  else if (command.type === 'close-detail') closeDetail();
+  else if (command.type === 'mutate-detail') detailArchiveRestore();
 }
 
 onMounted(() => {
@@ -321,7 +312,7 @@ onUnmounted(() => {
 <template>
   <!-- Detail panel overlay -->
   <div v-if="showDetail" class="detail-wrap">
-    <div class="detail">
+    <div v-if="detailMemory" class="detail">
       <div class="detail-header">
         <div class="detail-eyebrow">
           <span class="project-icon" v-html="FOLDER_SVG"></span>
@@ -344,6 +335,12 @@ onUnmounted(() => {
           </button>
           <span v-if="detailMemory.session_id" class="dot"></span>
           <span>{{ fmtRelative(detailMemory.ts) }}</span>
+          <template v-if="detailMemory.message_start">
+            <span class="dot"></span>
+            <span class="message-range">
+              {{ detailMemory.message_start.slice(0, 8) }}…→ {{ (detailMemory.message_end || '').slice(0, 8) }}…
+            </span>
+          </template>
         </div>
       </div>
 
@@ -368,6 +365,28 @@ onUnmounted(() => {
         <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
       </div>
 
+      <div v-if="detailMemory.anchors?.length" class="detail-section-divider" id="anchors-section">
+        <span>Anchors</span><span class="count">{{ detailMemory.anchors.length }}</span>
+      </div>
+      <div v-if="detailMemory.anchors?.length" class="anchor-list">
+        <button
+          v-for="anchor in detailMemory.anchors"
+          :key="`${anchor.path}:${anchor.line}`"
+          class="anchor-link"
+          :disabled="anchor.exists === false"
+          :title="anchor.exists === false ? 'File no longer exists' : 'Open in editor'"
+        >
+          <span class="anchor-icon">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
+              <path d="M3.5 2h6l3 3v9a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
+              <path d="M9.5 2v3h3"/>
+            </svg>
+          </span>
+          <span class="anchor-path">{{ anchor.path }}</span>
+          <span v-if="anchor.line" class="anchor-line">:{{ anchor.line }}</span>
+        </button>
+      </div>
+
       <div class="detail-actions">
         <button class="btn" @click="closeDetail">
           Back<span class="kbd">Esc</span>
@@ -381,6 +400,7 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
+    <div v-else class="empty">{{ state.loaded ? 'Memory not found.' : 'Loading...' }}</div>
   </div>
 
   <!-- List panel -->
@@ -401,13 +421,13 @@ onUnmounted(() => {
           archived: m.archived
         }"
         :data-id="m.id"
-        @click="onRowClick(m)"
+        @click="onRowClick(m, $event)"
       >
         <button
           class="row-checkbox"
           :class="{ checked: state.selection.has(m.id) }"
           aria-label="Select"
-          @click.stop="toggleSelection(m.id)"
+          @click.stop="toggleSelection(m.id, { range: $event.shiftKey })"
         >
           <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
             <path d="M2.5 6.5l2.5 2.5 4.5-5"/>
@@ -687,6 +707,7 @@ onUnmounted(() => {
   padding-bottom: 16px; border-bottom: 1px solid var(--hairline);
 }
 .detail-meta .dot { width: 2px; height: 2px; background: var(--muted-2); border-radius: 50%; flex-shrink: 0; }
+.message-range { font-size: 11px; }
 .session-link {
   color: var(--accent-2); border: 0; background: transparent;
   padding: 2px 5px; margin: -2px 0; border-radius: 3px;

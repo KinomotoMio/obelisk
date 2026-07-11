@@ -6,7 +6,7 @@ import router from './router.js';
 import { loadInitialData } from './data.js';
 import { noteSessionUpdated, sessionLiveState } from './session-live.mjs';
 
-// Import all original CSS globally
+// Import shared renderer CSS globally
 import '../styles/base.css';
 import '../styles/sidebar.css';
 import '../styles/toolbar.css';

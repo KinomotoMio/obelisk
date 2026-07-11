@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { state, navigateToSession } from '../store.js';
+import { state } from '../store.js';
 import { fmtTokens, fmtDuration, fmtTooltipDate, positionTooltip, escapeHTML, formatProjectLabel } from '../utils.js';
 
 defineOptions({ name: 'Activity' });
@@ -322,7 +322,6 @@ function updateTooltipPos(event) {
 }
 
 function goToSession(sessionId) {
-  navigateToSession(sessionId);
   router.push({ name: 'SessionDetail', params: { id: sessionId } });
 }
 

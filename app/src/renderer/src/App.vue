@@ -1,13 +1,13 @@
 <script setup>
-import { computed, watch, ref, provide } from 'vue';
+import { computed, watch, ref, provide, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   state,
-  IS_MAC,
   FOLDER_SVG,
-  setRoute,
+  resetListState,
   setView,
   setProject,
+  clearSelection,
   setQuery,
   setProjectSearch,
   toggleSort,
@@ -15,9 +15,11 @@ import {
 } from './store.js';
 import { formatProjectLabel } from './utils.js';
 import { buildSidebarProjects } from './sidebar-projects.mjs';
+import { resolveGlobalShortcut } from './keyboard-shortcuts.mjs';
 
 const router = useRouter();
 const route = useRoute();
+let searchTimer = null;
 
 // --- Sidebar data ---
 
@@ -108,7 +110,8 @@ watch(() => windowTitle.value.scopeText, (scopeText) => {
 // --- Navigation helpers ---
 
 function handleSidebarRoute(routeName) {
-  setRoute(routeName);
+  clearTimeout(searchTimer);
+  resetListState();
   if (routeName === 'sessions') {
     router.push('/sessions');
   } else if (routeName === 'activity') {
@@ -141,7 +144,7 @@ function handleProjectSearch(e) {
 
 // --- Search ---
 
-let searchTimer = null;
+const searchInputRef = ref(null);
 function handleSearch(e) {
   const value = e.target.value;
   clearTimeout(searchTimer);
@@ -157,6 +160,38 @@ function handleToggleSort() {
 function handleToggleSearchMsgs() {
   toggleIncludeMessageBodies();
 }
+
+function handleGlobalKeydown(event) {
+  const tagName = event.target?.tagName;
+  const command = resolveGlobalShortcut(event, {
+    isTextInput: tagName === 'INPUT' || tagName === 'TEXTAREA' || event.target?.isContentEditable,
+    isListRoute: showToolbar.value,
+    hasSelection: state.selection.size > 0,
+    hasQuery: Boolean(state.query),
+  });
+  if (!command) return;
+
+  event.preventDefault();
+  if (command === 'open-sessions') handleSidebarRoute('sessions');
+  else if (command === 'open-active-memories') handleSidebarView('active');
+  else if (command === 'open-archived-memories') handleSidebarView('archived');
+  else if (command === 'focus-search') {
+    searchInputRef.value?.focus();
+    searchInputRef.value?.select();
+  } else if (command === 'blur-input') event.target?.blur?.();
+  else if (command === 'toggle-sort') handleToggleSort();
+  else if (command === 'clear-selection') clearSelection();
+  else if (command === 'clear-query') {
+    clearTimeout(searchTimer);
+    setQuery('');
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', handleGlobalKeydown));
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown);
+  clearTimeout(searchTimer);
+});
 
 // --- Keep-alive includes ---
 const keepAliveIncludes = ['SessionDetail'];
@@ -417,14 +452,14 @@ provide('recapGenerateOpen', recapGenerateOpen);
             <template v-if="showToolbar">
               <template v-if="state.projectFilter !== 'all'">
                 <button class="crumb" @click="handleClearProject">
-                  {{ state.route === 'sessions' ? 'Sessions' : 'Memory' }}
+                  {{ currentRouteType === 'sessions' ? 'Sessions' : 'Memory' }}
                 </button>
                 <span class="crumb-sep">/</span>
                 <span class="crumb terminal">{{ formatProjectLabel(state.projectFilter) }}</span>
               </template>
               <template v-else>
                 <span class="crumb terminal">
-                  {{ state.route === 'sessions' ? 'Sessions' : state.route === 'memory' ? 'Memory' : 'Activity' }}
+                  {{ currentRouteType === 'sessions' ? 'Sessions' : 'Memory' }}
                 </span>
               </template>
             </template>
@@ -516,6 +551,7 @@ provide('recapGenerateOpen', recapGenerateOpen);
               <path d="M11 11l3 3" stroke-linecap="round"/>
             </svg>
             <input
+              ref="searchInputRef"
               id="search"
               type="text"
               placeholder="Search…"
