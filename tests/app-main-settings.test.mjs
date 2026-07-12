@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -405,7 +405,7 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
     ipcHandlers.get('db:getProjects')(null, {});
     assert.match(queries.at(-1).sql, /COALESCE\(source, 'claude'\) = 'claude'/);
 
-    ipcHandlers.get('db:getSessions')(null, { includeCodex: true });
+    ipcHandlers.get('db:getSessions')(null, { source: 'all' });
     assert.doesNotMatch(queries.at(-1).sql, /COALESCE\(source, 'claude'\) = 'claude'/);
 
     ipcHandlers.get('db:getSessions')(null, { source: 'codex' });
@@ -419,6 +419,79 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
     assert.ok(
       queries.some(q => /MAX\(started_at\) as t FROM sessions WHERE COALESCE\(source, 'claude'\) = 'claude'/.test(q.sql)),
     );
+  } finally {
+    restore();
+    process.env.HOME = originalHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('usage IPC aggregates normalized tokens across all indexed providers', async () => {
+  const originalHome = process.env.HOME;
+  const home = join(tmpdir(), `obelisk-main-usage-${Date.now()}`);
+  const obeliskDir = join(home, '.obelisk');
+  mkdirSync(obeliskDir, { recursive: true });
+  process.env.HOME = home;
+
+  const dbPath = join(obeliskDir, 'obelisk.sqlite');
+  const setup = new DatabaseSync(dbPath);
+  setup.exec(readFileSync(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8'));
+  setup.prepare(`
+    INSERT INTO messages (
+      uuid, session_id, type, timestamp, role, text,
+      input_tokens, output_tokens, source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('claude-message', 'claude-session', 'assistant', '2026-07-10T10:00:00Z', 'assistant', 'ok', 60, 5, 'claude');
+  setup.prepare(`
+    INSERT INTO messages (
+      uuid, session_id, type, timestamp, role, text,
+      input_tokens, output_tokens, source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('codex-message', 'codex:session', 'assistant', '2026-07-10T11:00:00Z', 'assistant', 'ok', 100, 10, 'codex');
+  setup.close();
+
+  const ipcHandlers = new Map();
+
+  class FakeBrowserWindow {
+    constructor() {
+      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+    }
+    loadFile() {}
+    loadURL() {}
+    close() {}
+    static getAllWindows() { return []; }
+    static fromWebContents() { return null; }
+  }
+
+  const restore = registerMocks([
+    [ELECTRON_URL, {
+      namedExports: electronNamespace({
+        BrowserWindow: FakeBrowserWindow,
+        ipcMain: {
+          handle(channel, handler) {
+            ipcHandlers.set(channel, handler);
+          },
+        },
+      }),
+    }],
+    [DATABASE_URL, { defaultExport: SqliteCompatDatabase }],
+    [CHOKIDAR_URL, { defaultExport: noopChokidar() }],
+    [INDEXER_URL, { namedExports: { writeHeartbeat() {} } }],
+    [INDEXER_SERVICE_URL, { namedExports: defaultIndexerService() }],
+    [INDEXER_WORKER_URL, { namedExports: defaultIndexerWorkerClient() }],
+  ]);
+
+  try {
+    await importMain();
+
+    const claudeOnly = ipcHandlers.get('db:getUsageStats')(null, {});
+    assert.equal(claudeOnly.totalTokens, 65);
+    assert.equal(claudeOnly.daily[0].tokens, 65);
+
+    const allSources = ipcHandlers.get('db:getUsageStats')(null, { source: 'all' });
+    assert.equal(allSources.totalTokens, 175);
+    assert.equal(allSources.daily[0].tokens, 175);
+    assert.equal(allSources.peakDay.tokens, 175);
   } finally {
     restore();
     process.env.HOME = originalHome;

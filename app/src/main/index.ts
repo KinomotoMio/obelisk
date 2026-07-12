@@ -10,6 +10,7 @@ import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
+import type { SourceQueryOptions } from '../shared/ipc-types.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -220,8 +221,8 @@ function notifyIndexUpdated(result: { affectedSessionIds?: unknown } = {}) {
   }
 }
 
-function sourceWhereClause(opts: { includeCodex?: boolean; source?: string } = {}, column = "source"): { sql: string; params: unknown[] } {
-  if (opts.includeCodex || opts.source === 'all') return { sql: '', params: [] };
+function sourceWhereClause(opts: SourceQueryOptions = {}, column = "source"): { sql: string; params: unknown[] } {
+  if (opts.source === 'all') return { sql: '', params: [] };
   if (opts.source) return { sql: `COALESCE(${column}, 'claude') = ?`, params: [opts.source] };
   return { sql: `COALESCE(${column}, 'claude') = 'claude'`, params: [] };
 }

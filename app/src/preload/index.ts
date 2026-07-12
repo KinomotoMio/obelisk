@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import type { UsageStatsOptions } from '../shared/ipc-types.ts';
 
 contextBridge.exposeInMainWorld('obelisk', {
   getSessions: (opts?: unknown) => ipcRenderer.invoke('db:getSessions', opts),
@@ -18,7 +19,7 @@ contextBridge.exposeInMainWorld('obelisk', {
   restoreMemory: (id: string) => ipcRenderer.invoke('db:restoreMemory', id),
   getProjects: () => ipcRenderer.invoke('db:getProjects'),
   getStats: () => ipcRenderer.invoke('db:getStats'),
-  getUsageStats: () => ipcRenderer.invoke('db:getUsageStats'),
+  getUsageStats: (opts?: UsageStatsOptions) => ipcRenderer.invoke('db:getUsageStats', opts),
   onIndexUpdated: (callback: (payload: unknown) => void) => {
     const listener = (_: IpcRendererEvent, payload: unknown) => callback(payload);
     ipcRenderer.on('obelisk:index-updated', listener);
