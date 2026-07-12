@@ -674,22 +674,22 @@ onUnmounted(() => stopUsageUpdates());
 .chart-tooltip.show { opacity: 1; }
 
 /* Session activity ledger */
-.session-activity { margin-top: 34px; }
-.activity-month-block { margin-bottom: 54px; }
+.session-activity { margin-top: 28px; }
+.activity-month-block { margin-bottom: 44px; }
 
 .activity-month-heading {
   display: grid;
   grid-template-columns: max-content minmax(48px, 1fr) max-content;
   align-items: center;
-  gap: 18px;
-  margin-bottom: 26px;
+  gap: 16px;
+  margin-bottom: 22px;
 }
 
 .activity-month-heading h2 {
   margin: 0;
   color: var(--fg);
-  font-size: 14px;
-  font-weight: 650;
+  font-size: var(--text-md);
+  font-weight: 600;
   letter-spacing: -.01em;
 }
 

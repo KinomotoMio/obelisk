@@ -41,10 +41,10 @@ const metaParts = computed(() => activitySessionMetaParts(props.session, {
 .ledger-item {
   width: 100%;
   display: block;
-  margin-left: -12px;
-  padding: 8px 12px;
+  margin-left: -10px;
+  padding: 6px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
   color: inherit;
   font: inherit;
@@ -59,8 +59,8 @@ const metaParts = computed(() => activitySessionMetaParts(props.session, {
   display: block;
   overflow: hidden;
   color: var(--accent-2);
-  font-size: 13.5px;
-  font-weight: 520;
+  font-size: var(--text-base);
+  font-weight: 500;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -76,21 +76,21 @@ const metaParts = computed(() => activitySessionMetaParts(props.session, {
   min-height: 15px;
   margin-top: 4px;
   color: var(--muted-2);
-  font: 10.5px/1.35 var(--font-mono);
+  font: var(--text-xs)/1.35 var(--font-mono);
   white-space: nowrap;
 }
 
 .meta-source {
   color: var(--fg-2);
-  font-weight: 620;
+  font-weight: 500;
 }
 
 .meta-project { color: var(--muted); }
 .meta-count { color: var(--muted-2); }
-.meta-separator { color: var(--muted); font-weight: 700; opacity: .82; }
+.meta-separator { color: var(--muted); font-weight: 500; opacity: .82; }
 
 .ledger-item.noise { opacity: .7; }
-.ledger-item.noise .ledger-item-title { color: var(--fg-2); font-weight: 430; }
+.ledger-item.noise .ledger-item-title { color: var(--fg-2); font-weight: 400; }
 
 @media (max-width: 760px) {
   .ledger-item-meta { flex-wrap: wrap; row-gap: 4px; white-space: normal; }

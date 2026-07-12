@@ -124,8 +124,8 @@ function toggleNoise(key) {
 <style scoped>
 .activity-ledger {
   position: relative;
-  margin-left: 16px;
-  padding-left: 58px;
+  margin-left: 10px;
+  padding-left: 44px;
 }
 
 .activity-ledger::before {
@@ -133,24 +133,24 @@ function toggleNoise(key) {
   position: absolute;
   top: 2px;
   bottom: 4px;
-  left: 15px;
+  left: 12px;
   width: 1px;
   background: var(--hairline);
 }
 
 .ledger-group {
   position: relative;
-  padding-bottom: 38px;
+  padding-bottom: 28px;
 }
 
 .ledger-group:last-child { padding-bottom: 6px; }
 
 .ledger-node {
   position: absolute;
-  top: -5px;
-  left: -58px;
-  width: 32px;
-  height: 32px;
+  top: -2px;
+  left: -44px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   border: 1px solid var(--hairline-strong);
@@ -161,8 +161,8 @@ function toggleNoise(key) {
 }
 
 .ledger-node svg {
-  width: 17px;
-  height: 17px;
+  width: 14px;
+  height: 14px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -183,20 +183,19 @@ function toggleNoise(key) {
 }
 
 .ledger-group-header {
-  min-height: 27px;
+  min-height: 24px;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 14px;
+  gap: 20px;
+  margin-bottom: 9px;
 }
 
 .ledger-group-header h3 {
   margin: 0;
   color: var(--fg);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -.01em;
+  font-size: var(--text-base);
+  font-weight: 500;
 }
 
 .ledger-group-header time {
@@ -216,13 +215,13 @@ function toggleNoise(key) {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 5px 0 0 -4px;
-  padding: 7px 8px;
+  margin: 4px 0 0 -4px;
+  padding: 6px 8px;
   border: 0;
   border-radius: 5px;
   background: transparent;
   color: var(--muted-2);
-  font: 10.5px/1.25 var(--font-mono);
+  font: var(--text-xs)/1.25 var(--font-mono);
   text-align: left;
   cursor: pointer;
 }
@@ -239,8 +238,9 @@ function toggleNoise(key) {
 .noise-fold-row.expanded .chev { transform: rotate(90deg); }
 
 @media (max-width: 760px) {
-  .activity-ledger { margin-left: 8px; padding-left: 46px; }
-  .ledger-node { left: -46px; }
+  .activity-ledger { margin-left: 6px; padding-left: 40px; }
+  .activity-ledger::before { left: 12px; }
+  .ledger-node { left: -40px; }
   .ledger-group-header { gap: 12px; }
 }
 </style>
