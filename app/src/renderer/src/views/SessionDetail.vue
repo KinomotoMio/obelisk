@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
 import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
 import { clearSessionDirty, consumeGlobalSessionDirty } from '../session-live.mjs';
+import FlapNumber from '../components/FlapNumber.vue';
 import {
   escapeHTML,
   fmtRelative,
@@ -954,7 +955,7 @@ function getToolCallParsedInput(tc) {
       <button class="msg-nav-btn" @click="navTo('prev')" :disabled="currentMsgIdx === 0" title="Previous">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4l-4 4 4 4"/></svg>
       </button>
-      <span class="msg-nav-pos"><span class="msg-nav-current">{{ currentMsgIdx + 1 }}</span> / {{ totalMsgs }}</span>
+      <span class="msg-nav-pos"><span class="msg-nav-current">{{ currentMsgIdx + 1 }}</span> / <FlapNumber :value="totalMsgs" /></span>
       <button class="msg-nav-btn" @click="navTo('next')" :disabled="currentMsgIdx >= totalMsgs - 1" title="Next">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>
       </button>
