@@ -242,7 +242,7 @@ export async function loadSessionDetail(sessionId) {
   const assembled = {
     ...(session || {}),
     id: sessionId,
-    messages: assembledMessages
+    messages: markRaw(assembledMessages)
   };
 
   if (workflow) {

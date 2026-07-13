@@ -1,15 +1,17 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
+import { ref, shallowRef, computed, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
 import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
 import { clearSessionDirty, consumeGlobalSessionDirty } from '../session-live.mjs';
+import { applySnapshot } from '../session-timeline.mjs';
 import { getArgPreview, getToolIcon, renderTerminalTool } from '../tool-renderer.js';
 import FlapNumber from '../components/FlapNumber.vue';
 import {
   captureSessionViewState,
   findLastMessageAtOrAbove,
-  reconcileSessionMessages,
+  isFollowingSessionTail,
+  restoreSessionTail,
   restoreSessionViewState,
 } from '../session-view-state.mjs';
 import {
@@ -28,7 +30,7 @@ const route = useRoute();
 
 // --- Reactive state ---
 const session = computed(() => state.sessions.find(s => s.id === props.id));
-const messages = ref([]);
+const messages = shallowRef([]);
 const loading = ref(false);
 const progressPct = ref(0);
 const active = ref(false);
@@ -145,34 +147,56 @@ watch(() => props.id, async (newId, oldId) => {
 async function loadMessages({ force = false } = {}) {
   if (!props.id) return;
   const hadContent = messages.value.length > 0;
-  const viewState = hadContent
-    ? captureSessionViewState({ wrap: wrapRef.value, detail: detailRef.value })
-    : null;
-  const scrollRevisionAtLoad = scrollRevision;
+  let reconciliation;
+  let viewState = null;
+  let followTailBeforePatch = false;
+  let scrollRevisionBeforePatch = scrollRevision;
 
   loading.value = !hadContent;
   try {
     const s = state.sessions.find(x => x.id === props.id);
+    let latest = s;
     if (s && (force || !s.messages || s.messages.length === 0)) {
-      await loadSessionDetail(props.id);
+      latest = await loadSessionDetail(props.id);
     }
-    const latest = state.sessions.find(x => x.id === props.id);
     const incoming = latest?.messages || [];
-    messages.value = hadContent
-      ? reconcileSessionMessages(messages.value, incoming)
-      : incoming;
+    reconciliation = applySnapshot(messages.value, incoming);
+    if (reconciliation.changed) {
+      followTailBeforePatch = hadContent && isFollowingSessionTail(wrapRef.value);
+      scrollRevisionBeforePatch = scrollRevision;
+      if (hadContent && !reconciliation.tailOnly) {
+        viewState = captureSessionViewState({
+          wrap: wrapRef.value,
+          detail: detailRef.value,
+        });
+      }
+      messages.value = reconciliation.messages;
+    }
   } finally {
     loading.value = false;
+  }
+
+  if (!reconciliation.changed) {
+    if (state.pendingFocusUuid) await focusPendingMessage();
+    return;
   }
 
   await nextTick();
   syncTotalMessages();
   if (!state.pendingFocusUuid) {
-    restoreSessionViewState(viewState, {
-      wrap: wrapRef.value,
-      detail: detailRef.value,
-      restoreScroll: scrollRevision === scrollRevisionAtLoad,
-    });
+    if (reconciliation.tailOnly) {
+      restoreSessionTail({
+        wrap: wrapRef.value,
+        followTail: followTailBeforePatch,
+        restoreScroll: scrollRevision === scrollRevisionBeforePatch,
+      });
+    } else {
+      restoreSessionViewState(viewState, {
+        wrap: wrapRef.value,
+        detail: detailRef.value,
+        restoreScroll: scrollRevision === scrollRevisionBeforePatch,
+      });
+    }
     onScroll();
   }
 
@@ -554,17 +578,8 @@ function toggleRaw(event) {
   btn?.classList.toggle('active', showing);
 }
 
-function getSkillMd(skillMsgIdx) {
-  const msg = messages.value[skillMsgIdx];
-  if (msg?._skillMd) return msg._skillMd;
-  // Fallback: search next few messages
-  for (let i = skillMsgIdx + 1; i < Math.min(skillMsgIdx + 3, messages.value.length); i++) {
-    const m = messages.value[i];
-    if (m.is_meta === 1 && m.text && m.text.includes('Base directory for this skill')) {
-      return m.text;
-    }
-  }
-  return null;
+function getSkillMd(msg) {
+  return msg?._skillMd || null;
 }
 
 function toggleSkillMd(event) {
@@ -623,7 +638,7 @@ function getToolCallParsedInput(tc) {
 
         <!-- Message timeline -->
         <div class="timeline">
-          <template v-for="(msg, idx) in messages" :key="msg.uuid || idx">
+          <template v-for="msg in messages" :key="msg.uuid" v-memo="[msg, state.query]">
 
             <!-- Meta messages: collapsed system indicator -->
             <template v-if="msg.is_meta === 1">
@@ -738,12 +753,12 @@ function getToolCallParsedInput(tc) {
                     <span class="skill-card-name">{{ getToolCallParsedInput(msg.tool_calls[0]).skill || '?' }}</span>
                   </div>
                   <div class="skill-card-args">{{ getToolCallParsedInput(msg.tool_calls[0]).args || '' }}</div>
-                  <div v-if="getSkillMd(idx)" class="skill-card-md">
+                  <div v-if="getSkillMd(msg)" class="skill-card-md">
                     <button class="skill-md-toggle" @click="toggleSkillMd">
                       <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                       <span>SKILL.md</span>
                     </button>
-                    <div class="skill-md-body" v-html="renderMarkdown(getSkillMd(idx), { variant: 'compact' })"></div>
+                    <div class="skill-md-body" v-html="renderMarkdown(getSkillMd(msg), { variant: 'compact' })"></div>
                   </div>
                 </div>
               </div>

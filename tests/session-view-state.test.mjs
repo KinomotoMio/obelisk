@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import {
   captureSessionViewState,
   findLastMessageAtOrAbove,
-  reconcileSessionMessages,
+  isFollowingSessionTail,
+  restoreSessionTail,
   restoreSessionViewState,
 } from '../app/src/renderer/src/session-view-state.mjs';
 
@@ -113,6 +114,33 @@ test('session refresh follows appended content only when already at the tail', (
   assert.equal(newWrap.scrollTop, 2400);
 });
 
+test('tail-follow detection uses only the scroll container metrics', () => {
+  assert.equal(isFollowingSessionTail(wrap({
+    scrollTop: 1360,
+    scrollHeight: 2000,
+    clientHeight: 600,
+  })), true);
+  assert.equal(isFollowingSessionTail(wrap({
+    scrollTop: 1200,
+    scrollHeight: 2000,
+    clientHeight: 600,
+  })), false);
+});
+
+test('tail append preserves an active reader and follows only without newer scroll input', () => {
+  const reader = wrap({ scrollTop: 600, scrollHeight: 2400, clientHeight: 600 });
+  restoreSessionTail({ wrap: reader, followTail: false });
+  assert.equal(reader.scrollTop, 600);
+
+  const userMoved = wrap({ scrollTop: 800, scrollHeight: 2400, clientHeight: 600 });
+  restoreSessionTail({ wrap: userMoved, followTail: true, restoreScroll: false });
+  assert.equal(userMoved.scrollTop, 800);
+
+  const follower = wrap({ scrollTop: 1400, scrollHeight: 2400, clientHeight: 600 });
+  restoreSessionTail({ wrap: follower, followTail: true });
+  assert.equal(follower.scrollTop, 2400);
+});
+
 test('session refresh never restores an old anchor over newer user scrolling', () => {
   const oldTool = disclosure('tool:call-1', ['open']);
   const snapshot = captureSessionViewState({
@@ -132,22 +160,6 @@ test('session refresh never restores an old anchor over newer user scrolling', (
   assert.equal(userScrolledWrap.scrollTop, 800, 'newer user scroll wins over stale refresh state');
 });
 
-test('message reconciliation preserves existing identities and appends the tail', () => {
-  const first = { uuid: 'm1', text: 'old', tool_calls: [{ id: 't1' }] };
-  const current = [first];
-  const incoming = [
-    { uuid: 'm1', text: 'updated', tool_calls: [{ id: 't1', result: { content: 'progress' } }] },
-    { uuid: 'm2', text: 'new tail' },
-  ];
-
-  const reconciled = reconcileSessionMessages(current, incoming);
-
-  assert.equal(reconciled[0], first);
-  assert.equal(reconciled[0].text, 'updated');
-  assert.equal(reconciled[0].tool_calls[0].result.content, 'progress');
-  assert.equal(reconciled[1], incoming[1]);
-});
-
 test('scroll progress locates the visible message without scanning the full session', () => {
   let layoutReads = 0;
   const messages = Array.from({ length: 2048 }, (_, index) => ({
@@ -161,17 +173,46 @@ test('scroll progress locates the visible message without scanning the full sess
   assert.ok(layoutReads < 20, `expected logarithmic layout reads, got ${layoutReads}`);
 });
 
-test('SessionDetail integrates view-state capture and restore into live reloads', () => {
+test('SessionDetail isolates unchanged rows and gives tail appends a scan-free path', () => {
   const source = readFileSync(new URL('../app/src/renderer/src/views/SessionDetail.vue', import.meta.url), 'utf8');
+  const dataSource = readFileSync(new URL('../app/src/renderer/src/data.js', import.meta.url), 'utf8');
+  const loadMessages = functionSource(source, 'loadMessages');
+  const getSkillMd = functionSource(source, 'getSkillMd');
 
+  assert.match(source, /import\s*\{[^}]*shallowRef[^}]*\}\s*from ['"]vue['"]/s);
+  assert.match(source, /const messages = shallowRef\(\[\]\)/);
+  assert.match(source, /applySnapshot/);
+  assert.match(source, /isFollowingSessionTail/);
   assert.match(source, /captureSessionViewState/);
-  assert.match(source, /reconcileSessionMessages/);
   assert.match(source, /restoreSessionViewState/);
+  assert.match(source, /:key="msg\.uuid"\s+v-memo=/);
+  assert.match(source, /v-memo="\[msg, state\.query\]"/);
   assert.match(source, /loading\.value\s*=\s*!hadContent/);
   assert.match(source, /scrollRevision/);
-  assert.match(source, /restoreScroll:\s*scrollRevision\s*===\s*scrollRevisionAtLoad/);
+  assert.match(source, /restoreScroll:\s*scrollRevision\s*===\s*scrollRevisionBeforePatch/);
   assert.match(source, /requestAnimationFrame/);
   assert.match(source, /findLastMessageAtOrAbove/);
+  assert.match(loadMessages, /if \(hadContent && !reconciliation\.tailOnly\)/);
+  assert.match(loadMessages, /if \(!reconciliation\.changed\)/);
+  assert.ok(
+    loadMessages.indexOf('applySnapshot(') < loadMessages.indexOf('captureSessionViewState('),
+    'the expensive disclosure and anchor scan happens only after classifying the snapshot',
+  );
+  assert.ok(
+    loadMessages.indexOf('applySnapshot(') < loadMessages.indexOf('isFollowingSessionTail('),
+    'tail state is sampled immediately before the patch, after the async snapshot load',
+  );
+  assert.ok(
+    loadMessages.indexOf('isFollowingSessionTail(') < loadMessages.indexOf('messages.value = reconciliation.messages'),
+    'tail state is sampled before assigning the new timeline',
+  );
+  assert.ok(
+    loadMessages.indexOf('if (!reconciliation.changed)') < loadMessages.indexOf('await nextTick()'),
+    'a no-op snapshot returns before awaiting a timeline patch',
+  );
+  assert.doesNotMatch(getSkillMd, /messages\.value/);
+  assert.match(source, /getSkillMd\(msg\)/);
+  assert.match(dataSource, /messages:\s*markRaw\(assembledMessages\)/);
 });
 
 test('live totals and scroll position remain isolated across interleaved updates', () => {

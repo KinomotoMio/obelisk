@@ -9,10 +9,19 @@ function scrollItems(detail) {
   return arrayFrom(detail?.querySelectorAll?.(SCROLL_ITEM_SELECTOR));
 }
 
+export function isFollowingSessionTail(wrap, bottomThreshold = 50) {
+  if (!wrap) return false;
+  return wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < bottomThreshold;
+}
+
+export function restoreSessionTail({ wrap, followTail, restoreScroll = true } = {}) {
+  if (!wrap || !followTail || !restoreScroll) return;
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
 export function captureSessionViewState({ wrap, detail, bottomThreshold = 50 } = {}) {
   if (!wrap) return null;
-  const distanceFromBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight;
-  const followTail = distanceFromBottom < bottomThreshold;
+  const followTail = isFollowingSessionTail(wrap, bottomThreshold);
   const wrapTop = wrap.getBoundingClientRect?.().top || 0;
   const anchorElement = followTail
     ? null
@@ -62,7 +71,7 @@ export function restoreSessionViewState(snapshot, { wrap, detail, restoreScroll 
   if (!restoreScroll) return;
 
   if (snapshot.followTail) {
-    wrap.scrollTop = wrap.scrollHeight;
+    restoreSessionTail({ wrap, followTail: true });
     return;
   }
 
@@ -75,19 +84,6 @@ export function restoreSessionViewState(snapshot, { wrap, detail, restoreScroll 
   if (!anchorElement) return;
   const currentOffset = anchorElement.getBoundingClientRect().top - wrapTop;
   wrap.scrollTop += currentOffset - snapshot.anchor.offset;
-}
-
-export function reconcileSessionMessages(current = [], incoming = []) {
-  const currentByUuid = new Map(
-    current.filter(message => message?.uuid).map(message => [message.uuid, message]),
-  );
-  return incoming.map(message => {
-    if (!message?.uuid) return message;
-    const existing = currentByUuid.get(message.uuid);
-    if (!existing) return message;
-    Object.assign(existing, message);
-    return existing;
-  });
 }
 
 export function findLastMessageAtOrAbove(messages, bottomLine) {
