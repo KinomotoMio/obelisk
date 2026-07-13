@@ -12,7 +12,8 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
-    "test:electron": "electron-vite build && electron --no-sandbox tests/electron-concurrency.mjs"
+    "test:electron": "electron-vite build && electron --no-sandbox tests/electron-concurrency.mjs",
+    "test:electron:timeline": "electron-vite build && electron --no-sandbox tests/electron-session-virtualization.mjs"
   },
   "build": {
     "appId": "com.obelisk.app",
@@ -61,6 +62,7 @@
     "chokidar": "^4.0.3"
   },
   "devDependencies": {
+    "@tanstack/vue-virtual": "^3.13.32",
     "@types/better-sqlite3": "^7.6.13",
     "@vitejs/plugin-vue": "^5.0.0",
     "electron": "^33.0.0",
