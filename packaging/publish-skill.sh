@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SKILL_DIR="dist/obelisk-skill"
+SKILL_ARTIFACT="dist/obelisk-skill"
+SKILL_REPO="dist/obelisk-skill-repo"
 REMOTE="git@github.com:tommy0103/obelisk-skill.git"
 
-if [ ! -d "$SKILL_DIR/scripts" ]; then
+if [ ! -d "$SKILL_ARTIFACT/scripts" ]; then
   echo "Error: run 'npm run build:skill' first" >&2
   exit 1
 fi
 
-cp packaging/skill-README.md "$SKILL_DIR/README.md"
-cp packaging/skill-LICENSE "$SKILL_DIR/LICENSE"
+bash packaging/stage-skill-repo.sh "$SKILL_REPO" "$SKILL_ARTIFACT"
 
-cd "$SKILL_DIR"
+cd "$SKILL_REPO"
 rm -rf .git
 git init
 git remote add origin "$REMOTE"

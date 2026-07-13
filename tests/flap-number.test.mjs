@@ -24,16 +24,70 @@ test('flap state queues rapid updates without interrupting the active flap', () 
 
   assert.equal(state.from, '822');
   assert.equal(state.to, '823');
-  assert.equal(state.queued, '824');
+  assert.deepEqual(state.queued, ['824']);
 
   state = finishFlap(state);
   assert.equal(state.from, '823');
   assert.equal(state.to, '824');
+  assert.deepEqual(state.queued, []);
   assert.equal(state.animating, true);
 
   state = finishFlap(state);
   assert.equal(state.settled, '824');
   assert.equal(state.animating, false);
+});
+
+test('flap queue preserves every rapid numeric step in order', () => {
+  let state = createFlapState(907);
+  state = requestFlap(state, 908);
+  state = requestFlap(state, 909);
+  state = requestFlap(state, 910);
+
+  assert.equal(state.to, '908');
+  assert.deepEqual(state.queued, ['909', '910']);
+
+  state = finishFlap(state);
+  assert.equal(state.from, '908');
+  assert.equal(state.to, '909');
+  assert.deepEqual(state.queued, ['910']);
+});
+
+test('a small direct numeric jump expands into consecutive flap targets', () => {
+  const state = requestFlap(createFlapState(908), 910);
+
+  assert.equal(state.from, '908');
+  assert.equal(state.to, '909');
+  assert.deepEqual(state.queued, ['910']);
+});
+
+test('the flap queue stays bounded while retaining the latest target', () => {
+  let state = createFlapState(0);
+  for (let value = 1; value <= 10; value++) state = requestFlap(state, value);
+
+  assert.ok(state.queued.length <= 4);
+  assert.equal(state.queued.at(-1), '10');
+
+  while (state.animating) state = finishFlap(state);
+  assert.equal(state.settled, '10');
+});
+
+test('large numeric jumps go directly to the latest value', () => {
+  const state = requestFlap(createFlapState(908), 1000);
+
+  assert.equal(state.to, '1000');
+  assert.deepEqual(state.queued, []);
+});
+
+test('a reversing update discards stale forward targets', () => {
+  let state = createFlapState(907);
+  state = requestFlap(state, 908);
+  state = requestFlap(state, 909);
+  state = requestFlap(state, 907);
+
+  assert.deepEqual(state.queued, ['907']);
+  state = finishFlap(state);
+  assert.equal(state.from, '908');
+  assert.equal(state.to, '907');
 });
 
 test('the latest request clears an older queued value when it matches the active target', () => {
@@ -43,7 +97,7 @@ test('the latest request clears an older queued value when it matches the active
   state = requestFlap(state, 823);
 
   assert.equal(state.to, '823');
-  assert.equal(state.queued, null);
+  assert.deepEqual(state.queued, []);
   state = finishFlap(state);
   assert.equal(state.settled, '823');
   assert.equal(state.animating, false);

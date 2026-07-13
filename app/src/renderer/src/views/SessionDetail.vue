@@ -222,6 +222,11 @@ function onScroll(event) {
   });
 }
 
+function setMessagePosition(index, total) {
+  currentMsgIdx.value = index;
+  progressPct.value = total <= 1 ? 100 : Math.round((index / (total - 1)) * 100);
+}
+
 function updateScrollProgress() {
   if (!wrapRef.value || !detailRef.value) return;
   const msgs = detailRef.value.querySelectorAll('.msg, .wf-card, .skill-card');
@@ -235,9 +240,7 @@ function updateScrollProgress() {
   const navHeight = 52;
   const bottomLine = el.getBoundingClientRect().bottom - navHeight;
   const bottomMsgIdx = findLastMessageAtOrAbove(msgs, bottomLine);
-  currentMsgIdx.value = bottomMsgIdx;
-  const pct = msgs.length <= 1 ? 100 : Math.round((bottomMsgIdx / (msgs.length - 1)) * 100);
-  progressPct.value = pct;
+  setMessagePosition(bottomMsgIdx, msgs.length);
 }
 
 function navTo(target) {
@@ -250,7 +253,7 @@ function navTo(target) {
   else if (target === 'prev') idx = Math.max(0, currentMsgIdx.value - 1);
   else if (target === 'next') idx = Math.min(msgs.length - 1, currentMsgIdx.value + 1);
   else return;
-  currentMsgIdx.value = idx;
+  setMessagePosition(idx, msgs.length);
   navLock = true;
   const navHeight = 52;
   const el = wrapRef.value;

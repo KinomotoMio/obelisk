@@ -182,6 +182,9 @@ It starts at `references/recap/overview.md` and proceeds card-by-card:
 - `dist/obelisk-skill/` is produced by `npm run build:skill`. It is the
   install-ready skill artifact: readable plain JavaScript under `scripts/`,
   `SKILL.md`, references, and the skill package metadata.
+- Skill publishing stages that artifact at `skills/obelisk/` in the
+  `obelisk-skill` repository; only `README.md` and `LICENSE` remain at the
+  repository root for `npx skills` discovery.
 
 Both directories are generated and should not be edited by hand. The Electron
 app imports `packages/core/src/` directly so electron-vite can bundle Core.

@@ -186,3 +186,15 @@ test('live totals and scroll position remain isolated across interleaved updates
   assert.match(updateScrollProgress, /currentMsgIdx\.value\s*=/);
   assert.doesNotMatch(updateScrollProgress, /totalMsgs\.value\s*=/);
 });
+
+test('message navigation keeps the top progress bar aligned with the current position', () => {
+  const source = readFileSync(new URL('../app/src/renderer/src/views/SessionDetail.vue', import.meta.url), 'utf8');
+  const setMessagePosition = functionSource(source, 'setMessagePosition');
+  const updateScrollProgress = functionSource(source, 'updateScrollProgress');
+  const navTo = functionSource(source, 'navTo');
+
+  assert.match(setMessagePosition, /currentMsgIdx\.value\s*=\s*index/);
+  assert.match(setMessagePosition, /progressPct\.value\s*=/);
+  assert.match(updateScrollProgress, /setMessagePosition\(bottomMsgIdx,\s*msgs\.length\)/);
+  assert.match(navTo, /setMessagePosition\(idx,\s*msgs\.length\)/);
+});

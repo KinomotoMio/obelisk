@@ -36,11 +36,8 @@ jobs:
             git -C "$SKILL_DIR" remote add origin git@github.com:tommy0103/obelisk-skill.git
           }
 
-          # Replace all content with the fresh build
-          find "$SKILL_DIR" -mindepth 1 -not -path "$SKILL_DIR/.git*" -delete
-          cp -R dist/obelisk-skill/* "$SKILL_DIR/"
-          cp packaging/skill-README.md "$SKILL_DIR/README.md"
-          cp packaging/skill-LICENSE "$SKILL_DIR/LICENSE"
+          # Keep repository metadata, then stage the skill under skills/obelisk.
+          bash packaging/stage-skill-repo.sh "$SKILL_DIR"
 
           cd "$SKILL_DIR"
           git add -A
