@@ -9,6 +9,8 @@ import { getArgPreview, getToolIcon, renderTerminalTool } from '../tool-renderer
 import FlapNumber from '../components/FlapNumber.vue';
 import {
   captureSessionViewState,
+  createSessionDisclosureRegistry,
+  createSessionDomIndex,
   findLastMessageAtOrAbove,
   isFollowingSessionTail,
   restoreSessionTail,
@@ -41,6 +43,8 @@ let scrollRevision = 0;
 // DOM refs
 const wrapRef = ref(null);
 const detailRef = ref(null);
+let sessionDomIndex = createSessionDomIndex(null);
+let disclosureRegistry = createSessionDisclosureRegistry();
 
 // --- Load session on mount or when id changes ---
 const FONT_SIZE_KEY = 'obelisk:session-font-size';
@@ -138,6 +142,7 @@ onUnmounted(() => {
 watch(() => props.id, async (newId, oldId) => {
   if (newId && newId !== oldId) {
     messages.value = [];
+    disclosureRegistry = createSessionDisclosureRegistry();
     progressPct.value = 0;
     currentMsgIdx.value = 0;
     await loadMessages({ force: consumeGlobalSessionDirty(newId) });
@@ -167,7 +172,7 @@ async function loadMessages({ force = false } = {}) {
       if (hadContent && !reconciliation.tailOnly) {
         viewState = captureSessionViewState({
           wrap: wrapRef.value,
-          detail: detailRef.value,
+          domIndex: sessionDomIndex,
         });
       }
       messages.value = reconciliation.messages;
@@ -182,7 +187,8 @@ async function loadMessages({ force = false } = {}) {
   }
 
   await nextTick();
-  syncTotalMessages();
+  syncTimelineDom();
+  disclosureRegistry.reconcile(sessionDomIndex, reconciliation);
   if (!state.pendingFocusUuid) {
     if (reconciliation.tailOnly) {
       restoreSessionTail({
@@ -193,7 +199,7 @@ async function loadMessages({ force = false } = {}) {
     } else {
       restoreSessionViewState(viewState, {
         wrap: wrapRef.value,
-        detail: detailRef.value,
+        domIndex: sessionDomIndex,
         restoreScroll: scrollRevision === scrollRevisionBeforePatch,
       });
     }
@@ -231,9 +237,9 @@ const totalMsgs = ref(0);
 let navLock = false;
 let scrollFrame = null;
 
-function syncTotalMessages() {
-  const msgs = detailRef.value?.querySelectorAll('.msg, .wf-card, .skill-card');
-  totalMsgs.value = msgs?.length || 0;
+function syncTimelineDom() {
+  sessionDomIndex = createSessionDomIndex(detailRef.value);
+  totalMsgs.value = sessionDomIndex.items.length;
 }
 
 function onScroll(event) {
@@ -252,8 +258,8 @@ function setMessagePosition(index, total) {
 }
 
 function updateScrollProgress() {
-  if (!wrapRef.value || !detailRef.value) return;
-  const msgs = detailRef.value.querySelectorAll('.msg, .wf-card, .skill-card');
+  if (!wrapRef.value) return;
+  const msgs = sessionDomIndex.items;
   if (!msgs.length) {
     currentMsgIdx.value = 0;
     progressPct.value = 0;
@@ -268,8 +274,8 @@ function updateScrollProgress() {
 }
 
 function navTo(target) {
-  if (!wrapRef.value || !detailRef.value) return;
-  const msgs = detailRef.value.querySelectorAll('.msg, .wf-card, .skill-card');
+  if (!wrapRef.value) return;
+  const msgs = sessionDomIndex.items;
   if (!msgs.length) return;
   let idx;
   if (target === 'first') idx = 0;
@@ -290,24 +296,11 @@ function navTo(target) {
 }
 
 // --- Toggle helpers ---
-function toggleToolCall(event) {
-  const btn = event.currentTarget;
-  btn.closest('.msg-tool').classList.toggle('open');
-}
-
-function toggleSummary(event) {
-  const btn = event.currentTarget;
-  btn.closest('.msg-summary').classList.toggle('open');
-}
-
-function toggleThinking(event) {
-  const btn = event.currentTarget;
-  btn.closest('.msg-thinking').classList.toggle('open');
-}
-
-function toggleMeta(event) {
-  const btn = event.currentTarget;
-  btn.closest('.msg-meta-collapsed').classList.toggle('open');
+function toggleDisclosure(event, selector, className = 'open') {
+  const element = event.currentTarget?.closest(selector);
+  if (!element) return;
+  element.classList.toggle(className);
+  disclosureRegistry.remember(element);
 }
 
 // --- Full text loading ---
@@ -576,15 +569,11 @@ function toggleRaw(event) {
   const showing = raw.classList.toggle('show');
   pretty.classList.toggle('hidden', showing);
   btn?.classList.toggle('active', showing);
+  disclosureRegistry.remember(body.closest('[data-view-key]'));
 }
 
 function getSkillMd(msg) {
   return msg?._skillMd || null;
-}
-
-function toggleSkillMd(event) {
-  const card = event.target.closest('.skill-card');
-  if (card) card.classList.toggle('skill-md-open');
 }
 
 function getToolCallParsedInput(tc) {
@@ -637,14 +626,14 @@ function getToolCallParsedInput(tc) {
         </div>
 
         <!-- Message timeline -->
-        <div class="timeline">
+        <div class="timeline" v-memo="[messages, state.query]">
           <template v-for="msg in messages" :key="msg.uuid" v-memo="[msg, state.query]">
 
             <!-- Meta messages: collapsed system indicator -->
             <template v-if="msg.is_meta === 1">
-              <div class="msg meta" :data-uuid="msg.uuid">
+              <div class="msg meta" :data-uuid="msg.uuid" :data-message-uuid="msg.uuid">
                 <div class="msg-meta-collapsed" :data-view-key="`meta:${msg.uuid}`">
-                  <button class="meta-toggle" @click="toggleMeta">
+                  <button class="meta-toggle" @click="toggleDisclosure($event, '.msg-meta-collapsed')">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="meta-label">System</span>
                     <span class="meta-preview">{{ (msg.text || '').replace(/<[^>]+>/g, '').slice(0, 80) }}</span>
@@ -664,7 +653,7 @@ function getToolCallParsedInput(tc) {
             <!-- Workflow card (standalone, outside assistant bubble) -->
             <template v-else-if="!msg.type || msg.type !== 'user' ? (msg.tool_calls || []).find(tc => tc.name === 'Workflow' && tc.workflow) : false">
               <template v-if="(() => { const wfCall = (msg.tool_calls || []).find(tc => tc.name === 'Workflow' && tc.workflow); return wfCall && msg.type !== 'user'; })()">
-                <div class="wf-card" :data-uuid="msg.uuid">
+                <div class="wf-card" :data-uuid="msg.uuid" :data-message-uuid="msg.uuid">
                   <div class="wf-card-header">
                     <span class="wf-card-icon">&#x2699;</span>
                     <span class="wf-card-name">{{ ((msg.tool_calls || []).find(tc => tc.name === 'Workflow' && tc.workflow)).workflow.workflow_name || 'Workflow' }}</span>
@@ -705,12 +694,12 @@ function getToolCallParsedInput(tc) {
                 </div>
                 <!-- Other tool calls (non-workflow) for this message -->
                 <template v-if="(msg.tool_calls || []).filter(tc => !(tc.name === 'Workflow' && tc.workflow)).length > 0">
-                  <div class="msg assistant" :data-uuid="msg.uuid + '-tools'">
+                  <div class="msg assistant" :data-uuid="msg.uuid + '-tools'" :data-message-uuid="msg.uuid">
                     <div class="msg-tools">
                       <template v-for="tc in (msg.tool_calls || []).filter(tc2 => !(tc2.name === 'Workflow' && tc2.workflow))" :key="tc.id">
                         <!-- Render non-workflow tool calls -->
                         <div class="msg-tool" :class="{ 'is-error': tc.result && tc.result.is_error }" :data-view-key="`tool:${tc.id}`">
-                          <button class="toolcall-toggle" @click="toggleToolCall">
+                          <button class="toolcall-toggle" @click="toggleDisclosure($event, '.msg-tool')">
                             <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                             <span v-if="getToolIcon(tc.name)" class="tool-icon" v-html="getToolIcon(tc.name)"></span>
                             <span class="tool-name">{{ tc.name }}</span>
@@ -743,7 +732,7 @@ function getToolCallParsedInput(tc) {
 
             <!-- Skill card (standalone, like workflow) -->
             <template v-else-if="msg.type === 'assistant' && (msg.tool_calls || []).length === 1 && msg.tool_calls[0].name === 'Skill' && !msg.text">
-              <div class="skill-card" :data-uuid="msg.uuid" :data-view-key="`skill:${msg.uuid}`">
+              <div class="skill-card" :data-uuid="msg.uuid" :data-message-uuid="msg.uuid" :data-view-key="`skill:${msg.uuid}`">
                 <div class="skill-card-icon">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 6.5h6M5 9h4"/></svg>
                 </div>
@@ -754,7 +743,7 @@ function getToolCallParsedInput(tc) {
                   </div>
                   <div class="skill-card-args">{{ getToolCallParsedInput(msg.tool_calls[0]).args || '' }}</div>
                   <div v-if="getSkillMd(msg)" class="skill-card-md">
-                    <button class="skill-md-toggle" @click="toggleSkillMd">
+                    <button class="skill-md-toggle" @click="toggleDisclosure($event, '.skill-card', 'skill-md-open')">
                       <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                       <span>SKILL.md</span>
                     </button>
@@ -766,9 +755,9 @@ function getToolCallParsedInput(tc) {
 
             <!-- Standalone thinking message -->
             <template v-else-if="msg.type === 'assistant' && msg.content_type === 'thinking'">
-              <div class="msg assistant" :data-uuid="msg.uuid">
+              <div class="msg assistant" :data-uuid="msg.uuid" :data-message-uuid="msg.uuid">
                 <div class="msg-thinking" :data-view-key="`thinking:${msg.uuid}`">
-                  <button class="thinking-toggle" @click="toggleThinking">
+                  <button class="thinking-toggle" @click="toggleDisclosure($event, '.msg-thinking')">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="thinking-label">Thinking</span>
                   </button>
@@ -783,6 +772,7 @@ function getToolCallParsedInput(tc) {
                 class="msg"
                 :class="msg.type === 'user' ? 'user' : 'assistant'"
                 :data-uuid="msg.uuid"
+                :data-message-uuid="msg.uuid"
               >
                 <!-- Message header -->
                 <div class="msg-head">
@@ -792,7 +782,7 @@ function getToolCallParsedInput(tc) {
 
                 <!-- Attached thinking block (merged from preceding thinking messages) -->
                 <div v-if="msg._thinking" class="msg-thinking" :data-view-key="`thinking:${msg.uuid}`">
-                  <button class="thinking-toggle" @click="toggleThinking">
+                    <button class="thinking-toggle" @click="toggleDisclosure($event, '.msg-thinking')">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="thinking-label">Thinking</span>
                   </button>
@@ -827,7 +817,7 @@ function getToolCallParsedInput(tc) {
                     <!-- Agent/Task tool call (subagent) -->
                     <template v-else-if="tc.name === 'Agent' || tc.name === 'Task'">
                       <div class="msg-tool agent-call" :data-view-key="`tool:${tc.id}`">
-                        <button class="toolcall-toggle" @click="toggleToolCall">
+                        <button class="toolcall-toggle" @click="toggleDisclosure($event, '.msg-tool')">
                           <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                           <span class="tool-name">{{ getToolCallParsedInput(tc).subagent_type || getToolCallParsedInput(tc).agentType || 'Agent' }}</span>
                           <span class="tool-arg">{{ getToolCallParsedInput(tc).description || (getToolCallParsedInput(tc).prompt || '').slice(0, 80) }}</span>
@@ -854,7 +844,7 @@ function getToolCallParsedInput(tc) {
                     <!-- Workflow tool call (inside assistant bubble) -->
                     <template v-else-if="tc.name === 'Workflow'">
                       <div class="msg-tool agent-call" :data-view-key="`tool:${tc.id}`">
-                        <button class="toolcall-toggle" @click="toggleToolCall">
+                        <button class="toolcall-toggle" @click="toggleDisclosure($event, '.msg-tool')">
                           <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                           <span class="tool-name">Workflow</span>
                           <span class="tool-arg">{{ tc.workflow?.workflow_name || getToolCallParsedInput(tc).name || 'Workflow' }}</span>
@@ -902,7 +892,7 @@ function getToolCallParsedInput(tc) {
                     <!-- Generic tool call -->
                     <template v-else>
                       <div class="msg-tool" :class="{ 'is-error': tc.result && tc.result.is_error }" :data-view-key="`tool:${tc.id}`">
-                        <button class="toolcall-toggle" @click="toggleToolCall">
+                        <button class="toolcall-toggle" @click="toggleDisclosure($event, '.msg-tool')">
                           <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                           <span v-if="getToolIcon(tc.name)" class="tool-icon" v-html="getToolIcon(tc.name)"></span>
                           <span class="tool-name">{{ tc.name }}</span>
@@ -933,7 +923,7 @@ function getToolCallParsedInput(tc) {
 
                 <!-- Summary block -->
                 <div v-if="msg.summary" class="msg-summary" :data-view-key="`summary:${msg.uuid}`">
-                  <button class="summary-toggle" @click="toggleSummary">
+                  <button class="summary-toggle" @click="toggleDisclosure($event, '.msg-summary')">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="label">Session summary</span>
                     <span class="source">{{ msg.summary.source || '' }}</span>

@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 
 import {
   captureSessionViewState,
+  createSessionDisclosureRegistry,
+  createSessionDomIndex,
   findLastMessageAtOrAbove,
   isFollowingSessionTail,
   restoreSessionTail,
@@ -52,6 +54,10 @@ function detail(disclosures, scrollItems) {
   };
 }
 
+function domIndex(items) {
+  return createSessionDomIndex(detail([], items));
+}
+
 function wrap({ scrollTop, scrollHeight, clientHeight, top = 0 }) {
   return {
     scrollTop,
@@ -76,39 +82,53 @@ function functionSource(source, name) {
   assert.fail(`${name} should have a complete function body`);
 }
 
-test('session refresh restores disclosure state and the visible scroll anchor', () => {
-  const oldTool = disclosure('tool:call-1', ['open'], { rawOpen: true });
+test('session refresh restores the visible scroll anchor from cached DOM indexes', () => {
   const oldWrap = wrap({ scrollTop: 500, scrollHeight: 2000, clientHeight: 600 });
   const snapshot = captureSessionViewState({
     wrap: oldWrap,
-    detail: detail([oldTool], [scrollItem('msg-1', -20, 180)]),
+    domIndex: domIndex([scrollItem('msg-1', -20, 180)]),
   });
 
-  const newTool = disclosure('tool:call-1');
   const newWrap = wrap({ scrollTop: 0, scrollHeight: 2200, clientHeight: 600 });
   restoreSessionViewState(snapshot, {
     wrap: newWrap,
-    detail: detail([newTool], [scrollItem('msg-1', 80, 280)]),
+    domIndex: domIndex([scrollItem('msg-1', 80, 280)]),
   });
 
-  assert.equal(newTool.classList.contains('open'), true);
-  assert.equal(newTool.raw.classList.contains('show'), true);
-  assert.equal(newTool.pretty.classList.contains('hidden'), true);
-  assert.equal(newTool.button.classList.contains('active'), true);
   assert.equal(newWrap.scrollTop, 600, '100 px inserted above the anchor is compensated');
+});
+
+test('session refresh falls back to the owning message when its rendered root changes', () => {
+  const oldRoot = scrollItem('message-1-tools', -20, 180);
+  oldRoot.dataset.messageUuid = 'message-1';
+  const snapshot = captureSessionViewState({
+    wrap: wrap({ scrollTop: 500, scrollHeight: 2000, clientHeight: 600 }),
+    domIndex: domIndex([oldRoot]),
+  });
+
+  const newRoot = scrollItem('message-1', 80, 280);
+  newRoot.dataset.messageUuid = 'message-1';
+  const newWrap = wrap({ scrollTop: 0, scrollHeight: 2200, clientHeight: 600 });
+  restoreSessionViewState(snapshot, {
+    wrap: newWrap,
+    domIndex: domIndex([newRoot]),
+  });
+
+  assert.equal(snapshot.anchor.messageUuid, 'message-1');
+  assert.equal(newWrap.scrollTop, 600, 'message identity preserves the anchor across render shapes');
 });
 
 test('session refresh follows appended content only when already at the tail', () => {
   const oldWrap = wrap({ scrollTop: 1390, scrollHeight: 2000, clientHeight: 600 });
   const snapshot = captureSessionViewState({
     wrap: oldWrap,
-    detail: detail([], [scrollItem('msg-last', 300, 590)]),
+    domIndex: domIndex([scrollItem('msg-last', 300, 590)]),
   });
   const newWrap = wrap({ scrollTop: 0, scrollHeight: 2400, clientHeight: 600 });
 
   restoreSessionViewState(snapshot, {
     wrap: newWrap,
-    detail: detail([], [scrollItem('msg-last', 300, 590)]),
+    domIndex: domIndex([scrollItem('msg-last', 300, 590)]),
   });
 
   assert.equal(newWrap.scrollTop, 2400);
@@ -142,21 +162,18 @@ test('tail append preserves an active reader and follows only without newer scro
 });
 
 test('session refresh never restores an old anchor over newer user scrolling', () => {
-  const oldTool = disclosure('tool:call-1', ['open']);
   const snapshot = captureSessionViewState({
     wrap: wrap({ scrollTop: 500, scrollHeight: 2000, clientHeight: 600 }),
-    detail: detail([oldTool], [scrollItem('msg-1', -20, 180)]),
+    domIndex: domIndex([scrollItem('msg-1', -20, 180)]),
   });
-  const newTool = disclosure('tool:call-1');
   const userScrolledWrap = wrap({ scrollTop: 800, scrollHeight: 2200, clientHeight: 600 });
 
   restoreSessionViewState(snapshot, {
     wrap: userScrolledWrap,
-    detail: detail([newTool], [scrollItem('msg-1', 80, 280)]),
+    domIndex: domIndex([scrollItem('msg-1', 80, 280)]),
     restoreScroll: false,
   });
 
-  assert.equal(newTool.classList.contains('open'), true, 'disclosure state still restores');
   assert.equal(userScrolledWrap.scrollTop, 800, 'newer user scroll wins over stale refresh state');
 });
 
@@ -173,18 +190,162 @@ test('scroll progress locates the visible message without scanning the full sess
   assert.ok(layoutReads < 20, `expected logarithmic layout reads, got ${layoutReads}`);
 });
 
+test('view-state capture locates its anchor logarithmically from the DOM index', () => {
+  let layoutReads = 0;
+  const items = Array.from({ length: 4096 }, (_, index) => ({
+    dataset: { uuid: `message-${index}` },
+    getBoundingClientRect() {
+      layoutReads++;
+      return { top: index * 20, bottom: (index + 1) * 20 };
+    },
+  }));
+
+  const snapshot = captureSessionViewState({
+    wrap: wrap({ scrollTop: 20000, scrollHeight: 90000, clientHeight: 600, top: 30000 }),
+    domIndex: {
+      items,
+      byUuid: new Map(items.map(item => [item.dataset.uuid, item])),
+      byMessageUuid: new Map(),
+    },
+  });
+
+  assert.equal(snapshot.anchor.uuid, 'message-1500');
+  assert.ok(layoutReads < 20, `expected logarithmic anchor reads, got ${layoutReads}`);
+});
+
+test('session DOM index scans the timeline once and groups roots by message UUID', () => {
+  let queries = 0;
+  const first = scrollItem('render-1', 0, 20);
+  first.dataset.messageUuid = 'message-1';
+  const second = scrollItem('render-2', 20, 40);
+  second.dataset.messageUuid = 'message-2';
+  const secondTools = scrollItem('render-2-tools', 40, 60);
+  secondTools.dataset.messageUuid = 'message-2';
+  const index = createSessionDomIndex({
+    querySelectorAll(selector) {
+      queries++;
+      assert.equal(selector, '.msg[data-uuid], .wf-card[data-uuid], .skill-card[data-uuid]');
+      return [first, second, secondTools];
+    },
+  });
+
+  assert.equal(queries, 1);
+  assert.deepEqual(index.items, [first, second, secondTools]);
+  assert.equal(index.byUuid.get('render-2-tools'), secondTools);
+  assert.deepEqual(index.byMessageUuid.get('message-2'), [second, secondTools]);
+
+  findLastMessageAtOrAbove(index.items, 35);
+  findLastMessageAtOrAbove(index.items, 55);
+  assert.equal(queries, 1, 'scroll reads reuse the index instead of querying the DOM');
+});
+
+test('disclosure registry restores only message roots replaced by the snapshot', () => {
+  const previous = disclosure('tool:call-1', ['open'], { rawOpen: true });
+  previous.closest = selector => selector === '[data-message-uuid]'
+    ? { dataset: { messageUuid: 'message-1' } }
+    : null;
+  const registry = createSessionDisclosureRegistry();
+  registry.remember(previous);
+
+  const replacement = disclosure('tool:call-1');
+  const updatedRoot = {
+    matches: () => false,
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-view-key]');
+      return [replacement];
+    },
+  };
+  const untouchedRoot = {
+    matches: () => false,
+    querySelectorAll() {
+      assert.fail('unchanged message roots must not be scanned');
+    },
+  };
+
+  registry.reconcile({
+    byMessageUuid: new Map([
+      ['message-1', [updatedRoot]],
+      ['message-2', [untouchedRoot]],
+    ]),
+  }, {
+    updatedIds: ['message-1'],
+    removedIds: [],
+  });
+
+  assert.equal(replacement.classList.contains('open'), true);
+  assert.equal(replacement.raw.classList.contains('show'), true);
+  assert.equal(replacement.pretty.classList.contains('hidden'), true);
+  assert.equal(replacement.button.classList.contains('active'), true);
+});
+
+test('removed messages discard their remembered disclosure state', () => {
+  const previous = disclosure('tool:call-1', ['open']);
+  previous.closest = () => ({ dataset: { messageUuid: 'message-1' } });
+  const registry = createSessionDisclosureRegistry();
+  registry.remember(previous);
+  registry.reconcile({ byMessageUuid: new Map() }, {
+    updatedIds: [],
+    removedIds: ['message-1'],
+  });
+
+  const replacement = disclosure('tool:call-1');
+  registry.reconcile({
+    byMessageUuid: new Map([['message-1', [{
+      matches: () => false,
+      querySelectorAll: () => [replacement],
+    }]]]),
+  }, {
+    updatedIds: ['message-1'],
+    removedIds: [],
+  });
+
+  assert.equal(replacement.classList.contains('open'), false);
+});
+
+test('disclosure registry restores root-level skill cards', () => {
+  const previous = disclosure('skill:message-1', ['skill-md-open']);
+  previous.closest = () => ({ dataset: { messageUuid: 'message-1' } });
+  const registry = createSessionDisclosureRegistry();
+  registry.remember(previous);
+
+  const replacement = disclosure('skill:message-1');
+  replacement.matches = selector => selector === '[data-view-key]';
+  replacement.dataset.messageUuid = 'message-1';
+  registry.reconcile({
+    byMessageUuid: new Map([['message-1', [replacement]]]),
+  }, {
+    updatedIds: ['message-1'],
+    removedIds: [],
+  });
+
+  assert.equal(replacement.classList.contains('skill-md-open'), true);
+});
+
+test('view-state capture and restore do not query the full DOM', () => {
+  const source = readFileSync(new URL('../app/src/renderer/src/session-view-state.mjs', import.meta.url), 'utf8');
+  const capture = functionSource(source, 'captureSessionViewState');
+  const restore = functionSource(source, 'restoreSessionViewState');
+
+  assert.doesNotMatch(capture, /querySelectorAll|scrollItems\(|\bdetail\b/);
+  assert.doesNotMatch(restore, /querySelectorAll|scrollItems\(|\bdetail\b/);
+});
+
 test('SessionDetail isolates unchanged rows and gives tail appends a scan-free path', () => {
   const source = readFileSync(new URL('../app/src/renderer/src/views/SessionDetail.vue', import.meta.url), 'utf8');
   const dataSource = readFileSync(new URL('../app/src/renderer/src/data.js', import.meta.url), 'utf8');
   const loadMessages = functionSource(source, 'loadMessages');
   const getSkillMd = functionSource(source, 'getSkillMd');
+  const toggleDisclosure = functionSource(source, 'toggleDisclosure');
 
   assert.match(source, /import\s*\{[^}]*shallowRef[^}]*\}\s*from ['"]vue['"]/s);
   assert.match(source, /const messages = shallowRef\(\[\]\)/);
   assert.match(source, /applySnapshot/);
   assert.match(source, /isFollowingSessionTail/);
   assert.match(source, /captureSessionViewState/);
+  assert.match(source, /createSessionDomIndex/);
+  assert.match(source, /createSessionDisclosureRegistry/);
   assert.match(source, /restoreSessionViewState/);
+  assert.match(source, /class="timeline"\s+v-memo="\[messages, state\.query\]"/);
   assert.match(source, /:key="msg\.uuid"\s+v-memo=/);
   assert.match(source, /v-memo="\[msg, state\.query\]"/);
   assert.match(source, /loading\.value\s*=\s*!hadContent/);
@@ -193,6 +354,8 @@ test('SessionDetail isolates unchanged rows and gives tail appends a scan-free p
   assert.match(source, /requestAnimationFrame/);
   assert.match(source, /findLastMessageAtOrAbove/);
   assert.match(loadMessages, /if \(hadContent && !reconciliation\.tailOnly\)/);
+  assert.match(loadMessages, /domIndex:\s*sessionDomIndex/);
+  assert.match(loadMessages, /disclosureRegistry\.reconcile\(sessionDomIndex, reconciliation\)/);
   assert.match(loadMessages, /if \(!reconciliation\.changed\)/);
   assert.ok(
     loadMessages.indexOf('applySnapshot(') < loadMessages.indexOf('captureSessionViewState('),
@@ -212,20 +375,29 @@ test('SessionDetail isolates unchanged rows and gives tail appends a scan-free p
   );
   assert.doesNotMatch(getSkillMd, /messages\.value/);
   assert.match(source, /getSkillMd\(msg\)/);
+  assert.match(toggleDisclosure, /disclosureRegistry\.remember\(element\)/);
+  assert.ok(
+    (source.match(/:data-message-uuid="msg\.uuid"/g) || []).length >= 6,
+    'every timeline root identifies its owning message for targeted disclosure restore',
+  );
   assert.match(dataSource, /messages:\s*markRaw\(assembledMessages\)/);
 });
 
 test('live totals and scroll position remain isolated across interleaved updates', () => {
   const source = readFileSync(new URL('../app/src/renderer/src/views/SessionDetail.vue', import.meta.url), 'utf8');
   const loadMessages = functionSource(source, 'loadMessages');
-  const syncTotalMessages = functionSource(source, 'syncTotalMessages');
+  const syncTimelineDom = functionSource(source, 'syncTimelineDom');
   const updateScrollProgress = functionSource(source, 'updateScrollProgress');
+  const navTo = functionSource(source, 'navTo');
 
-  assert.match(loadMessages, /await nextTick\(\);[\s\S]*syncTotalMessages\(\)/);
-  assert.match(syncTotalMessages, /totalMsgs\.value\s*=/);
-  assert.doesNotMatch(syncTotalMessages, /currentMsgIdx\.value\s*=/);
+  assert.match(loadMessages, /await nextTick\(\);[\s\S]*syncTimelineDom\(\)/);
+  assert.match(syncTimelineDom, /createSessionDomIndex\(detailRef\.value\)/);
+  assert.match(syncTimelineDom, /totalMsgs\.value\s*=/);
+  assert.doesNotMatch(syncTimelineDom, /currentMsgIdx\.value\s*=/);
   assert.match(updateScrollProgress, /currentMsgIdx\.value\s*=/);
   assert.doesNotMatch(updateScrollProgress, /totalMsgs\.value\s*=/);
+  assert.doesNotMatch(updateScrollProgress, /querySelectorAll/);
+  assert.doesNotMatch(navTo, /querySelectorAll/);
 });
 
 test('message navigation keeps the top progress bar aligned with the current position', () => {
