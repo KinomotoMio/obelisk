@@ -22,7 +22,7 @@ function fixtureUnit() {
   const lines = [
     { type: 'ai-title', aiTitle: 'Persist Session' },
     { uuid: 'u1', type: 'user', timestamp: '2026-06-10T10:00:00Z', cwd: '/proj', message: { role: 'user', content: 'hi' } },
-    { uuid: 'a1', type: 'assistant', timestamp: '2026-06-10T10:00:05Z', message: { role: 'assistant', model: 'm', content: [{ type: 'tool_use', id: 'tc1', name: 'Read', input: { file_path: '/f' } }] } },
+    { uuid: 'a1', type: 'assistant', timestamp: '2026-06-10T10:00:05Z', message: { role: 'assistant', model: 'm', content: [{ type: 'tool_use', id: 'tc1', name: 'Read', input: { file_path: '/f' } }], usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 20, cache_read_input_tokens: 30 } } },
     { type: 'system', subtype: 'turn_duration', parentUuid: 'a1', durationMs: 999 },
     { uuid: 'u2', type: 'user', timestamp: '2026-06-10T10:00:10Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'body', is_error: false }] } },
     { type: 'system', subtype: 'away_summary', uuid: 's1', timestamp: '2026-06-10T10:00:11Z', content: 'sum' },
@@ -56,6 +56,9 @@ test('persist writes all record kinds from one claude parse', () => {
 
   // turn_duration applied via targeted UPDATE.
   assert.equal(db.prepare('SELECT turn_duration_ms FROM messages WHERE uuid=?').get('a1').turn_duration_ms, 999);
+  const usage = db.prepare('SELECT input_tokens, output_tokens FROM messages WHERE uuid=?').get('a1');
+  assert.equal(usage.input_tokens, 60);
+  assert.equal(usage.output_tokens, 5);
 
   // Cursor persisted into index_state (mtime:lines → two columns).
   const state = db.prepare('SELECT lines_processed FROM index_state WHERE jsonl_path=?').get(unit.key);

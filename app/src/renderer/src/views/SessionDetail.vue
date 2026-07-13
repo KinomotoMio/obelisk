@@ -4,7 +4,14 @@ import { useRouter, useRoute } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
 import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
 import { clearSessionDirty, consumeGlobalSessionDirty } from '../session-live.mjs';
+import { getArgPreview, getToolIcon, renderTerminalTool } from '../tool-renderer.js';
 import FlapNumber from '../components/FlapNumber.vue';
+import {
+  captureSessionViewState,
+  findLastMessageAtOrAbove,
+  reconcileSessionMessages,
+  restoreSessionViewState,
+} from '../session-view-state.mjs';
 import {
   escapeHTML,
   fmtRelative,
@@ -27,6 +34,7 @@ const progressPct = ref(0);
 const active = ref(false);
 let removeSessionUpdated = null;
 let keydownAttached = false;
+let scrollRevision = 0;
 
 // DOM refs
 const wrapRef = ref(null);
@@ -119,6 +127,8 @@ onDeactivated(() => {
 onUnmounted(() => {
   active.value = false;
   detachKeydown();
+  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+  scrollFrame = null;
   removeSessionUpdated?.();
   removeSessionUpdated = null;
 });
@@ -135,33 +145,36 @@ watch(() => props.id, async (newId, oldId) => {
 async function loadMessages({ force = false } = {}) {
   if (!props.id) return;
   const hadContent = messages.value.length > 0;
-  const wasAtBottom = hadContent && wrapRef.value && (wrapRef.value.scrollHeight - wrapRef.value.scrollTop - wrapRef.value.clientHeight) < 50;
-  const prevScrollTop = wrapRef.value?.scrollTop || 0;
+  const viewState = hadContent
+    ? captureSessionViewState({ wrap: wrapRef.value, detail: detailRef.value })
+    : null;
+  const scrollRevisionAtLoad = scrollRevision;
 
-  loading.value = true;
+  loading.value = !hadContent;
   try {
     const s = state.sessions.find(x => x.id === props.id);
     if (s && (force || !s.messages || s.messages.length === 0)) {
-      const loaded = await loadSessionDetail(props.id);
-      if (loaded) Object.assign(s, loaded);
+      await loadSessionDetail(props.id);
     }
     const latest = state.sessions.find(x => x.id === props.id);
-    messages.value = latest?.messages || [];
+    const incoming = latest?.messages || [];
+    messages.value = hadContent
+      ? reconcileSessionMessages(messages.value, incoming)
+      : incoming;
   } finally {
     loading.value = false;
   }
 
-  nextTick(() => {
-    if (!wrapRef.value) return;
-    if (!state.pendingFocusUuid) {
-      if (wasAtBottom) {
-        wrapRef.value.scrollTop = wrapRef.value.scrollHeight;
-      } else {
-        wrapRef.value.scrollTop = prevScrollTop;
-      }
-    }
+  await nextTick();
+  syncTotalMessages();
+  if (!state.pendingFocusUuid) {
+    restoreSessionViewState(viewState, {
+      wrap: wrapRef.value,
+      detail: detailRef.value,
+      restoreScroll: scrollRevision === scrollRevisionAtLoad,
+    });
     onScroll();
-  });
+  }
 
   // Focus pending uuid if any
   if (state.pendingFocusUuid) {
@@ -192,22 +205,36 @@ async function focusPendingMessage() {
 const currentMsgIdx = ref(0);
 const totalMsgs = ref(0);
 let navLock = false;
+let scrollFrame = null;
 
-function onScroll() {
+function syncTotalMessages() {
+  const msgs = detailRef.value?.querySelectorAll('.msg, .wf-card, .skill-card');
+  totalMsgs.value = msgs?.length || 0;
+}
+
+function onScroll(event) {
+  if (event) scrollRevision++;
   if (navLock) return;
+  if (scrollFrame !== null) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = null;
+    updateScrollProgress();
+  });
+}
+
+function updateScrollProgress() {
   if (!wrapRef.value || !detailRef.value) return;
   const msgs = detailRef.value.querySelectorAll('.msg, .wf-card, .skill-card');
-  if (!msgs.length) return;
-  totalMsgs.value = msgs.length;
+  if (!msgs.length) {
+    currentMsgIdx.value = 0;
+    progressPct.value = 0;
+    return;
+  }
 
   const el = wrapRef.value;
   const navHeight = 52;
   const bottomLine = el.getBoundingClientRect().bottom - navHeight;
-  let bottomMsgIdx = 0;
-  for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].getBoundingClientRect().bottom <= bottomLine) bottomMsgIdx = i;
-    else break;
-  }
+  const bottomMsgIdx = findLastMessageAtOrAbove(msgs, bottomLine);
   currentMsgIdx.value = bottomMsgIdx;
   const pct = msgs.length <= 1 ? 100 : Math.round((bottomMsgIdx / (msgs.length - 1)) * 100);
   progressPct.value = pct;
@@ -283,27 +310,6 @@ function navigateToSubagent(agentId, description) {
 
 // --- Render helpers (produce raw HTML strings like the vanilla version) ---
 
-function getArgPreview(tc) {
-  try {
-    const j = JSON.parse(tc.input_json || '{}');
-    if (j.file_path) return j.file_path;
-    if (j.command) return j.command;
-    if (j.path) return j.path;
-    if (j.query) return j.query;
-    if (j.description) return j.description;
-    if (j.pattern) return j.pattern;
-    if (j.url) return j.url;
-    if (j.name) return j.name;
-    if (j.title) return j.title;
-    for (const k of Object.keys(j)) {
-      if (typeof j[k] === 'string' && j[k].length < 90) return j[k];
-    }
-    return JSON.stringify(j).slice(0, 90);
-  } catch {
-    return (tc.input_json || '').slice(0, 90);
-  }
-}
-
 function formatToolInput(tc) {
   try {
     const j = JSON.parse(tc.input_json || '{}');
@@ -315,17 +321,6 @@ function formatToolInput(tc) {
 
 function escapeH(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-const TOOL_ICONS = {
-  Bash: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="1.2"/><path d="M5 7l2 1.5-2 1.5M8.5 10.5h2.5"/></svg>',
-  Read: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M3.5 2h6l3 3v9a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M9.5 2v3h3"/></svg>',
-  Edit: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M3.5 2h6l3 3v9a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M9.5 2v3h3"/><path d="M6 10l4-4M6.5 10.5l-1.2 1.4 1.4-1.2"/></svg>',
-  Write: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"><path d="M3.5 2h6l3 3v9a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M9.5 2v3h3"/><path d="M6 9.5h4M6 11.5h2.5"/></svg>',
-};
-
-function getToolIcon(name) {
-  return TOOL_ICONS[name] || '';
 }
 
 function renderPrettyTool(tc) {
@@ -367,10 +362,8 @@ function renderPrettyTool(tc) {
     return diff + chip;
   }
 
-  if (tc.name === 'Bash') {
-    const desc = args.description ? `<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;">${escapeH(args.description)}</div>` : '';
-    return desc + renderTerminal(args.command || '', out, isError);
-  }
+  const terminal = renderTerminalTool(tc.name, args, out, isError);
+  if (terminal !== null) return terminal;
 
   return `<div class="body-section"><div class="body-label">Input</div>${renderFieldGrid(args)}</div>` +
     (out ? `<div class="body-section" style="margin-top:12px;"><div class="body-label">Output</div>${renderOutput(out, isError)}</div>` : '');
@@ -428,16 +421,6 @@ function renderDiff(oldStr, newStr) {
   return `<div class="diff-view">
     <div class="diff-view-head"><span class="label">Diff</span><div class="stats"><span class="stat-add">+${adds}</span><span class="stat-del">−${dels}</span></div></div>
     <div class="diff-body">${rows}</div>
-  </div>`;
-}
-
-function renderTerminal(command, output, isError) {
-  let formatted = escapeH(output);
-  formatted = formatted.replace(/(✓[^\n]*)/g, '<span style="color:#4ade80">$1</span>');
-  formatted = formatted.replace(/(✗[^\n]*|FAIL[^\n]*|Error:[^\n]*)/g, '<span style="color:#f87171">$1</span>');
-  return `<div class="terminal-view">
-    <div class="terminal-prompt-line"><span class="prompt-marker">$</span><span class="prompt-cmd">${escapeH(command)}</span></div>
-    ${output ? `<div class="terminal-divider"></div><div class="terminal-output ${isError ? 'is-error' : ''}">${formatted}</div>` : ''}
   </div>`;
 }
 
@@ -642,7 +625,7 @@ function getToolCallParsedInput(tc) {
             <!-- Meta messages: collapsed system indicator -->
             <template v-if="msg.is_meta === 1">
               <div class="msg meta" :data-uuid="msg.uuid">
-                <div class="msg-meta-collapsed">
+                <div class="msg-meta-collapsed" :data-view-key="`meta:${msg.uuid}`">
                   <button class="meta-toggle" @click="toggleMeta">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="meta-label">System</span>
@@ -708,7 +691,7 @@ function getToolCallParsedInput(tc) {
                     <div class="msg-tools">
                       <template v-for="tc in (msg.tool_calls || []).filter(tc2 => !(tc2.name === 'Workflow' && tc2.workflow))" :key="tc.id">
                         <!-- Render non-workflow tool calls -->
-                        <div class="msg-tool" :class="{ 'is-error': tc.result && tc.result.is_error }">
+                        <div class="msg-tool" :class="{ 'is-error': tc.result && tc.result.is_error }" :data-view-key="`tool:${tc.id}`">
                           <button class="toolcall-toggle" @click="toggleToolCall">
                             <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                             <span v-if="getToolIcon(tc.name)" class="tool-icon" v-html="getToolIcon(tc.name)"></span>
@@ -742,7 +725,7 @@ function getToolCallParsedInput(tc) {
 
             <!-- Skill card (standalone, like workflow) -->
             <template v-else-if="msg.type === 'assistant' && (msg.tool_calls || []).length === 1 && msg.tool_calls[0].name === 'Skill' && !msg.text">
-              <div class="skill-card" :data-uuid="msg.uuid">
+              <div class="skill-card" :data-uuid="msg.uuid" :data-view-key="`skill:${msg.uuid}`">
                 <div class="skill-card-icon">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 6.5h6M5 9h4"/></svg>
                 </div>
@@ -766,7 +749,7 @@ function getToolCallParsedInput(tc) {
             <!-- Standalone thinking message -->
             <template v-else-if="msg.type === 'assistant' && msg.content_type === 'thinking'">
               <div class="msg assistant" :data-uuid="msg.uuid">
-                <div class="msg-thinking">
+                <div class="msg-thinking" :data-view-key="`thinking:${msg.uuid}`">
                   <button class="thinking-toggle" @click="toggleThinking">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="thinking-label">Thinking</span>
@@ -790,7 +773,7 @@ function getToolCallParsedInput(tc) {
                 </div>
 
                 <!-- Attached thinking block (merged from preceding thinking messages) -->
-                <div v-if="msg._thinking" class="msg-thinking">
+                <div v-if="msg._thinking" class="msg-thinking" :data-view-key="`thinking:${msg.uuid}`">
                   <button class="thinking-toggle" @click="toggleThinking">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="thinking-label">Thinking</span>
@@ -825,7 +808,7 @@ function getToolCallParsedInput(tc) {
 
                     <!-- Agent/Task tool call (subagent) -->
                     <template v-else-if="tc.name === 'Agent' || tc.name === 'Task'">
-                      <div class="msg-tool agent-call">
+                      <div class="msg-tool agent-call" :data-view-key="`tool:${tc.id}`">
                         <button class="toolcall-toggle" @click="toggleToolCall">
                           <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                           <span class="tool-name">{{ getToolCallParsedInput(tc).subagent_type || getToolCallParsedInput(tc).agentType || 'Agent' }}</span>
@@ -852,7 +835,7 @@ function getToolCallParsedInput(tc) {
 
                     <!-- Workflow tool call (inside assistant bubble) -->
                     <template v-else-if="tc.name === 'Workflow'">
-                      <div class="msg-tool agent-call">
+                      <div class="msg-tool agent-call" :data-view-key="`tool:${tc.id}`">
                         <button class="toolcall-toggle" @click="toggleToolCall">
                           <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                           <span class="tool-name">Workflow</span>
@@ -900,7 +883,7 @@ function getToolCallParsedInput(tc) {
 
                     <!-- Generic tool call -->
                     <template v-else>
-                      <div class="msg-tool" :class="{ 'is-error': tc.result && tc.result.is_error }">
+                      <div class="msg-tool" :class="{ 'is-error': tc.result && tc.result.is_error }" :data-view-key="`tool:${tc.id}`">
                         <button class="toolcall-toggle" @click="toggleToolCall">
                           <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                           <span v-if="getToolIcon(tc.name)" class="tool-icon" v-html="getToolIcon(tc.name)"></span>
@@ -931,7 +914,7 @@ function getToolCallParsedInput(tc) {
                 </div>
 
                 <!-- Summary block -->
-                <div v-if="msg.summary" class="msg-summary">
+                <div v-if="msg.summary" class="msg-summary" :data-view-key="`summary:${msg.uuid}`">
                   <button class="summary-toggle" @click="toggleSummary">
                     <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
                     <span class="label">Session summary</span>

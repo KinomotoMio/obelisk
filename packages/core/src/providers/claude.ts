@@ -27,6 +27,24 @@ function cursorToSkip(cursor: Cursor): number {
 }
 
 export const name = 'claude';
+export const CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER = '__claude_input_tokens_include_cache_v1__';
+
+function totalInputTokens(usage: Record<string, unknown>): number | null {
+  const fields = [
+    'input_tokens',
+    'cache_creation_input_tokens',
+    'cache_read_input_tokens',
+  ];
+  let seen = false;
+  let total = 0;
+  for (const field of fields) {
+    const value = usage[field];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    seen = true;
+    total += value;
+  }
+  return seen ? total : null;
+}
 
 export function discover(_ctx: DiscoverContext): IndexUnit[] {
   return discoverJsonlFiles().map((f: any) => ({
@@ -92,7 +110,7 @@ export function* parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, 
         parent_uuid: obj.parentUuid || null, timestamp: ts, role: msg.role || obj.type,
         text, content_type: contentType, is_meta: (isMeta ? 1 : 0), model: msg.model || null,
         is_sidechain: obj.isSidechain ? 1 : 0, agent_id: aid,
-        input_tokens: usage.input_tokens || null, output_tokens: usage.output_tokens || null,
+        input_tokens: totalInputTokens(usage), output_tokens: usage.output_tokens || null,
         cwd: obj.cwd || null, skill: obj.attributionSkill || null, source: 'claude',
       });
     }

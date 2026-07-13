@@ -42,11 +42,11 @@ For live app refresh, Obelisk watches `~/.claude/projects` and `~/.codex/session
 You can use obelisk like:
 
 ```
-/obelisk-skill 上次 auth bug 最后到底改了哪些文件，为什么这么改
-/obelisk-skill 这个文件最近在哪些 sessions 里被反复修改
-/obelisk-skill 找出最近失败的 tool calls，它们分别发生在哪些任务里
-/obelisk-skill 那个 review workflow 的 subagents 各自结论是什么
-/obelisk-skill recap this week
+/obelisk 上次 auth bug 最后到底改了哪些文件，为什么这么改
+/obelisk 这个文件最近在哪些 sessions 里被反复修改
+/obelisk 找出最近失败的 tool calls，它们分别发生在哪些任务里
+/obelisk 那个 review workflow 的 subagents 各自结论是什么
+/obelisk recap this week
 ```
 
 ### Install
@@ -60,7 +60,7 @@ Or manually: copy `obelisk-skill/` into your project's `.claude/skills/`
 Then in any Claude Code session:
 
 ```
-/obelisk-skill <your question>
+/obelisk <your question>
 ```
 
 First run builds the index (~5 seconds for 100 sessions). After that it rebuilds incrementally.

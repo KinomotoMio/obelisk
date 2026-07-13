@@ -16,7 +16,7 @@ function writeFixture() {
   const lines = [
     { type: 'ai-title', aiTitle: 'My Session' },
     { uuid: 'u1', type: 'user', timestamp: '2026-06-10T10:00:00Z', cwd: '/proj', gitBranch: 'main', message: { role: 'user', content: 'hi' } },
-    { uuid: 'a1', type: 'assistant', timestamp: '2026-06-10T10:00:05Z', message: { role: 'assistant', model: 'claude-opus', content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 'tc1', name: 'Read', input: { file_path: '/f' } }] } },
+    { uuid: 'a1', type: 'assistant', timestamp: '2026-06-10T10:00:05Z', message: { role: 'assistant', model: 'claude-opus', content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 'tc1', name: 'Read', input: { file_path: '/f' } }], usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 20, cache_read_input_tokens: 30 } } },
     { type: 'system', subtype: 'turn_duration', parentUuid: 'a1', durationMs: 1234 },
     { uuid: 'u2', type: 'user', timestamp: '2026-06-10T10:00:10Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tc1', content: 'file body', is_error: false }] } },
     { type: 'system', subtype: 'away_summary', uuid: 's1', timestamp: '2026-06-10T10:00:11Z', content: 'a summary' },
@@ -42,6 +42,12 @@ test('claude parse() yields the expected record stream for a main session', () =
   // Three user/assistant messages, correct order and fields.
   assert.deepEqual(byKind('message').map(m => m.uuid), ['u1', 'a1', 'u2']);
   assert.equal(byKind('message').find(m => m.uuid === 'a1').model, 'claude-opus');
+  assert.deepEqual(
+    (({ input_tokens, output_tokens }) => ({ input_tokens, output_tokens }))(
+      byKind('message').find(m => m.uuid === 'a1'),
+    ),
+    { input_tokens: 60, output_tokens: 5 },
+  );
   assert.equal(byKind('message').every(m => m.source === 'claude'), true);
 
   // Tool call + tool result extracted.

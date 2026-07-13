@@ -3,7 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { parse as claudeParse } from '../../../packages/core/src/providers/claude.ts';
+import {
+  CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER,
+  parse as claudeParse,
+} from '../../../packages/core/src/providers/claude.ts';
 import { parse as codexParse } from '../../../packages/core/src/providers/codex.ts';
 import { persist } from '../../../packages/core/src/persist.ts';
 import { runWriteTransaction, configureConnection, betterSqliteTransactionAdapter } from '../../../packages/core/src/tx.ts';
@@ -307,9 +310,9 @@ function needsReindex(db, fp) {
 
 // Index one Claude transcript via the shared provider + persist core.
 // Returns { sessionId, path } when reindexed, undefined when skipped.
-function indexClaudeFile(db, file) {
+function indexClaudeFile(db, file, { forceFull = false } = {}) {
   const { needed, skip, mtime } = needsReindex(db, file.path);
-  if (!needed) return undefined;
+  if (!needed && !forceFull) return undefined;
   const unit = {
     key: file.path,
     sessionId: file.sessionId,
@@ -317,7 +320,7 @@ function indexClaudeFile(db, file) {
     isSubagent: file.isSubagent,
     agentId: file.agentId,
   };
-  const cursor = skip > 0 ? `${mtime}:${skip}` : null;
+  const cursor = !forceFull && skip > 0 ? `${mtime}:${skip}` : null;
   persist(db, unit, claudeParse(unit, cursor));
   return { sessionId: file.sessionId, path: file.path };
 }
@@ -617,13 +620,25 @@ function buildIndex({
   try {
     const db = openIndexDb({ dbPath, schemaPath, DatabaseImpl });
     const txDb = betterSqliteTransactionAdapter(db);
+    const claudeInputMarkerMissing = !db.prepare(
+      'SELECT jsonl_path FROM index_state WHERE jsonl_path = ?',
+    ).get(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
+    const claudeInputSemanticsOutdated = claudeInputMarkerMissing && Boolean(db.prepare(`
+      SELECT 1 FROM messages
+      WHERE COALESCE(source, 'claude') = 'claude'
+        AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+      LIMIT 1
+    `).get());
     let messageFtsTriggersDropped = false;
     try {
       if (preserveDbPath && path.resolve(preserveDbPath) !== path.resolve(dbPath)) {
         copyMemoriesFromDb(db, preserveDbPath);
       }
       const files = [
-        ...discoverJsonlFiles({ projectsDir, changedPaths: force ? undefined : changedPaths }),
+        ...discoverJsonlFiles({
+          projectsDir,
+          changedPaths: force || claudeInputSemanticsOutdated ? undefined : changedPaths,
+        }),
         ...discoverCodexJsonlFiles({ codexDir, changedPaths: force ? undefined : changedPaths }),
       ];
       const latestSourceMtime = files.reduce((latest, file) => {
@@ -682,12 +697,15 @@ function buildIndex({
         }
       }
       const skipped: SkippedFile[] = [];
+      let claudeInputMigrationFailed = false;
       for (const file of files) {
         try {
           // The write is committed before affectedSessionIds is updated, so a
           // failed/rolled-back file never reports a phantom updated session.
           const indexed = runRetryableWriteTransaction(txDb, () => {
-            const result = file.source === 'codex' ? indexCodexFile(db, file) : indexClaudeFile(db, file);
+            const result = file.source === 'codex'
+              ? indexCodexFile(db, file)
+              : indexClaudeFile(db, file, { forceFull: claudeInputSemanticsOutdated });
             const metaIndexed = file.source !== 'codex' && indexSubagentMeta(db, file);
             if (!result?.sessionId && metaIndexed && changedMetaJsonlPaths.has(file.path)) {
               return { sessionId: file.sessionId, path: file.path };
@@ -706,6 +724,9 @@ function buildIndex({
             });
           }
           if (hasUnusableTransaction(error)) throw error;
+          if (claudeInputSemanticsOutdated && file.source !== 'codex') {
+            claudeInputMigrationFailed = true;
+          }
           skipped.push({ path: file.path, error: (error as Error).message, diagnostics: (error as { obelisk?: unknown }).obelisk });
           console.warn(`Warning: failed to index ${file.path}: ${(error as Error).message}`);
         }
@@ -724,6 +745,9 @@ function buildIndex({
           writeIndexMarker(db, '__last_build__');
           writeIndexMarker(db, '__app_last_successful_build__');
           writeIndexMarker(db, '__indexer_owner_app__');
+          if (!claudeInputSemanticsOutdated || !claudeInputMigrationFailed) {
+            writeIndexMarker(db, CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
+          }
           if (latestSourceMtime) writeIndexMarker(db, '__last_source_mtime__', latestSourceMtime);
         }, { label: 'finalize' });
       } catch (error) {

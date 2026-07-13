@@ -77,6 +77,7 @@ export interface MessageRecord {
   model: string | null;
   is_sidechain: 0 | 1;
   agent_id: string | null;
+  /** Provider-normalized total input, including provider-reported cached input. */
   input_tokens: number | null;
   output_tokens: number | null;
   cwd: string | null;

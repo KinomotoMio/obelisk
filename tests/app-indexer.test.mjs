@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
 import { buildIndex } from '../app/src/main/indexer.ts';
+import { CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER } from '../packages/core/src/providers/claude.ts';
 const { DatabaseSync } = require('node:sqlite');
 
 class TestDatabase {
@@ -87,6 +88,61 @@ test('app indexer records build success without claiming daemon ownership', () =
   assert.equal(db2.prepare("SELECT uuid FROM messages_fts WHERE messages_fts MATCH 'companion'").get().uuid, 'msg-app-2');
   assert.equal(db2.prepare('SELECT message_count FROM sessions WHERE id=?').get(sessionId).message_count, 2);
   db2.close();
+});
+
+test('app indexer refreshes unchanged Claude usage when input token semantics change', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-app-indexer-token-semantics-'));
+  const claudeDir = join(home, '.claude');
+  const projectDir = join(claudeDir, 'projects', '-tmp-obelisk-app');
+  mkdirSync(projectDir, { recursive: true });
+  const sessionId = 'session-token-semantics-1';
+  const jsonlPath = join(projectDir, `${sessionId}.jsonl`);
+  writeFileSync(jsonlPath, [
+    JSON.stringify({
+      uuid: 'msg-token-semantics-1',
+      type: 'assistant',
+      timestamp: '2026-06-13T10:00:00Z',
+      cwd: '/tmp/obelisk-app',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'cached response' }],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 30,
+        },
+      },
+    }),
+    '',
+  ].join('\n'));
+
+  const dbPath = join(claudeDir, 'obelisk.sqlite');
+  buildIndex({ claudeDir, dbPath, DatabaseImpl: TestDatabase });
+
+  const stale = new TestDatabase(dbPath);
+  stale.prepare('UPDATE messages SET input_tokens = 10 WHERE uuid = ?').run('msg-token-semantics-1');
+  stale.prepare('DELETE FROM index_state WHERE jsonl_path = ?')
+    .run(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
+  stale.close();
+
+  buildIndex({
+    claudeDir,
+    dbPath,
+    DatabaseImpl: TestDatabase,
+    changedPaths: [`-tmp-obelisk-app/${sessionId}.jsonl`],
+  });
+
+  const refreshed = new TestDatabase(dbPath);
+  assert.equal(
+    refreshed.prepare('SELECT input_tokens FROM messages WHERE uuid = ?').get('msg-token-semantics-1').input_tokens,
+    60,
+  );
+  assert.ok(
+    refreshed.prepare('SELECT jsonl_path FROM index_state WHERE jsonl_path = ?')
+      .get(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER),
+  );
+  refreshed.close();
 });
 
 test('force rebuild ignores stale JSONL index_state rows after session tables were cleared', () => {
