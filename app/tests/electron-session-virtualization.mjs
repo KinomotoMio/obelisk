@@ -16,7 +16,8 @@ const focusMessageUuid = `message-${focusMessageIndex}`;
 const stationaryAppendRuns = 3;
 const firstStationaryAppendIndex = messageCount;
 const scrollingAppendIndex = messageCount + stationaryAppendRuns;
-const tailAppendIndex = scrollingAppendIndex + 1;
+const nearTailEscapeAppendIndex = scrollingAppendIndex + 1;
+const tailAppendIndex = nearTailEscapeAppendIndex + 1;
 const channels = [
   'db:getSessions',
   'db:getSessionMessages',
@@ -488,13 +489,23 @@ async function run() {
   setTimeout(() => appendMessage(win, scrollingAppendIndex), 250);
   const scrollProbe = await win.webContents.executeJavaScript(`new Promise(resolve => {
     const wrap = document.querySelector('.detail-wrap');
+    const totalBeforeGesture = Number(document.querySelector('.flap-number')?.getAttribute('aria-label'));
+    const originalScrollTo = wrap.scrollTo.bind(wrap);
+    let programmaticScrolls = 0;
+    const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
+    wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
+    wrap.scrollTo = (...args) => {
+      programmaticScrolls++;
+      return originalScrollTo(...args);
+    };
     const gaps = [];
     const startedAt = performance.now();
     let previous = startedAt;
+    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: 70, bubbles: true }));
     function frame(now) {
       gaps.push(now - previous);
       previous = now;
-      wrap.scrollTop += 70;
+      if (now - startedAt >= 400) wrap.scrollTop += 70;
       if (now - startedAt < 1200) requestAnimationFrame(frame);
       else {
         const wrapRect = wrap.getBoundingClientRect();
@@ -502,9 +513,18 @@ async function run() {
           .find(row => {
             const rect = row.getBoundingClientRect();
             return rect.bottom > wrapRect.top && rect.top < wrapRect.bottom;
-          });
+        });
         const anchorElement = anchorRow?.querySelector('[data-uuid]');
+        const totalBeforeScrollEnd = Number(document.querySelector('.flap-number')?.getAttribute('aria-label'));
+        const flapBeforeScrollEnd = Boolean(document.querySelector('.flap-slot.flipping'));
+        wrap.scrollTo = originalScrollTo;
+        wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+        wrap.dispatchEvent(new Event('scrollend'));
         resolve({
+          totalBeforeGesture,
+          totalBeforeScrollEnd,
+          flapBeforeScrollEnd,
+          programmaticScrolls,
           maxFrameGap: Math.max(...gaps),
           frames: gaps.length,
           rows: document.querySelectorAll('.virtual-timeline-row').length,
@@ -523,6 +543,11 @@ async function run() {
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount + stationaryAppendRuns + 1}'`,
     'reader-position live update',
   );
+  await waitFor(
+    win.webContents,
+    `document.querySelector('.flap-slot.flipping')`,
+    'post-scrollend flap animation',
+  );
   const readerState = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const anchorElement = document.querySelector(
@@ -538,6 +563,15 @@ async function run() {
     };
   })()`, true);
   assert(scrollProbe.rows < 60, `live scrolling keeps mounted rows bounded (${scrollProbe.rows})`);
+  assert(
+    scrollProbe.totalBeforeScrollEnd === scrollProbe.totalBeforeGesture,
+    `wheel-to-scrollend freezes the visible timeline (${scrollProbe.totalBeforeGesture} -> ${scrollProbe.totalBeforeScrollEnd})`,
+  );
+  assert(
+    scrollProbe.programmaticScrolls === 0,
+    `wheel-to-scrollend performs zero programmatic scrollTo calls (got ${scrollProbe.programmaticScrolls})`,
+  );
+  assert(!scrollProbe.flapBeforeScrollEnd, 'wheel-to-scrollend does not start the flap animation');
   assert(scrollProbe.anchor, 'reader anchor is captured before the deferred live commit');
   assert(
     scrollProbe.distanceFromTail > 1000
@@ -607,10 +641,69 @@ async function run() {
     `(() => { const wrap = document.querySelector('.detail-wrap'); return wrap.scrollHeight - wrap.clientHeight - wrap.scrollTop < 2; })()`,
     'last-item scroll settlement',
   );
-  appendMessage(win, tailAppendIndex);
+
+  await win.webContents.executeJavaScript(`new Promise(resolve => {
+    const wrap = document.querySelector('.detail-wrap');
+    wrap.scrollTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight - 20);
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  })`, true);
+  await delay(200);
+  await win.webContents.executeJavaScript(`(() => {
+    const wrap = document.querySelector('.detail-wrap');
+    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -24, bubbles: true }));
+  })()`, true);
+  await delay(200);
+  appendMessage(win, nearTailEscapeAppendIndex);
+  await delay(150);
+  const nearTailPending = await win.webContents.executeJavaScript(`(() => {
+    const wrap = document.querySelector('.detail-wrap');
+    return {
+      total: Number(document.querySelector('.flap-number')?.getAttribute('aria-label')),
+      distanceFromTail: wrap.scrollHeight - wrap.clientHeight - wrap.scrollTop,
+    };
+  })()`, true);
+  assert(
+    nearTailPending.total === messageCount + stationaryAppendRuns + 1,
+    'near-tail upward intent keeps the append pending until scrollend',
+  );
+  await win.webContents.executeJavaScript(
+    `document.querySelector('.detail-wrap')?.dispatchEvent(new Event('scrollend'))`,
+    true,
+  );
   await waitFor(
     win.webContents,
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount + stationaryAppendRuns + 2}'`,
+    'near-tail upward append settlement',
+  );
+  await delay(500);
+  const nearTailSettled = await win.webContents.executeJavaScript(`(() => {
+    const wrap = document.querySelector('.detail-wrap');
+    return {
+      current: Number(document.querySelector('.msg-nav-current')?.textContent),
+      total: Number(document.querySelector('.flap-number')?.getAttribute('aria-label')),
+      distanceFromTail: wrap.scrollHeight - wrap.clientHeight - wrap.scrollTop,
+    };
+  })()`, true);
+  assert(
+    nearTailSettled.current < nearTailSettled.total && nearTailSettled.distanceFromTail > 20,
+    `near-tail upward intent is not pulled back to the tail (${JSON.stringify(nearTailSettled)})`,
+  );
+
+  await win.webContents.executeJavaScript(`document.querySelector('button[title="Last"]')?.click()`, true);
+  await waitFor(
+    win.webContents,
+    `document.querySelector('.msg-nav-current')?.textContent === '${messageCount + stationaryAppendRuns + 2}'`,
+    'last-item navigation after upward escape',
+  );
+  await waitFor(
+    win.webContents,
+    `(() => { const wrap = document.querySelector('.detail-wrap'); return wrap.scrollHeight - wrap.clientHeight - wrap.scrollTop < 2; })()`,
+    'tail re-entry settlement',
+  );
+  appendMessage(win, tailAppendIndex);
+  await waitFor(
+    win.webContents,
+    `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount + stationaryAppendRuns + 3}'`,
     'tail-follow total update',
   );
   await delay(1000);
@@ -625,8 +718,8 @@ async function run() {
     };
   })()`, true);
   assert(
-    tailState.current === messageCount + stationaryAppendRuns + 2 && tailState.distanceFromTail < 2,
-    `tail follow reaches item ${messageCount + stationaryAppendRuns + 2} (${JSON.stringify(tailState)})`,
+    tailState.current === messageCount + stationaryAppendRuns + 3 && tailState.distanceFromTail < 2,
+    `tail follow reaches item ${messageCount + stationaryAppendRuns + 3} (${JSON.stringify(tailState)})`,
   );
 
   const reduction = (1 - initial.rows / initial.total) * 100;

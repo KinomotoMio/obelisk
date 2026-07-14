@@ -38,19 +38,28 @@ test('SessionDetail renders a measured virtual window instead of the complete ti
   assert.doesNotMatch(sessionDetail, /closest\(['"]\.msg/);
 });
 
-test('timeline viewport owns dynamic measurement, overscan, anchoring, and tail-follow', () => {
+test('timeline viewport owns measurement and anchoring while SessionDetail alone owns tail-follow', () => {
   assert.equal(appPackage.devDependencies['@tanstack/vue-virtual'], '^3.13.32');
   assert.match(viewportModule, /useVirtualizer/);
   assert.match(viewportModule, /overscan/);
   assert.match(viewportModule, /anchorTo:\s*'end'/);
-  assert.match(viewportModule, /followOnAppend:\s*followOnAppend\.value/);
+  assert.match(viewportModule, /followOnAppend:\s*false/);
   assert.match(viewportModule, /resetForInitialSnapshot/);
   assert.match(viewportModule, /completeInitialSnapshot/);
-  assert.doesNotMatch(viewportModule, /followOnAppend:\s*true/);
+  assert.match(viewportModule, /scrollToFn:\s*scrollPolicy\.scrollToFn/);
+  assert.match(viewportModule, /useScrollendEvent:\s*true/);
+  assert.match(viewportModule, /isScrollingResetDelay:\s*450/);
+  assert.match(viewportModule, /settleUserScroll/);
   assert.match(viewportModule, /useAnimationFrameWithResizeObserver:\s*true/);
   assert.match(viewportModule, /scrollPaddingEnd/);
   assert.match(viewportModule, /scrollToIndex/);
   assert.match(viewportModule, /if \(!element\) return/);
+  assert.match(sessionDetail, /isScrolling:\s*\(\) => userScroll\.isActive\(\)/);
+  assert.doesNotMatch(sessionDetail, /timelineViewport\.isScrolling/);
+  assert.match(
+    sessionDetail,
+    /!userScroll\.hasUpwardIntent\(\)[\s\S]{0,100}timelineViewport\.isFollowingTail\(\)/,
+  );
 });
 
 test('timeline count and disclosure classes come from renderer state rather than DOM state', () => {

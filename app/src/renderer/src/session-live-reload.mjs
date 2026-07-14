@@ -5,7 +5,7 @@ export function createSessionLiveReloadCoordinator({ isScrolling, load, commit }
   let stopped = false;
 
   async function drain() {
-    while (!stopped && !isScrolling() && (pending || loadedSnapshot)) {
+    while (!stopped && (pending || loadedSnapshot)) {
       let snapshot = loadedSnapshot;
       loadedSnapshot = null;
 
@@ -29,8 +29,8 @@ export function createSessionLiveReloadCoordinator({ isScrolling, load, commit }
     }
   }
 
-  async function flush() {
-    if (stopped || isScrolling() || (!pending && !loadedSnapshot)) return inFlight;
+  async function processPending() {
+    if (stopped || (!pending && !loadedSnapshot)) return inFlight;
     if (inFlight) return inFlight;
     inFlight = drain();
     try {
@@ -38,15 +38,20 @@ export function createSessionLiveReloadCoordinator({ isScrolling, load, commit }
     } finally {
       inFlight = null;
     }
-    if ((pending || loadedSnapshot) && !isScrolling()) return flush();
+    if (pending || (loadedSnapshot && !isScrolling())) return processPending();
     return undefined;
+  }
+
+  function flush() {
+    if (stopped || isScrolling()) return inFlight;
+    return processPending();
   }
 
   return {
     request() {
       if (stopped) return Promise.resolve();
       pending = true;
-      return flush();
+      return processPending();
     },
     flush,
     stop() {

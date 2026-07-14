@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue';
-import { useVirtualizer } from '@tanstack/vue-virtual';
+import { elementScroll, useVirtualizer } from '@tanstack/vue-virtual';
+import { createSessionTimelineScrollPolicy } from './session-timeline-scroll-policy.mjs';
 
 function estimatedTextHeight(text = '') {
   return Math.min(560, Math.ceil(String(text).length / 72) * 20);
@@ -32,8 +33,13 @@ export function useSessionTimelineViewport({
   overscan = 6,
   gap = 14,
   scrollPaddingEnd = 0,
+  userScroll,
 }) {
-  const followOnAppend = ref(false);
+  const tailFollowReady = ref(false);
+  const scrollPolicy = createSessionTimelineScrollPolicy({
+    isUserScrolling: () => userScroll?.isActive() ?? false,
+    writeScroll: elementScroll,
+  });
   const virtualizer = useVirtualizer(computed(() => ({
     count: items.value.length,
     getScrollElement: () => scrollElement.value,
@@ -44,14 +50,16 @@ export function useSessionTimelineViewport({
     overscan,
     gap,
     anchorTo: 'end',
-    followOnAppend: followOnAppend.value,
+    followOnAppend: false,
     scrollEndThreshold: 50,
+    isScrollingResetDelay: 450,
+    useScrollendEvent: true,
     useAnimationFrameWithResizeObserver: true,
+    scrollToFn: scrollPolicy.scrollToFn,
   })));
 
   const virtualRows = computed(() => virtualizer.value.getVirtualItems());
   const totalSize = computed(() => virtualizer.value.getTotalSize());
-  const isScrolling = computed(() => virtualizer.value.isScrolling);
 
   function measureElement(element) {
     if (!element) return;
@@ -77,7 +85,9 @@ export function useSessionTimelineViewport({
 
   function scrollToIndex(index, options = {}) {
     const scroll = () => {
-      virtualizer.value.scrollToIndex(index, { behavior: 'auto', ...options });
+      scrollPolicy.runExplicit(() => {
+        virtualizer.value.scrollToIndex(index, { behavior: 'auto', ...options });
+      });
     };
 
     // A far jump starts from estimates. Re-align after mounted rows have been
@@ -85,20 +95,26 @@ export function useSessionTimelineViewport({
     runWithMeasurementRetry(scroll);
   }
 
-  function scrollToEnd() {
+  async function scrollToEnd() {
+    const targetWindow = scrollElement.value?.ownerDocument?.defaultView;
+    if (targetWindow) {
+      await new Promise(resolve => targetWindow.requestAnimationFrame(resolve));
+    }
     const scroll = () => {
-      const element = scrollElement.value;
-      if (element && 'scrollHeight' in element) {
-        element.scrollTo({ top: element.scrollHeight, behavior: 'auto' });
-      } else {
-        virtualizer.value.scrollToEnd({ behavior: 'auto' });
-      }
+      scrollPolicy.runExplicit(() => {
+        const element = scrollElement.value;
+        if (element && 'scrollHeight' in element) {
+          element.scrollTo({ top: element.scrollHeight, behavior: 'auto' });
+        } else {
+          virtualizer.value.scrollToEnd({ behavior: 'auto' });
+        }
+      });
     };
-    runWithMeasurementRetry(scroll);
+    scroll();
   }
 
   function isFollowingTail() {
-    if (!followOnAppend.value) return false;
+    if (!tailFollowReady.value) return false;
     const element = scrollElement.value;
     if (element && 'scrollHeight' in element) {
       return element.scrollHeight - element.clientHeight - element.scrollTop <= 50;
@@ -107,23 +123,29 @@ export function useSessionTimelineViewport({
   }
 
   function resetForInitialSnapshot() {
-    followOnAppend.value = false;
-    virtualizer.value.scrollToOffset(0, { behavior: 'auto' });
+    tailFollowReady.value = false;
+    scrollPolicy.runExplicit(() => {
+      virtualizer.value.scrollToOffset(0, { behavior: 'auto' });
+    });
   }
 
   function completeInitialSnapshot() {
-    followOnAppend.value = true;
+    tailFollowReady.value = true;
+  }
+
+  function settleUserScroll() {
+    return scrollPolicy.flushDeferredAdjustment(virtualizer.value);
   }
 
   return {
     virtualRows,
     totalSize,
-    isScrolling,
     measureElement,
     indexAtViewportEnd,
     scrollToIndex,
     scrollToEnd,
     isFollowingTail,
+    settleUserScroll,
     resetForInitialSnapshot,
     completeInitialSnapshot,
   };

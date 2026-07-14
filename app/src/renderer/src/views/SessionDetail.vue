@@ -8,6 +8,7 @@ import { applySnapshot } from '../session-timeline.mjs';
 import { reconcileTimelineItems } from '../session-timeline-items.mjs';
 import { createSessionDisclosureState } from '../session-disclosures.mjs';
 import { createSessionLiveReloadCoordinator } from '../session-live-reload.mjs';
+import { createSessionUserScroll } from '../session-user-scroll.mjs';
 import { useSessionTimelineViewport } from '../session-timeline-viewport.mjs';
 import FlapNumber from '../components/FlapNumber.vue';
 import SessionTimelineRow from '../components/SessionTimelineRow.vue';
@@ -45,23 +46,26 @@ const timelineScrollMargin = ref(0);
 const disclosures = createSessionDisclosureState();
 let headerResizeObserver = null;
 const NAV_HEIGHT = 52;
+const userScroll = createSessionUserScroll({ onEnd: handleUserScrollEnd });
 
 const timelineViewport = useSessionTimelineViewport({
   items: timelineItems,
   scrollElement: wrapRef,
   scrollMargin: timelineScrollMargin,
   scrollPaddingEnd: NAV_HEIGHT,
+  userScroll,
 });
 const { virtualRows, totalSize, measureElement } = timelineViewport;
 const liveReloadCoordinator = createSessionLiveReloadCoordinator({
-  isScrolling: () => timelineViewport.isScrolling.value,
+  isScrolling: () => userScroll.isActive(),
   load: loadLiveSnapshot,
   commit: commitLiveSnapshot,
 });
 
-watch(timelineViewport.isScrolling, scrolling => {
-  if (!scrolling && active.value) void liveReloadCoordinator.flush();
-});
+function handleUserScrollEnd() {
+  timelineViewport.settleUserScroll();
+  if (active.value) void liveReloadCoordinator.flush();
+}
 
 function syncTimelineScrollMargin() {
   timelineScrollMargin.value = timelineRef.value?.offsetTop || 0;
@@ -124,6 +128,7 @@ const showFontHint = ref(false);
 
 onMounted(async () => {
   active.value = true;
+  userScroll.attach(wrapRef.value);
   attachKeydown();
   if (route.query.focus) {
     state.pendingFocusUuid = route.query.focus;
@@ -145,6 +150,7 @@ onMounted(async () => {
 
 onActivated(async () => {
   active.value = true;
+  userScroll.attach(wrapRef.value);
   attachKeydown();
   if (route.query.focus) {
     state.pendingFocusUuid = route.query.focus;
@@ -162,6 +168,7 @@ onActivated(async () => {
 
 onDeactivated(() => {
   active.value = false;
+  userScroll.detach();
   detachKeydown();
 });
 
@@ -175,6 +182,7 @@ onUnmounted(() => {
   focusTimer = null;
   headerResizeObserver?.disconnect();
   headerResizeObserver = null;
+  userScroll.detach();
   liveReloadCoordinator.stop();
   removeSessionUpdated?.();
   removeSessionUpdated = null;
@@ -183,6 +191,7 @@ onUnmounted(() => {
 watch(() => props.id, async (newId, oldId) => {
   if (newId && newId !== oldId) {
     loadRevision++;
+    userScroll.clearUpwardIntent();
     timelineViewport.resetForInitialSnapshot();
     messages.value = [];
     timelineItems.value = [];
@@ -264,7 +273,9 @@ async function commitSessionSnapshot(latest) {
       }
     : null;
   const reconciliation = tailPatch || applySnapshot(messages.value, incoming);
-  const restoreTail = reconciliation.tailOnly && timelineViewport.isFollowingTail();
+  const restoreTail = reconciliation.tailOnly
+    && !userScroll.hasUpwardIntent()
+    && timelineViewport.isFollowingTail();
   if (reconciliation.changed) {
     messages.value = reconciliation.messages;
     if (tailPatch) {
@@ -294,7 +305,7 @@ async function commitSessionSnapshot(latest) {
 
   await nextTick();
   timelineViewport.completeInitialSnapshot();
-  if (restoreTail) timelineViewport.scrollToEnd();
+  if (restoreTail) await timelineViewport.scrollToEnd();
   syncTimelineScrollMargin();
   if (!state.pendingFocusUuid) onScroll();
 
@@ -313,6 +324,7 @@ async function focusPendingMessage() {
   ));
   if (targetIndex < 0) return;
   focusedItemKey.value = timelineItems.value[targetIndex].key;
+  userScroll.clearUpwardIntent();
   timelineViewport.scrollToIndex(targetIndex, { align: 'end' });
   if (focusTimer !== null) clearTimeout(focusTimer);
   focusTimer = setTimeout(() => {
@@ -363,6 +375,7 @@ function navTo(target) {
   else if (target === 'prev') idx = Math.max(0, currentMsgIdx.value - 1);
   else if (target === 'next') idx = Math.min(count - 1, currentMsgIdx.value + 1);
   else return;
+  if (target === 'last') userScroll.clearUpwardIntent();
   setMessagePosition(idx, count);
   navLock = true;
   timelineViewport.scrollToIndex(idx, { align: 'end' });

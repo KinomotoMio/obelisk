@@ -11,7 +11,7 @@ import {
 import { assembleSessionMessages } from '../app/src/shared/session-detail-assembly.mjs';
 import { createSessionPatch } from '../app/src/shared/session-patch.mjs';
 
-test('live snapshots coalesce while scrolling and commit once after scroll end', async () => {
+test('live snapshots keep loading while scrolling and commit only the latest after scroll end', async () => {
   let scrolling = true;
   let loads = 0;
   const commits = [];
@@ -24,16 +24,16 @@ test('live snapshots coalesce while scrolling and commit once after scroll end',
   await coordinator.request();
   await coordinator.request();
   await coordinator.request();
-  assert.equal(loads, 0);
+  assert.equal(loads, 3, 'patches are loaded into the pending snapshot while the timeline is frozen');
   assert.deepEqual(commits, []);
 
   scrolling = false;
   await coordinator.flush();
-  assert.equal(loads, 1);
-  assert.deepEqual(commits, [1]);
+  assert.equal(loads, 3, 'scroll end reuses the freshest pending snapshot');
+  assert.deepEqual(commits, [3]);
 
   await coordinator.flush();
-  assert.equal(loads, 1, 'an idle flush without another update is a no-op');
+  assert.equal(loads, 3, 'an idle flush without another update is a no-op');
 });
 
 test('an update arriving during an in-flight load skips the stale snapshot without overlap', async () => {
