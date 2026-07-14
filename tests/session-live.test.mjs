@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createSessionLiveState,
   consumeSessionDirty,
+  markSessionDirty,
   noteSessionUpdated,
 } from '../app/src/renderer/src/session-live.mjs';
 
@@ -24,4 +25,13 @@ test('session live state reloads the visible session without leaving it dirty', 
 
   assert.deepEqual(action, { reload: true, sessionId: 'session-1' });
   assert.equal(consumeSessionDirty(live, 'session-1'), false);
+});
+
+test('a rejected visible commit can put the session back into the dirty set', () => {
+  const live = createSessionLiveState();
+
+  noteSessionUpdated(live, 'session-1', 'session-1');
+  markSessionDirty('session-1', live);
+
+  assert.equal(consumeSessionDirty(live, 'session-1'), true);
 });

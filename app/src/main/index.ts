@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, clipboard, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, clipboard, dialog, shell, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -10,7 +10,22 @@ import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
-import type { SourceQueryOptions } from '../shared/ipc-types.ts';
+import type {
+  SessionPatchCursor,
+  SessionPatchSnapshot,
+  SourceQueryOptions,
+} from '../shared/ipc-types.ts';
+import type {
+  SessionDetailAssemblyInput,
+  SessionMessageRow,
+  SessionSubagentRow,
+  SessionSummaryRow,
+  SessionToolCallRow,
+  SessionToolResultRow,
+  SessionWorkflowRow,
+} from '../shared/session-detail-types.ts';
+import { createSessionPatch } from '../shared/session-patch.mjs';
+import { assembleSessionMessages } from '../shared/session-detail-assembly.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -390,6 +405,64 @@ app.on('window-all-closed', () => {
 
 // --- IPC Handlers ---
 
+function querySessionMessages(sessionId: string): SessionMessageRow[] {
+  if (!db) return [];
+  return db.prepare(`
+    SELECT m.uuid, m.session_id, m.type, m.parent_uuid, m.timestamp, m.role, m.text, m.model,
+           m.is_sidechain, m.agent_id, m.input_tokens, m.output_tokens, m.cwd, m.skill, m.turn_duration_ms,
+           m.content_type, m.is_meta, m.source
+    FROM messages m WHERE m.session_id = ? AND m.agent_id IS NULL ORDER BY m.timestamp, m.uuid
+  `).all(sessionId) as SessionMessageRow[];
+}
+
+function querySessionToolCalls(sessionId: string): SessionToolCallRow[] {
+  if (!db) return [];
+  return db.prepare(`SELECT * FROM tool_calls WHERE session_id = ?`).all(sessionId) as SessionToolCallRow[];
+}
+
+function querySessionToolResults(sessionId: string): SessionToolResultRow[] {
+  if (!db) return [];
+  return db.prepare(`SELECT * FROM tool_results WHERE session_id = ?`).all(sessionId) as SessionToolResultRow[];
+}
+
+function querySessionSubagents(sessionId: string): SessionSubagentRow[] {
+  if (!db) return [];
+  return db.prepare(`SELECT * FROM subagents WHERE session_id = ?`).all(sessionId) as SessionSubagentRow[];
+}
+
+function querySessionWorkflows(sessionId: string): SessionWorkflowRow[] {
+  if (!db) return [];
+  const workflows = db.prepare(`SELECT * FROM workflows WHERE session_id = ?`).all(sessionId) as SessionWorkflowRow[];
+  for (const workflow of workflows) {
+    workflow.agents = db.prepare(`SELECT * FROM workflow_agents WHERE run_id = ?`).all(workflow.run_id) as SessionWorkflowRow['agents'];
+  }
+  return workflows;
+}
+
+function querySessionSummaries(sessionId: string): SessionSummaryRow[] {
+  if (!db) return [];
+  return db.prepare(`SELECT * FROM summaries WHERE session_id = ?`).all(sessionId) as SessionSummaryRow[];
+}
+
+function querySessionSnapshot(sessionId: string): SessionDetailAssemblyInput {
+  return {
+    messages: querySessionMessages(sessionId),
+    toolCalls: querySessionToolCalls(sessionId),
+    toolResults: querySessionToolResults(sessionId),
+    subagents: querySessionSubagents(sessionId),
+    workflows: querySessionWorkflows(sessionId),
+    summaries: querySessionSummaries(sessionId),
+  };
+}
+
+function querySessionDisplaySnapshot(sessionId: string): SessionPatchSnapshot {
+  const snapshot = querySessionSnapshot(sessionId);
+  return {
+    messages: assembleSessionMessages(snapshot),
+    workflows: snapshot.workflows,
+  };
+}
+
 ipcMain.handle('db:getSessions', (_, opts = {}) => {
   if (!db) return [];
   const { project, limit = 200 } = opts;
@@ -407,37 +480,32 @@ ipcMain.handle('db:getSessions', (_, opts = {}) => {
 });
 
 ipcMain.handle('db:getSessionMessages', (_, sessionId) => {
-  if (!db) return [];
-  return db.prepare(`
-    SELECT m.uuid, m.session_id, m.type, m.parent_uuid, m.timestamp, m.role, m.text, m.model,
-           m.is_sidechain, m.agent_id, m.input_tokens, m.output_tokens, m.cwd, m.skill, m.turn_duration_ms,
-           m.content_type, m.is_meta, m.source
-    FROM messages m WHERE m.session_id = ? AND m.agent_id IS NULL ORDER BY m.timestamp, m.uuid
-  `).all(sessionId);
+  return querySessionMessages(sessionId);
 });
 
 ipcMain.handle('db:getSessionToolCalls', (_, sessionId) => {
-  if (!db) return [];
-  return db.prepare(`SELECT * FROM tool_calls WHERE session_id = ?`).all(sessionId);
+  return querySessionToolCalls(sessionId);
 });
 
 ipcMain.handle('db:getSessionToolResults', (_, sessionId) => {
-  if (!db) return [];
-  return db.prepare(`SELECT * FROM tool_results WHERE session_id = ?`).all(sessionId);
+  return querySessionToolResults(sessionId);
 });
 
 ipcMain.handle('db:getSessionSubagents', (_, sessionId) => {
-  if (!db) return [];
-  return db.prepare(`SELECT * FROM subagents WHERE session_id = ?`).all(sessionId);
+  return querySessionSubagents(sessionId);
 });
 
 ipcMain.handle('db:getSessionWorkflows', (_, sessionId) => {
-  if (!db) return [];
-  const workflows = db.prepare(`SELECT * FROM workflows WHERE session_id = ?`).all(sessionId);
-  for (const wf of workflows) {
-    wf.agents = db.prepare(`SELECT * FROM workflow_agents WHERE run_id = ?`).all(wf.run_id);
-  }
-  return workflows;
+  return querySessionWorkflows(sessionId);
+});
+
+ipcMain.handle('db:getSessionPatch', (
+  _event: IpcMainInvokeEvent,
+  sessionId: string,
+  cursor: SessionPatchCursor,
+) => {
+  if (!db) return null;
+  return createSessionPatch(querySessionDisplaySnapshot(sessionId), cursor);
 });
 
 ipcMain.handle('db:getSubagentMessages', (_, agentId) => {
@@ -469,8 +537,7 @@ ipcMain.handle('db:getSubagentToolResults', (_, agentId) => {
 });
 
 ipcMain.handle('db:getSessionSummaries', (_, sessionId) => {
-  if (!db) return [];
-  return db.prepare(`SELECT * FROM summaries WHERE session_id = ?`).all(sessionId);
+  return querySessionSummaries(sessionId);
 });
 
 ipcMain.handle('db:getMemories', () => {

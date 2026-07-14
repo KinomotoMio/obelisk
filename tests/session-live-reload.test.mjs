@@ -2,6 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createSessionLiveReloadCoordinator } from '../app/src/renderer/src/session-live-reload.mjs';
+import { state } from '../app/src/renderer/src/store.js';
+import {
+  getCachedSessionDetail,
+  loadSessionDetail,
+  loadSessionDetailPatch,
+} from '../app/src/renderer/src/data.js';
+import { assembleSessionMessages } from '../app/src/shared/session-detail-assembly.mjs';
+import { createSessionPatch } from '../app/src/shared/session-patch.mjs';
 
 test('live snapshots coalesce while scrolling and commit once after scroll end', async () => {
   let scrolling = true;
@@ -86,4 +94,96 @@ test('scrolling that starts during IPC defers the loaded snapshot commit', async
   await coordinator.flush();
   assert.equal(loads, 1, 'the already-loaded snapshot is reused');
   assert.deepEqual(commits, ['loaded-before-scroll-ended']);
+});
+
+test('a skipped live patch does not advance the visible patch baseline', async t => {
+  const sessionId = 'coalesced-patch-session';
+  const previousSessions = state.sessions;
+  t.after(() => {
+    state.sessions = previousSessions;
+    delete globalThis.window;
+  });
+  let rows = [
+    { uuid: 'message-1', type: 'user', timestamp: '2026-07-14T00:00:01Z', text: 'one' },
+  ];
+  let patchCalls = 0;
+  let releaseFirstPatch;
+  let firstPatchStarted;
+  const firstPatchGate = new Promise(resolve => { releaseFirstPatch = resolve; });
+  const firstPatchReady = new Promise(resolve => { firstPatchStarted = resolve; });
+
+  globalThis.window = {
+    obelisk: {
+      getSessionMessages: async () => rows,
+      getSessionToolCalls: async () => [],
+      getSessionToolResults: async () => [],
+      getSessionSubagents: async () => [],
+      getSessionWorkflows: async () => [],
+      getSessionSummaries: async () => [],
+      getSessionPatch: async (_id, cursor) => {
+        const snapshotAtCall = { messages: assembleSessionMessages({
+          messages: rows,
+          toolCalls: [],
+          toolResults: [],
+          subagents: [],
+          workflows: [],
+        }), workflows: [] };
+        patchCalls++;
+        if (patchCalls === 1) {
+          firstPatchStarted();
+          await firstPatchGate;
+        }
+        return createSessionPatch(snapshotAtCall, cursor);
+      },
+    },
+  };
+  state.sessions = [{ id: sessionId, messages: [] }];
+  await loadSessionDetail(sessionId);
+
+  const commits = [];
+  const coordinator = createSessionLiveReloadCoordinator({
+    isScrolling: () => false,
+    load: () => loadSessionDetailPatch(sessionId),
+    commit: async latest => {
+      commits.push({
+        messages: latest.messages.map(message => message.uuid),
+        changedIds: latest.messagePatch.changedIds,
+      });
+      latest.acceptMessagePatch?.();
+    },
+  });
+
+  rows = [...rows, { uuid: 'message-2', type: 'assistant', timestamp: '2026-07-14T00:00:02Z', text: 'two' }];
+  const first = coordinator.request();
+  await firstPatchReady;
+  rows = [...rows, { uuid: 'message-3', type: 'assistant', timestamp: '2026-07-14T00:00:03Z', text: 'three' }];
+  const second = coordinator.request();
+  releaseFirstPatch();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(commits, [{
+    messages: ['message-1', 'message-2', 'message-3'],
+    changedIds: ['message-2', 'message-3'],
+  }]);
+  assert.deepEqual(
+    getCachedSessionDetail(sessionId).messages.map(message => message.uuid),
+    ['message-1', 'message-2', 'message-3'],
+    'accepted patches become the reusable session-detail snapshot',
+  );
+  assert.deepEqual(
+    state.sessions.find(session => session.id === sessionId).messages,
+    [],
+    'the stale full-snapshot copy is invalidated after patch acceptance',
+  );
+
+  const evictionSessionIds = ['eviction-session-1', 'eviction-session-2', 'eviction-session-3'];
+  state.sessions.push(...evictionSessionIds.map(id => ({ id, messages: [] })));
+  for (const id of evictionSessionIds) await loadSessionDetail(id);
+
+  assert.equal(getCachedSessionDetail(sessionId), null, 'the oldest accepted snapshot is evicted by the bounded cache');
+  assert.deepEqual(
+    state.sessions.find(session => session.id === sessionId).messages,
+    [],
+    'an evicted session cannot fall back to stale initial messages and must reload',
+  );
 });

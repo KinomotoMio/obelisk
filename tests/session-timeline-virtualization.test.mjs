@@ -6,6 +6,14 @@ const sessionDetail = readFileSync(
   new URL('../app/src/renderer/src/views/SessionDetail.vue', import.meta.url),
   'utf8',
 );
+const timelineRow = readFileSync(
+  new URL('../app/src/renderer/src/components/SessionTimelineRow.vue', import.meta.url),
+  'utf8',
+);
+const timelinePresentation = readFileSync(
+  new URL('../app/src/renderer/src/session-timeline-presentation.mjs', import.meta.url),
+  'utf8',
+);
 const viewportModule = readFileSync(
   new URL('../app/src/renderer/src/session-timeline-viewport.mjs', import.meta.url),
   'utf8',
@@ -20,8 +28,11 @@ test('SessionDetail renders a measured virtual window instead of the complete ti
   assert.match(sessionDetail, /v-for="virtualRow in virtualRows"/);
   assert.match(sessionDetail, /:data-index="virtualRow\.index"/);
   assert.match(sessionDetail, /:ref="measureElement"/);
+  assert.match(sessionDetail, /<SessionTimelineRow/);
+  assert.match(timelineRow, /buildSessionTimelinePresentation/);
+  assert.doesNotMatch(sessionDetail, /renderMarkdown|renderPrettyTool/);
   assert.doesNotMatch(sessionDetail, /querySelectorAll/);
-  assert.doesNotMatch(sessionDetail, /v-memo/);
+  assert.doesNotMatch(sessionDetail + timelineRow, /v-memo/);
   assert.doesNotMatch(sessionDetail, /session-view-state/);
   assert.doesNotMatch(sessionDetail, /outerHTML/);
   assert.doesNotMatch(sessionDetail, /closest\(['"]\.msg/);
@@ -44,14 +55,35 @@ test('timeline viewport owns dynamic measurement, overscan, anchoring, and tail-
 
 test('timeline count and disclosure classes come from renderer state rather than DOM state', () => {
   assert.match(sessionDetail, /const totalMsgs = computed\(\(\) => timelineItems\.value\.length\)/);
-  assert.match(sessionDetail, /disclosures\.isOpen/);
-  assert.match(sessionDetail, /disclosures\.isRaw/);
-  assert.doesNotMatch(sessionDetail, /function toggleDisclosure[\s\S]{0,200}classList/);
-  assert.doesNotMatch(sessionDetail, /function toggleRaw[\s\S]{0,200}classList/);
+  assert.match(timelineRow, /disclosures\.isOpen/);
+  assert.match(timelineRow, /disclosures\.isRaw/);
+  assert.doesNotMatch(timelineRow, /function toggleDisclosure[\s\S]{0,200}classList/);
+  assert.doesNotMatch(timelineRow, /function toggleRaw[\s\S]{0,200}classList/);
   assert.doesNotMatch(sessionDetail, /createSessionDisclosureRegistry/);
+});
+
+test('timeline row memoizes derived HTML behind stable content dependencies', () => {
+  assert.match(timelineRow, /const presentation = computed/);
+  assert.match(timelineRow, /query: props\.query/);
+  assert.match(timelineRow, /expandedText: expandedText\.value/);
+  assert.match(timelinePresentation, /toolPrettyHtml/);
+  assert.match(timelinePresentation, /toolResultHtml/);
+  assert.match(timelinePresentation, /renderMarkdown/);
 });
 
 test('cold startup does not enable append-follow before a real session snapshot exists', () => {
   assert.match(sessionDetail, /if \(!latest\) return/);
   assert.match(sessionDetail, /timelineViewport\.completeInitialSnapshot\(\)/);
+});
+
+test('live patch state advances only after the visible snapshot commit is accepted', () => {
+  const loadLiveSnapshot = sessionDetail.match(/async function loadLiveSnapshot\(\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  const commitLiveSnapshot = sessionDetail.match(/async function commitLiveSnapshot\(snapshot\) \{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.doesNotMatch(loadLiveSnapshot, /clearSessionDirty|acceptMessagePatch/);
+  assert.match(
+    commitLiveSnapshot,
+    /await commitSessionSnapshot\(snapshot\.latest\);[\s\S]*acceptMessagePatch[\s\S]*clearSessionDirty/,
+  );
+  assert.match(commitLiveSnapshot, /markSessionDirty\(snapshot\.sessionId\)/);
 });

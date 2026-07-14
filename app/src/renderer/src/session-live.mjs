@@ -6,13 +6,17 @@ export function createSessionLiveState() {
 
 export const sessionLiveState = createSessionLiveState();
 
+export function markSessionDirty(sessionId, live = sessionLiveState) {
+  if (sessionId) live.dirtySessions.add(sessionId);
+}
+
 export function noteSessionUpdated(live, sessionId, currentSessionId = null) {
   if (!sessionId) return { reload: false, sessionId: null };
   if (sessionId === currentSessionId) {
     live.dirtySessions.delete(sessionId);
     return { reload: true, sessionId };
   }
-  live.dirtySessions.add(sessionId);
+  markSessionDirty(sessionId, live);
   return { reload: false, sessionId };
 }
 

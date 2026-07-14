@@ -2,20 +2,17 @@
 import { ref, shallowRef, computed, reactive, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { state, FOLDER_SVG } from '../store.js';
-import { loadSessionDetail, isTextTruncated, loadFullText } from '../data.js';
-import { clearSessionDirty, consumeGlobalSessionDirty } from '../session-live.mjs';
+import { getCachedSessionDetail, loadSessionDetail, loadSessionDetailPatch, loadFullText } from '../data.js';
+import { clearSessionDirty, consumeGlobalSessionDirty, markSessionDirty } from '../session-live.mjs';
 import { applySnapshot } from '../session-timeline.mjs';
 import { reconcileTimelineItems } from '../session-timeline-items.mjs';
 import { createSessionDisclosureState } from '../session-disclosures.mjs';
 import { createSessionLiveReloadCoordinator } from '../session-live-reload.mjs';
 import { useSessionTimelineViewport } from '../session-timeline-viewport.mjs';
-import { getArgPreview, getToolIcon, renderTerminalTool } from '../tool-renderer.js';
 import FlapNumber from '../components/FlapNumber.vue';
+import SessionTimelineRow from '../components/SessionTimelineRow.vue';
 import {
-  escapeHTML,
   fmtRelative,
-  fmtClockTime,
-  renderMarkdown,
   formatProjectLabel
 } from '../utils.js';
 
@@ -223,6 +220,8 @@ async function loadMessages({ force = false } = {}) {
 }
 
 async function fetchSessionSnapshot(sessionId, { force = false } = {}) {
+  const messageSnapshot = force ? null : getCachedSessionDetail(sessionId);
+  if (messageSnapshot) return messageSnapshot;
   const cached = state.sessions.find(session => session.id === sessionId);
   if (cached && (force || !cached.messages || cached.messages.length === 0)) {
     return loadSessionDetail(sessionId);
@@ -234,14 +233,19 @@ async function loadLiveSnapshot() {
   const sessionId = props.id;
   if (!sessionId) return null;
   const revision = ++loadRevision;
-  const latest = await fetchSessionSnapshot(sessionId, { force: true });
-  clearSessionDirty(sessionId);
+  const latest = await loadSessionDetailPatch(sessionId);
   return { sessionId, revision, latest };
 }
 
 async function commitLiveSnapshot(snapshot) {
-  if (snapshot.revision !== loadRevision || snapshot.sessionId !== props.id) return;
+  if (snapshot.revision !== loadRevision || snapshot.sessionId !== props.id) {
+    markSessionDirty(snapshot.sessionId);
+    return;
+  }
   await commitSessionSnapshot(snapshot.latest);
+  const accepted = snapshot.latest?.acceptMessagePatch?.() ?? true;
+  if (accepted) clearSessionDirty(snapshot.sessionId);
+  else markSessionDirty(snapshot.sessionId);
 }
 
 async function commitSessionSnapshot(latest) {
@@ -249,16 +253,36 @@ async function commitSessionSnapshot(latest) {
   // first-snapshot tail following disabled until an actual session exists.
   if (!latest) return;
   const incoming = latest?.messages || [];
-  const reconciliation = applySnapshot(messages.value, incoming);
+  const tailPatch = latest.messagePatch?.tailOnly
+    ? {
+        messages: incoming,
+        addedIds: latest.messagePatch.changedIds,
+        updatedIds: [],
+        removedIds: [],
+        changed: true,
+        tailOnly: true,
+      }
+    : null;
+  const reconciliation = tailPatch || applySnapshot(messages.value, incoming);
   const restoreTail = reconciliation.tailOnly && timelineViewport.isFollowingTail();
   if (reconciliation.changed) {
     messages.value = reconciliation.messages;
-    timelineItems.value = reconcileTimelineItems(timelineItems.value, reconciliation.messages);
-    const retainedMessageUuids = new Set(reconciliation.messages.map(message => message.uuid));
-    disclosures.retainMessages(retainedMessageUuids);
-    for (const uuid of reconciliation.updatedIds) expandedMessageText.delete(uuid);
-    for (const uuid of expandedMessageText.keys()) {
-      if (!retainedMessageUuids.has(uuid)) expandedMessageText.delete(uuid);
+    if (tailPatch) {
+      const addedMessages = reconciliation.messages.slice(
+        reconciliation.messages.length - reconciliation.addedIds.length,
+      );
+      timelineItems.value = [
+        ...timelineItems.value,
+        ...reconcileTimelineItems([], addedMessages),
+      ];
+    } else {
+      timelineItems.value = reconcileTimelineItems(timelineItems.value, reconciliation.messages);
+      const retainedMessageUuids = new Set(reconciliation.messages.map(message => message.uuid));
+      disclosures.retainMessages(retainedMessageUuids);
+      for (const uuid of reconciliation.updatedIds) expandedMessageText.delete(uuid);
+      for (const uuid of expandedMessageText.keys()) {
+        if (!retainedMessageUuids.has(uuid)) expandedMessageText.delete(uuid);
+      }
     }
   }
 
@@ -348,20 +372,7 @@ function navTo(target) {
   }, 50);
 }
 
-// --- Toggle helpers ---
-function toggleDisclosure(key, messageUuid) {
-  disclosures.toggleOpen(key, messageUuid);
-}
-
 // --- Full text loading ---
-function displayMessageText(message) {
-  return expandedMessageText.get(message.uuid) ?? message.text;
-}
-
-function canLoadFullText(message) {
-  return !expandedMessageText.has(message.uuid) && isTextTruncated(message.text);
-}
-
 async function handleLoadFullText(uuid) {
   if (fullTextLoading.has(uuid)) return;
   fullTextLoading.add(uuid);
@@ -376,269 +387,13 @@ async function handleLoadFullText(uuid) {
 }
 
 // --- Subagent navigation ---
-function navigateToSubagent(agentId, description) {
+function navigateToSubagent(agentId) {
   router.push({
     name: 'SubagentDetail',
     params: { id: props.id, agentId }
   });
 }
 
-function groupWorkflowAgents(workflow) {
-  const phases = {};
-  for (const agent of (workflow?.agents || [])) {
-    const phase = agent.phase || 'Other';
-    if (!phases[phase]) phases[phase] = [];
-    phases[phase].push(agent);
-  }
-  return phases;
-}
-
-// --- Render helpers (produce raw HTML strings like the vanilla version) ---
-
-function formatToolInput(tc) {
-  try {
-    const j = JSON.parse(tc.input_json || '{}');
-    return JSON.stringify(j, null, 2);
-  } catch {
-    return tc.input_json || '';
-  }
-}
-
-function escapeH(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function renderPrettyTool(tc) {
-  let args;
-  try { args = JSON.parse(tc.input_json || '{}'); } catch { args = {}; }
-  const result = tc.result || {};
-  const isError = !!result.is_error;
-  const out = result.content || '';
-
-  if (tc.name === 'Read') {
-    const path = args.file_path || args.path || '?';
-    if (!out) return '<div style="color:var(--muted);font-size:11px;font-style:italic;">No content returned.</div>';
-    return renderFileContent(out);
-  }
-
-  if (tc.name === 'Write') {
-    const path = args.file_path || args.path || '?';
-    const header = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-      <span class="tool-action-label">Writing</span>
-      <span class="file-ref">${escapeH(path)}</span>
-    </div>`;
-    let content = '';
-    if (args.content) {
-      const lines = args.content.split('\n');
-      const gutter = lines.map((_, i) => i + 1).join('\n');
-      content = `<div class="file-content">
-        <div class="file-content-head"><span class="label">New file</span><span class="meta">${lines.length} lines</span></div>
-        <div class="file-content-body collapsed"><div class="gutter">${gutter}</div><div class="code">${escapeH(args.content)}</div></div>
-      </div>`;
-    }
-    const chip = `<div class="result-chip ${isError ? 'error' : ''}">${escapeH(out)}</div>`;
-    return header + content + chip;
-  }
-
-  if (tc.name === 'Edit') {
-    let diff = '';
-    if (args.old_string && args.new_string) diff = renderDiff(args.old_string, args.new_string);
-    const chip = `<div class="result-chip ${isError ? 'error' : ''}">${escapeH(out)}</div>`;
-    return diff + chip;
-  }
-
-  const terminal = renderTerminalTool(tc.name, args, out, isError);
-  if (terminal !== null) return terminal;
-
-  return `<div class="body-section"><div class="body-label">Input</div>${renderFieldGrid(args)}</div>` +
-    (out ? `<div class="body-section" style="margin-top:12px;"><div class="body-label">Output</div>${renderOutput(out, isError)}</div>` : '');
-}
-
-function renderFileContent(text) {
-  let lines = text.split('\n');
-  // Detect if content already has line numbers (e.g. "  1\tcode" from cat -n / Read tool)
-  const hasLineNums = lines.length > 1 && lines.slice(0, 5).every(l => /^\s*\d+\t/.test(l) || l === '');
-  let gutter;
-  if (hasLineNums) {
-    const parsed = lines.map(l => {
-      const m = l.match(/^\s*(\d+)\t(.*)$/);
-      return m ? { num: m[1], code: m[2] } : { num: '', code: l };
-    });
-    gutter = parsed.map(p => p.num).join('\n');
-    lines = parsed.map(p => p.code);
-  } else {
-    gutter = lines.map((_, i) => i + 1).join('\n');
-  }
-  const total = lines.length;
-  const collapsed = total > 12;
-  return `<div class="file-content">
-    <div class="file-content-head"><span class="label">File contents</span><span class="meta">${total} lines</span></div>
-    <div class="file-content-body ${collapsed ? 'collapsed' : ''}"><div class="gutter">${gutter}</div><div class="code">${escapeH(lines.join('\n'))}</div></div>
-    ${collapsed ? `<button class="file-content-expand" onclick="this.previousElementSibling.classList.toggle('collapsed');this.textContent=this.previousElementSibling.classList.contains('collapsed')?'Show all ${total} lines':'Collapse'">Show all ${total} lines</button>` : ''}
-  </div>`;
-}
-
-function renderDiff(oldStr, newStr) {
-  const oldLines = oldStr.split('\n');
-  const newLines = newStr.split('\n');
-  let prefix = 0;
-  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix++;
-  let suffix = 0;
-  while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix++;
-
-  const result = [];
-  for (let i = 0; i < prefix; i++) result.push({ kind: 'context', text: oldLines[i], oldNo: i + 1, newNo: i + 1 });
-  for (let i = prefix; i < oldLines.length - suffix; i++) result.push({ kind: 'del', text: oldLines[i], oldNo: i + 1, newNo: null });
-  for (let i = prefix; i < newLines.length - suffix; i++) result.push({ kind: 'add', text: newLines[i], oldNo: null, newNo: i + 1 });
-  for (let i = 0; i < suffix; i++) {
-    result.push({ kind: 'context', text: oldLines[oldLines.length - suffix + i], oldNo: oldLines.length - suffix + i + 1, newNo: newLines.length - suffix + i + 1 });
-  }
-
-  const adds = result.filter(d => d.kind === 'add').length;
-  const dels = result.filter(d => d.kind === 'del').length;
-
-  const rows = result.map(line => {
-    const oldN = line.oldNo == null ? ' ' : String(line.oldNo);
-    const newN = line.newNo == null ? ' ' : String(line.newNo);
-    return `<div class="diff-gutter ${line.kind}">${oldN.padStart(3)} ${newN.padStart(3)}</div><div class="diff-line ${line.kind}">  ${escapeH(line.text)}</div>`;
-  }).join('');
-
-  return `<div class="diff-view">
-    <div class="diff-view-head"><span class="label">Diff</span><div class="stats"><span class="stat-add">+${adds}</span><span class="stat-del">−${dels}</span></div></div>
-    <div class="diff-body">${rows}</div>
-  </div>`;
-}
-
-function renderFieldGrid(obj) {
-  const entries = Object.entries(obj);
-  if (!entries.length) return '';
-  const rows = entries.map(([k, v]) => {
-    return `<div class="field-key">${escapeH(k)}</div><div class="field-val">${renderValue(v)}</div>`;
-  }).join('');
-  return `<div class="field-grid">${rows}</div>`;
-}
-
-function renderValue(v) {
-  if (v === null || v === undefined) return '<span class="literal-null">null</span>';
-  if (typeof v === 'boolean') return `<span class="literal-bool">${v}</span>`;
-  if (typeof v === 'number') return `<span class="literal-num">${v}</span>`;
-  if (typeof v === 'string') {
-    if (/^https?:\/\//.test(v)) return `<span class="literal-string">${escapeH(v)}</span>`;
-    if (v.length > 120) {
-      return `<span class="lit-string-long" onclick="this.classList.toggle('open')">"${escapeH(v.slice(0, 120))}<span class="long-rest">${escapeH(v.slice(120))}</span>"<button class="more-btn">+${v.length - 120}</button></span>`;
-    }
-    return `<span class="literal-string">"${escapeH(v)}"</span>`;
-  }
-  if (Array.isArray(v)) {
-    if (v.length === 0) return '<span class="literal-null">[]</span>';
-    if (v.length <= 4 && v.every(x => typeof x !== 'object')) return `<span class="literal-string">[${v.map(x => renderValue(x)).join(', ')}]</span>`;
-    return `<span class="literal-null">Array(${v.length})</span>`;
-  }
-  if (typeof v === 'object') {
-    const keys = Object.keys(v);
-    return `<span class="literal-null">Object(${keys.length})</span>`;
-  }
-  return `<span>${escapeH(String(v))}</span>`;
-}
-
-function renderOutput(out, isError) {
-  if (!out) return '<div style="padding:8px;color:var(--muted-2);font-style:italic;font-size:11px;">No output.</div>';
-
-  let parsed = null;
-  try { parsed = JSON.parse(out); } catch {}
-
-  if (parsed !== null && typeof parsed === 'object') {
-    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(x => x && typeof x === 'object' && !Array.isArray(x))) {
-      return renderAutoTable(parsed);
-    }
-    if (Array.isArray(parsed)) {
-      return renderFieldGrid(Object.fromEntries(parsed.map((x, i) => [i, x])));
-    }
-    return renderObjectOutput(parsed);
-  }
-
-  if (out.includes('\n')) {
-    const lines = out.split('\n');
-    const total = lines.length;
-    const collapsed = total > 10;
-    const gutter = lines.map((_, i) => i + 1).join('\n');
-    return `<div class="file-content">
-      <div class="file-content-body ${collapsed ? 'collapsed' : ''}"><div class="gutter">${gutter}</div><div class="code">${escapeH(out)}</div></div>
-      ${collapsed ? `<button class="file-content-expand" onclick="this.previousElementSibling.classList.toggle('collapsed');this.textContent=this.previousElementSibling.classList.contains('collapsed')?'Show all ${total} lines':'Collapse'">Show all ${total} lines</button>` : ''}
-    </div>`;
-  }
-
-  return `<div class="result-chip ${isError ? 'error' : ''}">${escapeH(out)}</div>`;
-}
-
-function renderObjectOutput(obj) {
-  const hero = extractHero(obj);
-  let rest = obj;
-  if (hero) {
-    rest = { ...obj };
-    if (hero.titleKey) delete rest[hero.titleKey];
-    if (hero.urlKey) delete rest[hero.urlKey];
-    if (hero.idKey) delete rest[hero.idKey];
-  }
-  let html = '';
-  if (hero) {
-    html += `<div style="margin-bottom:10px;padding:8px 12px;border-left:2px solid var(--accent-soft);background:rgba(167,139,250,0.04);border-radius:0 5px 5px 0;">`;
-    if (hero.titleKey) html += `<div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:2px;">${escapeH(obj[hero.titleKey])}</div>`;
-    const sub = [];
-    if (hero.idKey) sub.push(escapeH(obj[hero.idKey]));
-    if (hero.urlKey) sub.push(escapeH(obj[hero.urlKey]));
-    if (sub.length) html += `<div style="font-family:var(--font-mono);font-size:11px;color:var(--muted);">${sub.join(' · ')}</div>`;
-    html += '</div>';
-  }
-  if (Object.keys(rest).length) html += renderFieldGrid(rest);
-  return html;
-}
-
-function extractHero(obj) {
-  if (!obj || typeof obj !== 'object') return null;
-  const titleKey = ['title', 'name', 'summary'].find(k => typeof obj[k] === 'string');
-  const urlKey = ['url', 'permalink', 'href', 'link'].find(k => typeof obj[k] === 'string' && /^https?:/.test(obj[k]));
-  const idKey = ['id', 'identifier', 'uuid', 'key'].find(k => typeof obj[k] === 'string');
-  if (!titleKey && !urlKey && !idKey) return null;
-  return { titleKey, urlKey, idKey };
-}
-
-function renderAutoTable(rows) {
-  const sample = rows.slice(0, 5);
-  const allKeys = new Set();
-  for (const row of sample) Object.keys(row).forEach(k => allKeys.add(k));
-  const cols = Array.from(allKeys);
-  const head = cols.map(c => `<th>${escapeH(c)}</th>`).join('');
-  const body = rows.slice(0, 50).map(row =>
-    `<tr>${cols.map(c => {
-      const v = row[c];
-      if (v == null) return '<td><span class="literal-null">—</span></td>';
-      if (typeof v === 'string' && v.length > 60) return `<td title="${escapeH(v)}">${escapeH(v.slice(0, 60))}…</td>`;
-      if (typeof v === 'object') return `<td>${renderValue(v)}</td>`;
-      return `<td>${escapeH(String(v))}</td>`;
-    }).join('')}</tr>`
-  ).join('');
-  return `<div class="auto-table-wrap">
-    <div class="auto-table-head"><span class="h-label">Result</span><span class="h-meta">${rows.length} items · ${cols.length} columns</span></div>
-    <div class="auto-table-scroll"><table class="auto-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
-  </div>`;
-}
-
-function toggleRaw(key, messageUuid) {
-  disclosures.toggleRaw(key, messageUuid);
-}
-
-function getSkillMd(msg) {
-  return msg?._skillMd || null;
-}
-
-function getToolCallParsedInput(tc) {
-  try {
-    return JSON.parse(tc.input_json || '{}');
-  } catch {
-    return {};
-  }
-}
 </script>
 
 <template>
@@ -695,307 +450,16 @@ function getToolCallParsedInput(tc) {
             :data-index="virtualRow.index"
             :style="{ transform: `translateY(${virtualRow.start - timelineScrollMargin}px)` }"
           >
-            <template v-for="item in [timelineItems[virtualRow.index]]" :key="item.key">
-              <template v-for="msg in [item.message]" :key="msg.uuid">
-
-            <!-- Meta messages: collapsed system indicator -->
-            <template v-if="item.kind === 'meta'">
-              <div class="msg meta" :class="{ 'is-focused': focusedItemKey === item.key }" :data-uuid="item.anchorUuid" :data-message-uuid="item.messageUuid">
-                <div class="msg-meta-collapsed" :class="{ open: disclosures.isOpen(`meta:${msg.uuid}`) }" :data-view-key="`meta:${msg.uuid}`">
-                  <button class="meta-toggle" @click="toggleDisclosure(`meta:${msg.uuid}`, msg.uuid)">
-                    <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                    <span class="meta-label">System</span>
-                    <span class="meta-preview">{{ (msg.text || '').replace(/<[^>]+>/g, '').slice(0, 80) }}</span>
-                  </button>
-                  <div class="meta-body">
-                    <div v-html="renderMarkdown(displayMessageText(msg), { variant: 'compact', query: state.query })"></div>
-                    <button
-                      v-if="canLoadFullText(msg)"
-                      class="truncated-btn"
-                      :disabled="fullTextLoading.has(msg.uuid)"
-                      @click="handleLoadFullText(msg.uuid)"
-                    >{{ fullTextLoading.has(msg.uuid) ? 'Loading full text…' : 'Message truncated — click to load full text' }}</button>
-                  </div>
-                </div>
-              </div>
-            </template>
-
-            <!-- Workflow card (standalone, outside assistant bubble) -->
-            <template v-else-if="item.kind === 'workflow'">
-              <div class="wf-card" :class="{ 'is-focused': focusedItemKey === item.key }" :data-uuid="item.anchorUuid" :data-message-uuid="item.messageUuid">
-                <div class="wf-card-header">
-                  <span class="wf-card-icon">&#x2699;</span>
-                  <span class="wf-card-name">{{ item.workflowCall.workflow.workflow_name || 'Workflow' }}</span>
-                  <span class="wf-card-count">{{ item.workflowCall.workflow.agents?.length || 0 }} agents</span>
-                  <span
-                    v-if="item.workflowCall.workflow.status"
-                    class="wf-card-status"
-                    :class="item.workflowCall.workflow.status"
-                  >{{ item.workflowCall.workflow.status }}</span>
-                </div>
-                <div class="wf-card-body">
-                  <template v-for="(phaseAgents, phase) in groupWorkflowAgents(item.workflowCall.workflow)" :key="phase">
-                    <div class="wf-card-phase">
-                      <div class="wf-card-phase-title">{{ phase }}</div>
-                      <button
-                        v-for="agent in phaseAgents"
-                        :key="agent.agent_id"
-                        class="wf-card-agent"
-                        @click="navigateToSubagent(agent.agent_id, agent.label || '')"
-                      >
-                        <span class="wf-card-agent-label">{{ agent.label || agent.agent_id }}</span>
-                        <span v-if="agent.state === 'error'" class="wf-card-agent-state error">error</span>
-                        <span class="wf-card-agent-arrow">&rarr;</span>
-                      </button>
-                    </div>
-                  </template>
-                </div>
-              </div>
-            </template>
-
-            <!-- Non-workflow tools attached to a standalone workflow card -->
-            <template v-else-if="item.kind === 'workflow-tools'">
-              <div class="msg assistant" :class="{ 'is-focused': focusedItemKey === item.key }" :data-uuid="item.anchorUuid" :data-message-uuid="item.messageUuid">
-                <div class="msg-tools">
-                  <template v-for="tc in item.toolCalls" :key="tc.id">
-                    <div
-                      class="msg-tool"
-                      :class="{ open: disclosures.isOpen(`tool:${tc.id}`), 'is-error': tc.result && tc.result.is_error }"
-                      :data-view-key="`tool:${tc.id}`"
-                    >
-                      <button class="toolcall-toggle" @click="toggleDisclosure(`tool:${tc.id}`, msg.uuid)">
-                        <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                        <span v-if="getToolIcon(tc.name)" class="tool-icon" v-html="getToolIcon(tc.name)"></span>
-                        <span class="tool-name">{{ tc.name }}</span>
-                        <span class="tool-arg">{{ getArgPreview(tc) }}</span>
-                        <span v-if="tc.result && tc.result.is_error" class="tool-error">error</span>
-                      </button>
-                      <div class="toolcall-body">
-                        <div class="toolcall-body-strip">
-                          <span class="strip-label">{{ tc.name }}</span>
-                          <span class="spacer"></span>
-                          <button class="raw-toggle" :class="{ active: disclosures.isRaw(`tool:${tc.id}`) }" @click.stop="toggleRaw(`tool:${tc.id}`, msg.uuid)">{ } Raw</button>
-                        </div>
-                        <div class="toolcall-pretty" :class="{ hidden: disclosures.isRaw(`tool:${tc.id}`) }" v-html="renderPrettyTool(tc)"></div>
-                        <div class="toolcall-raw" :class="{ show: disclosures.isRaw(`tool:${tc.id}`) }">
-                          <div class="tc-section">Input</div>
-                          <pre>{{ formatToolInput(tc) }}</pre>
-                          <template v-if="tc.result">
-                            <div class="tc-section">{{ tc.result.is_error ? 'Error' : 'Output' }}</div>
-                            <pre>{{ tc.result.content || '(empty)' }}</pre>
-                          </template>
-                        </div>
-                      </div>
-                    </div>
-                  </template>
-                </div>
-              </div>
-            </template>
-
-            <!-- Skill card (standalone, like workflow) -->
-            <template v-else-if="item.kind === 'skill'">
-              <div
-                class="skill-card"
-                :class="{ 'skill-md-open': disclosures.isOpen(`skill:${msg.uuid}`), 'is-focused': focusedItemKey === item.key }"
-                :data-uuid="item.anchorUuid"
-                :data-message-uuid="item.messageUuid"
-                :data-view-key="`skill:${msg.uuid}`"
-              >
-                <div class="skill-card-icon">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 6.5h6M5 9h4"/></svg>
-                </div>
-                <div class="skill-card-body">
-                  <div class="skill-card-header">
-                    <span class="skill-card-badge">Skill</span>
-                    <span class="skill-card-name">{{ getToolCallParsedInput(msg.tool_calls[0]).skill || '?' }}</span>
-                  </div>
-                  <div class="skill-card-args">{{ getToolCallParsedInput(msg.tool_calls[0]).args || '' }}</div>
-                  <div v-if="getSkillMd(msg)" class="skill-card-md">
-                    <button class="skill-md-toggle" @click="toggleDisclosure(`skill:${msg.uuid}`, msg.uuid)">
-                      <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                      <span>SKILL.md</span>
-                    </button>
-                    <div class="skill-md-body" v-html="renderMarkdown(getSkillMd(msg), { variant: 'compact' })"></div>
-                  </div>
-                </div>
-              </div>
-            </template>
-
-            <!-- Standalone thinking message -->
-            <template v-else-if="item.kind === 'thinking'">
-              <div class="msg assistant" :class="{ 'is-focused': focusedItemKey === item.key }" :data-uuid="item.anchorUuid" :data-message-uuid="item.messageUuid">
-                <div class="msg-thinking" :class="{ open: disclosures.isOpen(`thinking:${msg.uuid}`) }" :data-view-key="`thinking:${msg.uuid}`">
-                  <button class="thinking-toggle" @click="toggleDisclosure(`thinking:${msg.uuid}`, msg.uuid)">
-                    <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                    <span class="thinking-label">Thinking</span>
-                  </button>
-                  <div class="thinking-body" v-html="renderMarkdown(msg.text, { variant: 'msg', query: state.query })"></div>
-                </div>
-              </div>
-            </template>
-
-            <!-- Normal message (user or assistant) -->
-            <template v-else>
-              <div
-                class="msg"
-                :class="[msg.type === 'user' ? 'user' : 'assistant', { 'is-focused': focusedItemKey === item.key }]"
-                :data-uuid="item.anchorUuid"
-                :data-message-uuid="item.messageUuid"
-              >
-                <!-- Message header -->
-                <div class="msg-head">
-                  <span class="role">{{ msg.type === 'user' ? 'You' : 'Assistant' }}</span>
-                  <span class="when">{{ msg.timestamp ? fmtClockTime(msg.timestamp) : '' }}</span>
-                </div>
-
-                <!-- Attached thinking block (merged from preceding thinking messages) -->
-                <div v-if="msg._thinking" class="msg-thinking" :class="{ open: disclosures.isOpen(`thinking:${msg.uuid}`) }" :data-view-key="`thinking:${msg.uuid}`">
-                    <button class="thinking-toggle" @click="toggleDisclosure(`thinking:${msg.uuid}`, msg.uuid)">
-                    <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                    <span class="thinking-label">Thinking</span>
-                  </button>
-                  <div class="thinking-body" v-html="renderMarkdown(msg._thinking, { variant: 'msg', query: state.query })"></div>
-                </div>
-
-                <!-- Message text body -->
-                <template v-if="msg.text">
-                  <div v-html="renderMarkdown(displayMessageText(msg), { variant: 'msg', query: state.query })"></div>
-                  <button
-                    v-if="canLoadFullText(msg)"
-                    class="truncated-btn"
-                    :disabled="fullTextLoading.has(msg.uuid)"
-                    @click="handleLoadFullText(msg.uuid)"
-                  >{{ fullTextLoading.has(msg.uuid) ? 'Loading full text…' : 'Message truncated — click to load full text' }}</button>
-                </template>
-                <template v-else-if="!(msg.tool_calls && msg.tool_calls.length)">
-                  <div class="msg-text empty-text">(no text content)</div>
-                </template>
-
-                <!-- Tool calls -->
-                <div v-if="msg.tool_calls && msg.tool_calls.length" class="msg-tools">
-                  <template v-for="tc in msg.tool_calls" :key="tc.id">
-
-                    <!-- Skill loaded — agent equipped a capability -->
-                    <template v-if="tc.name === 'Skill'">
-                      <div class="skill-badge">
-                        <span class="skill-label">skill</span>
-                        <span class="skill-name">{{ getToolCallParsedInput(tc).skill || '?' }}</span>
-                      </div>
-                    </template>
-
-                    <!-- Agent/Task tool call (subagent) -->
-                    <template v-else-if="tc.name === 'Agent' || tc.name === 'Task'">
-                      <div class="msg-tool agent-call" :class="{ open: disclosures.isOpen(`tool:${tc.id}`) }" :data-view-key="`tool:${tc.id}`">
-                        <button class="toolcall-toggle" @click="toggleDisclosure(`tool:${tc.id}`, msg.uuid)">
-                          <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                          <span class="tool-name">{{ getToolCallParsedInput(tc).subagent_type || getToolCallParsedInput(tc).agentType || 'Agent' }}</span>
-                          <span class="tool-arg">{{ getToolCallParsedInput(tc).description || (getToolCallParsedInput(tc).prompt || '').slice(0, 80) }}</span>
-                          <span v-if="tc.result && tc.result.is_error" class="tool-error">error</span>
-                          <button
-                            v-if="tc.subagent?.agent_id"
-                            class="agent-nav-btn"
-                            @click.stop="navigateToSubagent(tc.subagent.agent_id, getToolCallParsedInput(tc).description || '')"
-                          >View conversation &rarr;</button>
-                        </button>
-                        <div class="toolcall-body" style="padding:10px 12px;">
-                          <template v-if="getToolCallParsedInput(tc).prompt">
-                            <div class="tc-section">Prompt</div>
-                            <div class="agent-prompt">{{ (getToolCallParsedInput(tc).prompt || '').slice(0, 500) }}{{ (getToolCallParsedInput(tc).prompt || '').length > 500 ? '...' : '' }}</div>
-                          </template>
-                          <template v-if="tc.result?.content">
-                            <div class="tc-section">Result</div>
-                            <div class="agent-result" v-html="renderMarkdown(tc.result.content, { variant: 'compact' })"></div>
-                          </template>
-                        </div>
-                      </div>
-                    </template>
-
-                    <!-- Workflow tool call (inside assistant bubble) -->
-                    <template v-else-if="tc.name === 'Workflow'">
-                      <div class="msg-tool agent-call" :class="{ open: disclosures.isOpen(`tool:${tc.id}`) }" :data-view-key="`tool:${tc.id}`">
-                        <button class="toolcall-toggle" @click="toggleDisclosure(`tool:${tc.id}`, msg.uuid)">
-                          <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                          <span class="tool-name">Workflow</span>
-                          <span class="tool-arg">{{ tc.workflow?.workflow_name || getToolCallParsedInput(tc).name || 'Workflow' }}</span>
-                          <span
-                            v-if="tc.workflow?.status"
-                            class="workflow-status"
-                            :class="tc.workflow.status"
-                          >{{ tc.workflow.status }}</span>
-                          <span v-if="tc.result && tc.result.is_error" class="tool-error">error</span>
-                        </button>
-                        <div class="toolcall-body" style="padding:10px 12px;">
-                          <template v-if="tc.workflow?.agents?.length">
-                            <div class="tc-section">Agents &middot; {{ tc.workflow.agents.length }}</div>
-                            <div class="workflow-agent-list">
-                              <template v-for="(phaseAgents, phase) in groupWorkflowAgents(tc.workflow)" :key="phase">
-                                <div class="workflow-phase-group">
-                                  <div class="workflow-phase-header">{{ phase }}</div>
-                                  <div class="workflow-phase-agents">
-                                    <button
-                                      v-for="a in phaseAgents"
-                                      :key="a.agent_id"
-                                      class="workflow-agent-row"
-                                      @click.stop="navigateToSubagent(a.agent_id, a.label || '')"
-                                    >
-                                      <span class="workflow-agent-label">{{ a.label || a.agent_id }}</span>
-                                      <span class="workflow-agent-state" :class="a.state || ''">{{ a.state || '' }}</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              </template>
-                            </div>
-                          </template>
-                        </div>
-                      </div>
-                    </template>
-
-                    <!-- Generic tool call -->
-                    <template v-else>
-                      <div class="msg-tool" :class="{ open: disclosures.isOpen(`tool:${tc.id}`), 'is-error': tc.result && tc.result.is_error }" :data-view-key="`tool:${tc.id}`">
-                        <button class="toolcall-toggle" @click="toggleDisclosure(`tool:${tc.id}`, msg.uuid)">
-                          <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                          <span v-if="getToolIcon(tc.name)" class="tool-icon" v-html="getToolIcon(tc.name)"></span>
-                          <span class="tool-name">{{ tc.name }}</span>
-                          <span class="tool-arg">{{ getArgPreview(tc) }}</span>
-                          <span v-if="tc.result && tc.result.is_error" class="tool-error">error</span>
-                        </button>
-                        <div class="toolcall-body">
-                          <div class="toolcall-body-strip">
-                            <span class="strip-label">{{ tc.name }}</span>
-                            <span class="spacer"></span>
-                            <button class="raw-toggle" :class="{ active: disclosures.isRaw(`tool:${tc.id}`) }" @click.stop="toggleRaw(`tool:${tc.id}`, msg.uuid)">{ } Raw</button>
-                          </div>
-                          <div class="toolcall-pretty" :class="{ hidden: disclosures.isRaw(`tool:${tc.id}`) }" v-html="renderPrettyTool(tc)"></div>
-                          <div class="toolcall-raw" :class="{ show: disclosures.isRaw(`tool:${tc.id}`) }">
-                            <div class="tc-section">Input</div>
-                            <pre>{{ formatToolInput(tc) }}</pre>
-                            <template v-if="tc.result">
-                              <div class="tc-section">{{ tc.result.is_error ? 'Error' : 'Output' }}</div>
-                              <pre>{{ tc.result.content || '(empty)' }}</pre>
-                            </template>
-                          </div>
-                        </div>
-                      </div>
-                    </template>
-
-                  </template>
-                </div>
-
-                <!-- Summary block -->
-                <div v-if="msg.summary" class="msg-summary" :class="{ open: disclosures.isOpen(`summary:${msg.uuid}`) }" :data-view-key="`summary:${msg.uuid}`">
-                  <button class="summary-toggle" @click="toggleDisclosure(`summary:${msg.uuid}`, msg.uuid)">
-                    <svg class="chevron" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2.5 1.5l3 2.5-3 2.5"/></svg>
-                    <span class="label">Session summary</span>
-                    <span class="source">{{ msg.summary.source || '' }}</span>
-                  </button>
-                  <div class="summary-body" v-html="renderMarkdown(msg.summary.content, { variant: 'compact' })"></div>
-                </div>
-              </div>
-            </template>
-
-              </template>
-            </template>
+            <SessionTimelineRow
+              :item="timelineItems[virtualRow.index]"
+              :focused="focusedItemKey === timelineItems[virtualRow.index].key"
+              :query="state.query"
+              :disclosures="disclosures"
+              :expanded-message-text="expandedMessageText"
+              :full-text-loading="fullTextLoading"
+              @load-full-text="handleLoadFullText"
+              @navigate-subagent="navigateToSubagent"
+            />
           </div>
         </div>
       </template>

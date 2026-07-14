@@ -1,11 +1,18 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { UsageStatsOptions } from '../shared/ipc-types.ts';
+import type {
+  SessionPatch,
+  SessionPatchCursor,
+  UsageStatsOptions,
+} from '../shared/ipc-types.ts';
 
 contextBridge.exposeInMainWorld('obelisk', {
   getSessions: (opts?: unknown) => ipcRenderer.invoke('db:getSessions', opts),
   getSessionMessages: (id: string) => ipcRenderer.invoke('db:getSessionMessages', id),
   getSessionToolCalls: (id: string) => ipcRenderer.invoke('db:getSessionToolCalls', id),
   getSessionToolResults: (id: string) => ipcRenderer.invoke('db:getSessionToolResults', id),
+  getSessionPatch: (id: string, cursor: SessionPatchCursor): Promise<SessionPatch | null> => (
+    ipcRenderer.invoke('db:getSessionPatch', id, cursor)
+  ),
   getSessionSubagents: (id: string) => ipcRenderer.invoke('db:getSessionSubagents', id),
   getSessionWorkflows: (id: string) => ipcRenderer.invoke('db:getSessionWorkflows', id),
   getSubagentMessages: (agentId: string) => ipcRenderer.invoke('db:getSubagentMessages', agentId),
