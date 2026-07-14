@@ -49,7 +49,7 @@ test('timeline viewport owns measurement and anchoring while SessionDetail alone
   assert.match(viewportModule, /scrollToFn:\s*scrollPolicy\.scrollToFn/);
   assert.match(viewportModule, /useScrollendEvent:\s*true/);
   assert.match(viewportModule, /isScrollingResetDelay:\s*450/);
-  assert.match(viewportModule, /settleUserScroll/);
+  assert.doesNotMatch(viewportModule + sessionDetail, /settleUserScroll|flushDeferredAdjustment/);
   assert.match(viewportModule, /useAnimationFrameWithResizeObserver:\s*true/);
   assert.match(viewportModule, /scrollPaddingEnd/);
   assert.match(viewportModule, /scrollToIndex/);

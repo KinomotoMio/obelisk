@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createSessionTimelineScrollPolicy } from '../app/src/renderer/src/session-timeline-scroll-policy.mjs';
 
-test('virtualizer scroll writes are deferred throughout a user scroll', () => {
+test('virtualizer scroll writes are discarded throughout a user scroll', () => {
   let scrolling = true;
   const element = { scrollTop: 100 };
   const writes = [];
@@ -21,12 +21,13 @@ test('virtualizer scroll writes are deferred throughout a user scroll', () => {
   assert.deepEqual(writes, [], 'momentum is never interrupted by a programmatic write');
 
   scrolling = false;
-  policy.flushDeferredAdjustment(instance);
-  assert.deepEqual(writes, [{ offset: 100, behavior: 'auto', adjustments: 24 }]);
-  assert.equal(element.scrollTop, 124, 'the accumulated correction restores the reader anchor once');
-
-  policy.flushDeferredAdjustment(instance);
-  assert.equal(writes.length, 1, 'settlement is idempotent');
+  assert.equal(element.scrollTop, 100, 'scrollend never replays a suppressed correction');
+  policy.scrollToFn(100, { behavior: 'auto', adjustments: 8 }, instance);
+  assert.deepEqual(
+    writes,
+    [{ offset: 100, behavior: 'auto', adjustments: 8 }],
+    'new corrections produced after scrollend remain available for live commits',
+  );
 });
 
 test('explicit UUID and pagination navigation can bypass the user-scroll guard', () => {
@@ -43,4 +44,25 @@ test('explicit UUID and pagination navigation can bypass the user-scroll guard',
   });
 
   assert.deepEqual(writes, [{ offset: 720, behavior: 'auto' }]);
+});
+
+test('settlement never replays a measurement correction from before the latest user scroll', () => {
+  let scrolling = true;
+  const element = { scrollTop: 100 };
+  const writes = [];
+  const instance = { scrollElement: element };
+  const policy = createSessionTimelineScrollPolicy({
+    isUserScrolling: () => scrolling,
+    writeScroll: (offset, options) => {
+      writes.push({ offset, ...options });
+      element.scrollTop = offset + (options.adjustments || 0);
+    },
+  });
+
+  policy.scrollToFn(100, { behavior: 'auto', adjustments: -24 }, instance);
+  element.scrollTop = 300;
+  scrolling = false;
+
+  assert.deepEqual(writes, [], 'the completed gesture owns its final scroll position');
+  assert.equal(element.scrollTop, 300, 'scrollend must not roll the viewport backward');
 });

@@ -323,6 +323,45 @@ async function run() {
   assert(disclosure.unmounted, 'the expanded tool row unmounts outside overscan');
   assert(disclosure.restored, 'disclosure state survives unmount and remount');
 
+  const passiveScrollSettlement = await win.webContents.executeJavaScript(`new Promise(resolve => {
+    const wrap = document.querySelector('.detail-wrap');
+    const originalScrollTo = wrap.scrollTo.bind(wrap);
+    const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
+    let phase = 'scrolling';
+    let postScrollEndWrites = 0;
+    wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
+    wrap.scrollTo = (...args) => {
+      if (phase === 'settled') postScrollEndWrites++;
+      return originalScrollTo(...args);
+    };
+    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: 70, bubbles: true }));
+    const startedAt = performance.now();
+    function frame(now) {
+      wrap.scrollTop += 55;
+      if (now - startedAt < 600) {
+        requestAnimationFrame(frame);
+        return;
+      }
+      const beforeScrollEnd = wrap.scrollTop;
+      phase = 'settled';
+      wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+      wrap.dispatchEvent(new Event('scrollend'));
+      setTimeout(() => {
+        const afterScrollEnd = wrap.scrollTop;
+        wrap.scrollTo = originalScrollTo;
+        resolve({ beforeScrollEnd, afterScrollEnd, postScrollEndWrites });
+      }, 120);
+    }
+    requestAnimationFrame(frame);
+  })`, true);
+  assert(
+    passiveScrollSettlement.postScrollEndWrites === 0
+      && Math.abs(passiveScrollSettlement.afterScrollEnd - passiveScrollSettlement.beforeScrollEnd) < 1,
+    `ordinary scrolling settles without rollback (${JSON.stringify(passiveScrollSettlement)})`,
+  );
+  await win.webContents.executeJavaScript(`document.querySelector('button[title="First"]')?.click()`, true);
+  await delay(350);
+
   await win.webContents.executeJavaScript(`window.location.hash = '#/sessions'`, true);
   await waitFor(win.webContents, `!document.querySelector('.virtual-timeline')`, 'session detail deactivation');
   await win.webContents.executeJavaScript(`(async () => {

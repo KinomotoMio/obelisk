@@ -63,7 +63,6 @@ const liveReloadCoordinator = createSessionLiveReloadCoordinator({
 });
 
 function handleUserScrollEnd() {
-  timelineViewport.settleUserScroll();
   if (active.value) void liveReloadCoordinator.flush();
 }
 

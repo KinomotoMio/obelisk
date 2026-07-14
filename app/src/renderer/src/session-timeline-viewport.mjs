@@ -133,10 +133,6 @@ export function useSessionTimelineViewport({
     tailFollowReady.value = true;
   }
 
-  function settleUserScroll() {
-    return scrollPolicy.flushDeferredAdjustment(virtualizer.value);
-  }
-
   return {
     virtualRows,
     totalSize,
@@ -145,7 +141,6 @@ export function useSessionTimelineViewport({
     scrollToIndex,
     scrollToEnd,
     isFollowingTail,
-    settleUserScroll,
     resetForInitialSnapshot,
     completeInitialSnapshot,
   };
