@@ -67,6 +67,59 @@ test('tool results schema indexes live session patch lookups', async () => {
   }
 });
 
+test('tool payload schema indexes subagent joins and guardian retractions', async () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(await readExecutableSchema());
+    const toolCallJoinPlan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT tc.* FROM tool_calls tc
+      JOIN messages m ON m.uuid = tc.message_uuid
+      WHERE m.agent_id = ?
+    `).all('agent-1');
+    const toolResultJoinPlan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT tr.* FROM tool_results tr
+      JOIN messages m ON m.uuid = tr.message_uuid
+      WHERE m.agent_id = ?
+    `).all('agent-1');
+    const toolCallRetractionPlan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT rowid FROM tool_calls
+      WHERE session_id = ? OR message_uuid IN (
+        SELECT uuid FROM messages WHERE session_id = ? OR agent_id = ?
+      )
+    `).all('session-1', 'session-1', 'session-1');
+    const toolResultRetractionPlan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT rowid FROM tool_results
+      WHERE session_id = ? OR message_uuid IN (
+        SELECT uuid FROM messages WHERE session_id = ? OR agent_id = ?
+      )
+    `).all('session-1', 'session-1', 'session-1');
+
+    const details = plans => plans.map(row => String(row.detail));
+    assert.ok(
+      details(toolCallJoinPlan).some(detail => /USING INDEX idx_tc_message/.test(detail)),
+      `expected indexed tool call join, got: ${details(toolCallJoinPlan).join('; ')}`,
+    );
+    assert.ok(
+      details(toolResultJoinPlan).some(detail => /USING INDEX idx_tr_message/.test(detail)),
+      `expected indexed tool result join, got: ${details(toolResultJoinPlan).join('; ')}`,
+    );
+    assert.ok(
+      details(toolCallRetractionPlan).some(detail => /USING INDEX idx_tc_message/.test(detail)),
+      `expected indexed tool call retraction, got: ${details(toolCallRetractionPlan).join('; ')}`,
+    );
+    assert.ok(
+      details(toolResultRetractionPlan).some(detail => /USING INDEX idx_tr_message/.test(detail)),
+      `expected indexed tool result retraction, got: ${details(toolResultRetractionPlan).join('; ')}`,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('schema reference stays focused on raw SQL structure', async () => {
   const ref = await readSchemaReference();
 
