@@ -31,6 +31,9 @@ export function createSessionLiveReloadCoordinator({ isScrolling, load, commit }
 
   async function processPending() {
     if (stopped || (!pending && !loadedSnapshot)) return inFlight;
+    // Do not start more IPC/deserialization work during an active wheel
+    // gesture. Coalesce notifications and fetch the latest state once.
+    if (isScrolling()) return inFlight;
     if (inFlight) return inFlight;
     inFlight = drain();
     try {

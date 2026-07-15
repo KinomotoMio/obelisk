@@ -4,14 +4,15 @@ import assert from 'node:assert/strict';
 import { createSessionLiveReloadCoordinator } from '../app/src/renderer/src/session-live-reload.mjs';
 import { state } from '../app/src/renderer/src/store.js';
 import {
+  fetchSessionDetailPatch,
   getCachedSessionDetail,
   loadSessionDetail,
-  loadSessionDetailPatch,
+  materializeSessionDetailPatch,
 } from '../app/src/renderer/src/data.js';
 import { assembleSessionMessages } from '../app/src/shared/session-detail-assembly.mjs';
 import { createSessionPatch } from '../app/src/shared/session-patch.mjs';
 
-test('live snapshots keep loading while scrolling and commit only the latest after scroll end', async () => {
+test('live updates coalesce while scrolling and load only the latest after scroll end', async () => {
   let scrolling = true;
   let loads = 0;
   const commits = [];
@@ -24,16 +25,16 @@ test('live snapshots keep loading while scrolling and commit only the latest aft
   await coordinator.request();
   await coordinator.request();
   await coordinator.request();
-  assert.equal(loads, 3, 'patches are loaded into the pending snapshot while the timeline is frozen');
+  assert.equal(loads, 0, 'patch preparation stays off the scrolling renderer task budget');
   assert.deepEqual(commits, []);
 
   scrolling = false;
   await coordinator.flush();
-  assert.equal(loads, 3, 'scroll end reuses the freshest pending snapshot');
-  assert.deepEqual(commits, [3]);
+  assert.equal(loads, 1, 'scroll end loads the latest coalesced state once');
+  assert.deepEqual(commits, [1]);
 
   await coordinator.flush();
-  assert.equal(loads, 3, 'an idle flush without another update is a no-op');
+  assert.equal(loads, 1, 'an idle flush without another update is a no-op');
 });
 
 test('an update arriving during an in-flight load skips the stale snapshot without overlap', async () => {
@@ -101,6 +102,7 @@ test('a skipped live patch does not advance the visible patch baseline', async t
   const previousSessions = state.sessions;
   t.after(() => {
     state.sessions = previousSessions;
+    state.sessionTitleOverrides.delete(sessionId);
     delete globalThis.window;
   });
   let rows = [
@@ -133,21 +135,30 @@ test('a skipped live patch does not advance the visible patch baseline', async t
           firstPatchStarted();
           await firstPatchGate;
         }
-        return createSessionPatch(snapshotAtCall, cursor);
+        return {
+          ...createSessionPatch(snapshotAtCall, cursor),
+          session: {
+            id: sessionId,
+            title: 'Live session title',
+            message_count: rows.length,
+          },
+        };
       },
     },
   };
-  state.sessions = [{ id: sessionId, messages: [] }];
+  state.sessions = [{ id: sessionId, title: 'Initial title', message_count: 1, messages: [] }];
   await loadSessionDetail(sessionId);
 
   const commits = [];
   const coordinator = createSessionLiveReloadCoordinator({
     isScrolling: () => false,
-    load: () => loadSessionDetailPatch(sessionId),
+    load: async () => materializeSessionDetailPatch(await fetchSessionDetailPatch(sessionId)),
     commit: async latest => {
       commits.push({
         messages: latest.messages.map(message => message.uuid),
         changedIds: latest.messagePatch.changedIds,
+        title: latest.title,
+        messageCount: latest.message_count,
       });
       latest.acceptMessagePatch?.();
     },
@@ -164,6 +175,8 @@ test('a skipped live patch does not advance the visible patch baseline', async t
   assert.deepEqual(commits, [{
     messages: ['message-1', 'message-2', 'message-3'],
     changedIds: ['message-2', 'message-3'],
+    title: 'Live session title',
+    messageCount: 3,
   }]);
   assert.deepEqual(
     getCachedSessionDetail(sessionId).messages.map(message => message.uuid),
@@ -171,9 +184,22 @@ test('a skipped live patch does not advance the visible patch baseline', async t
     'accepted patches become the reusable session-detail snapshot',
   );
   assert.deepEqual(
+    {
+      title: getCachedSessionDetail(sessionId).title,
+      messageCount: getCachedSessionDetail(sessionId).message_count,
+    },
+    { title: 'Live session title', messageCount: 3 },
+    'accepted patches retain the current session metadata without a global catalogue reload',
+  );
+  assert.deepEqual(
     state.sessions.find(session => session.id === sessionId).messages,
     [],
     'the stale full-snapshot copy is invalidated after patch acceptance',
+  );
+  assert.deepEqual(
+    state.sessionTitleOverrides.get(sessionId),
+    'Live session title',
+    'accepted title changes update the shared breadcrumb/window-title overlay after the visible commit',
   );
 
   const evictionSessionIds = ['eviction-session-1', 'eviction-session-2', 'eviction-session-3'];

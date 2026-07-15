@@ -3,6 +3,7 @@ import { computed, watch, ref, provide, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   state,
+  getSessionSummary,
   FOLDER_SVG,
   resetListState,
   setView,
@@ -20,6 +21,10 @@ import { resolveGlobalShortcut } from './keyboard-shortcuts.mjs';
 const router = useRouter();
 const route = useRoute();
 let searchTimer = null;
+
+const routeSession = computed(() => {
+  return getSessionSummary(route.params.id);
+});
 
 // --- Sidebar data ---
 
@@ -84,7 +89,7 @@ const windowTitle = computed(() => {
     scopeText = 'Settings';
   } else if (route.name?.startsWith('Session')) {
     if (route.name === 'SessionDetail' || route.name === 'SubagentDetail') {
-      const s = state.sessions.find(x => x.id === route.params.id);
+      const s = routeSession.value;
       scopeText = s ? `Sessions · ${s.title}` : 'Sessions';
     } else {
       const proj = state.projectFilter !== 'all' ? ` · ${formatProjectLabel(state.projectFilter)}` : '';
@@ -470,13 +475,13 @@ provide('recapGenerateOpen', recapGenerateOpen);
               <template v-if="route.name === 'SubagentDetail'">
                 <span class="crumb-sep">/</span>
                 <router-link class="crumb" :to="`/sessions/${route.params.id}`">
-                  {{ (state.sessions.find(s => s.id === route.params.id)?.title || '').slice(0, 30) || route.params.id }}
+                  {{ (routeSession?.title || '').slice(0, 30) || route.params.id }}
                 </router-link>
               </template>
               <template v-if="route.name === 'SessionDetail'">
                 <span class="crumb-sep">/</span>
                 <span class="crumb terminal">
-                  {{ state.sessions.find(s => s.id === route.params.id)?.title || route.params.id }}
+                  {{ routeSession?.title || route.params.id }}
                 </span>
               </template>
               <template v-if="route.name === 'SubagentDetail'">

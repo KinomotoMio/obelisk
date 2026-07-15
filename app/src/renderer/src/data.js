@@ -20,23 +20,39 @@ function rememberSessionMessageSnapshot(sessionId, entry) {
   }
 }
 
-function invalidateStoredSessionMessages(sessionId) {
+function sessionMetadata(session) {
+  if (!session) return null;
+  const metadata = { ...session };
+  delete metadata.messages;
+  delete metadata.workflow;
+  return markRaw(metadata);
+}
+
+function commitStoredSessionMetadata(sessionId, metadata) {
   const session = state.sessions.find(candidate => candidate.id === sessionId);
   if (session?.messages?.length) session.messages = markRaw([]);
+  const visibleTitle = state.sessionTitleOverrides.get(sessionId) ?? session?.title;
+  if (metadata?.title !== undefined && metadata.title !== visibleTitle) {
+    state.sessionTitleOverrides.set(sessionId, metadata.title);
+  }
 }
 
 /**
- * Load initial data from the DB and populate state.memories, state.sessions,
- * and state.projects.
+ * Fetch the global catalogue without mutating renderer state. Navigation can
+ * then gate a reply that started before SessionDetail became active.
  */
-export async function loadInitialData() {
+export async function fetchInitialData() {
   const [rawMemories, rawSessions, stats, projects] = await Promise.all([
     window.obelisk.getMemories(),
     window.obelisk.getSessions({ source: 'all', limit: 1000 }),
     window.obelisk.getStats(),
     window.obelisk.getProjects()
   ]);
+  return { rawMemories, rawSessions, stats, projects };
+}
 
+/** Commit a fetched global catalogue snapshot to shared renderer state. */
+export function commitInitialData({ rawMemories, rawSessions, stats, projects }) {
   // Transform memories: DB records -> render-layer shape
   state.memories = (rawMemories || []).map(m => ({
     ...m,
@@ -46,6 +62,9 @@ export async function loadInitialData() {
     anchors: m.anchors ? (typeof m.anchors === 'string' ? JSON.parse(m.anchors) : m.anchors) : [],
     markdown: null  // loaded on demand via loadMemoryMarkdown
   }));
+
+  // The catalogue now owns the latest metadata; route overlays can retire.
+  state.sessionTitleOverrides.clear();
 
   // Sessions: merge with existing data to preserve already-loaded messages
   const existingSessions = new Map(state.sessions.map(s => [s.id, s]));
@@ -81,26 +100,36 @@ export async function loadSessionDetail(sessionId) {
     messages: assembleSessionMessages({ messages, toolCalls, toolResults, subagents, workflows }),
     workflows,
   };
+  const metadata = sessionMetadata(state.sessions.find(candidate => candidate.id === sessionId));
   rememberSessionMessageSnapshot(sessionId, {
     snapshot,
     cursor: createSessionPatchCursor(snapshot),
+    session: metadata,
   });
-  return commitSessionDetail(sessionId, snapshot, { updateStore: true });
+  return commitSessionDetail(sessionId, snapshot, { updateStore: true, metadata });
 }
 
-export async function loadSessionDetailPatch(sessionId) {
+export async function fetchSessionDetailPatch(sessionId) {
   const current = sessionMessageSnapshots.get(sessionId);
   if (!current || typeof window.obelisk.getSessionPatch !== 'function') {
-    return loadSessionDetail(sessionId);
+    return { sessionId, current: null, patch: null };
   }
   const patch = await window.obelisk.getSessionPatch(sessionId, current.cursor);
-  if (!patch) return loadSessionDetail(sessionId);
+  return { sessionId, current, patch };
+}
+
+export async function materializeSessionDetailPatch({ sessionId, current, patch }) {
+  if (!current || !patch) return loadSessionDetail(sessionId);
   const next = applySessionPatch(current.snapshot, current.cursor, patch);
-  const latest = commitSessionDetail(sessionId, next.snapshot, { updateStore: false });
+  const metadata = sessionMetadata(patch.session) || current.session;
+  const latest = commitSessionDetail(sessionId, next.snapshot, {
+    updateStore: false,
+    metadata,
+  });
   latest.acceptMessagePatch = () => {
     if (sessionMessageSnapshots.get(sessionId) !== current) return false;
-    rememberSessionMessageSnapshot(sessionId, next);
-    invalidateStoredSessionMessages(sessionId);
+    rememberSessionMessageSnapshot(sessionId, { ...next, session: metadata });
+    commitStoredSessionMetadata(sessionId, metadata);
     return true;
   };
   latest.messagePatch = {
@@ -119,13 +148,17 @@ export async function loadSessionDetailPatch(sessionId) {
 export function getCachedSessionDetail(sessionId) {
   const current = sessionMessageSnapshots.get(sessionId);
   if (!current) return null;
-  return commitSessionDetail(sessionId, current.snapshot, { updateStore: false });
+  return commitSessionDetail(sessionId, current.snapshot, {
+    updateStore: false,
+    metadata: current.session,
+  });
 }
 
-function commitSessionDetail(sessionId, { messages, workflows = [] }, { updateStore }) {
+function commitSessionDetail(sessionId, { messages, workflows = [] }, { updateStore, metadata = null }) {
   const session = state.sessions.find(candidate => candidate.id === sessionId);
   const assembled = {
     ...(session || {}),
+    ...(metadata || {}),
     id: sessionId,
     messages: markRaw(messages),
   };

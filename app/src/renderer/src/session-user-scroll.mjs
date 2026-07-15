@@ -1,5 +1,6 @@
 export function createSessionUserScroll({
   quietMs = 450,
+  scrollEndGraceMs = 100,
   setTimeout: schedule = globalThis.setTimeout.bind(globalThis),
   clearTimeout: cancel = globalThis.clearTimeout.bind(globalThis),
   onEnd = () => {},
@@ -22,12 +23,12 @@ export function createSessionUserScroll({
     if (notify) onEnd();
   }
 
-  function scheduleFallback() {
+  function scheduleFallback(delay = quietMs) {
     clearQuietTimer();
     quietTimer = schedule(() => {
       quietTimer = null;
       finish();
-    }, quietMs);
+    }, delay);
   }
 
   function begin() {
@@ -51,7 +52,10 @@ export function createSessionUserScroll({
   }
 
   function handleScrollEnd() {
-    finish();
+    // Chromium can emit scrollend between wheel packets even though the user
+    // is still in one physical trackpad gesture. A short grace period lets the
+    // next packet keep ownership without waiting for the full watchdog.
+    scheduleFallback(scrollEndGraceMs);
   }
 
   function detach() {

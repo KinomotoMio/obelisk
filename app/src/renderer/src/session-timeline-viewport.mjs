@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue';
-import { elementScroll, useVirtualizer } from '@tanstack/vue-virtual';
+import { defaultRangeExtractor, elementScroll, useVirtualizer } from '@tanstack/vue-virtual';
 import { createSessionTimelineScrollPolicy } from './session-timeline-scroll-policy.mjs';
 
 function estimatedTextHeight(text = '') {
@@ -26,6 +26,37 @@ export function estimateTimelineItemSize(item) {
     + (message._thinking ? 34 : 0);
 }
 
+export function createViewportRangeExtractor({
+  getScrollElement,
+  getVirtualizer,
+  bufferViewports = 4,
+}) {
+  return range => {
+    const element = getScrollElement();
+    const instance = getVirtualizer();
+    const viewportSize = element?.clientHeight || 0;
+    if (!instance || viewportSize <= 0) return defaultRangeExtractor(range);
+
+    // The compositor can advance wheel scrolling before the renderer receives
+    // the scroll event. Buffer in pixels so short rows do not collapse a
+    // count-based overscan into less than one trackpad gesture.
+    const bufferSize = viewportSize * bufferViewports;
+    const scrollOffset = element.scrollTop || 0;
+    const first = instance.getVirtualItemForOffset(Math.max(0, scrollOffset - bufferSize));
+    const last = instance.getVirtualItemForOffset(
+      scrollOffset + viewportSize + bufferSize,
+    );
+    if (!first || !last) return defaultRangeExtractor(range);
+
+    const startIndex = Math.max(0, Math.min(first.index, range.startIndex));
+    const endIndex = Math.min(range.count - 1, Math.max(last.index, range.endIndex));
+    return Array.from(
+      { length: endIndex - startIndex + 1 },
+      (_, offset) => startIndex + offset,
+    );
+  };
+}
+
 export function useSessionTimelineViewport({
   items,
   scrollElement,
@@ -40,7 +71,12 @@ export function useSessionTimelineViewport({
     isUserScrolling: () => userScroll?.isActive() ?? false,
     writeScroll: elementScroll,
   });
-  const virtualizer = useVirtualizer(computed(() => ({
+  let virtualizer = null;
+  const rangeExtractor = createViewportRangeExtractor({
+    getScrollElement: () => scrollElement.value,
+    getVirtualizer: () => virtualizer?.value,
+  });
+  virtualizer = useVirtualizer(computed(() => ({
     count: items.value.length,
     getScrollElement: () => scrollElement.value,
     estimateSize: index => estimateTimelineItemSize(items.value[index]),
@@ -48,6 +84,7 @@ export function useSessionTimelineViewport({
     scrollMargin: scrollMargin.value,
     scrollPaddingEnd,
     overscan,
+    rangeExtractor,
     gap,
     anchorTo: 'end',
     followOnAppend: false,
@@ -133,6 +170,27 @@ export function useSessionTimelineViewport({
     tailFollowReady.value = true;
   }
 
+  async function waitForStableLayout({ maxFrames = 8, isCurrent = () => true } = {}) {
+    const targetWindow = scrollElement.value?.ownerDocument?.defaultView;
+    if (!targetWindow || items.value.length === 0) return true;
+    for (let frame = 0; frame < maxFrames; frame++) {
+      await new Promise(resolve => targetWindow.requestAnimationFrame(resolve));
+      if (!isCurrent()) return false;
+      const rows = [...virtualizer.value.elementsCache.values()]
+        .filter(element => element.isConnected)
+        .sort((left, right) => (
+          Number(left.dataset.index) - Number(right.dataset.index)
+        ))
+        .map(element => element.getBoundingClientRect())
+        .filter(rect => rect.height > 0);
+      const overlaps = rows.some((rect, index) => (
+        index > 0 && rect.top < rows[index - 1].bottom - 1
+      ));
+      if (rows.length > 0 && !overlaps) return true;
+    }
+    return false;
+  }
+
   return {
     virtualRows,
     totalSize,
@@ -143,5 +201,6 @@ export function useSessionTimelineViewport({
     isFollowingTail,
     resetForInitialSnapshot,
     completeInitialSnapshot,
+    waitForStableLayout,
   };
 }

@@ -13,6 +13,7 @@ import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/sr
 import type {
   SessionPatchCursor,
   SessionPatchSnapshot,
+  SessionMetadata,
   SourceQueryOptions,
 } from '../shared/ipc-types.ts';
 import type {
@@ -463,10 +464,31 @@ function querySessionDisplaySnapshot(sessionId: string): SessionPatchSnapshot {
   };
 }
 
+const SESSION_METADATA_COLUMNS = [
+  'id',
+  'title',
+  'project',
+  'project_path',
+  'started_at',
+  'ended_at',
+  'git_branch',
+  'version',
+  'message_count',
+  'jsonl_path',
+  'source',
+].join(', ');
+
+function querySessionMetadata(sessionId: string): SessionMetadata | null {
+  if (!db) return null;
+  return (
+    db.prepare(`SELECT ${SESSION_METADATA_COLUMNS} FROM sessions WHERE id = ?`).get(sessionId) as SessionMetadata | undefined
+  ) || null;
+}
+
 ipcMain.handle('db:getSessions', (_, opts = {}) => {
   if (!db) return [];
   const { project, limit = 200 } = opts;
-  let sql = `SELECT id, title, project, project_path, started_at, ended_at, git_branch, version, message_count, jsonl_path, source FROM sessions`;
+  let sql = `SELECT ${SESSION_METADATA_COLUMNS} FROM sessions`;
   const params: unknown[] = [];
   const sourceFilter = sourceWhereClause(opts);
   if (sourceFilter.sql) {
@@ -505,7 +527,10 @@ ipcMain.handle('db:getSessionPatch', (
   cursor: SessionPatchCursor,
 ) => {
   if (!db) return null;
-  return createSessionPatch(querySessionDisplaySnapshot(sessionId), cursor);
+  return {
+    ...createSessionPatch(querySessionDisplaySnapshot(sessionId), cursor),
+    session: querySessionMetadata(sessionId),
+  };
 });
 
 ipcMain.handle('db:getSubagentMessages', (_, agentId) => {

@@ -38,7 +38,7 @@ function dispatch(target, type, properties = {}) {
   target.dispatchEvent(event);
 }
 
-test('native scrollend, not the virtualizer 150ms reset, ends a user scroll', () => {
+test('native scrollend ends a user scroll after a short wheel-burst grace period', () => {
   const scheduler = createScheduler();
   const target = new EventTarget();
   target.scrollTop = 100;
@@ -46,6 +46,7 @@ test('native scrollend, not the virtualizer 150ms reset, ends a user scroll', ()
   let ended = 0;
   const userScroll = createSessionUserScroll({
     quietMs: 450,
+    scrollEndGraceMs: 100,
     setTimeout: scheduler.setTimeout,
     clearTimeout: scheduler.clearTimeout,
     onEnd: () => { ended++; },
@@ -61,6 +62,9 @@ test('native scrollend, not the virtualizer 150ms reset, ends a user scroll', ()
   assert.equal(ended, 0);
 
   dispatch(target, 'scrollend');
+  scheduler.advance(99);
+  assert.equal(userScroll.isActive(), true, 'a following wheel packet can retain scroll ownership');
+  scheduler.advance(1);
   assert.equal(userScroll.isActive(), false);
   assert.equal(ended, 1);
 

@@ -3,8 +3,9 @@
 import { createApp } from 'vue';
 import App from './App.vue';
 import router from './router.js';
-import { loadInitialData } from './data.js';
+import { commitInitialData, fetchInitialData } from './data.js';
 import { noteSessionUpdated, sessionLiveState } from './session-live.mjs';
+import { createGlobalDataRefreshCoordinator } from './session-global-refresh.mjs';
 
 // Import shared renderer CSS globally
 import '../styles/base.css';
@@ -17,20 +18,39 @@ const app = createApp(App);
 
 app.use(router);
 
+const globalDataRefresh = createGlobalDataRefreshCoordinator({
+  isDeferred: () => {
+    const routeName = router.currentRoute.value.name;
+    return routeName === 'SessionDetail';
+  },
+  load: fetchInitialData,
+  commit: commitInitialData,
+});
+
+function reportGlobalRefreshFailure(request) {
+  void request.catch(error => {
+    console.error('Failed to refresh Obelisk catalogues:', error);
+  });
+}
+
 // Load data on startup
 router.isReady().then(() => {
-  loadInitialData();
+  reportGlobalRefreshFailure(globalDataRefresh.initialize());
+});
+
+router.afterEach(() => {
+  reportGlobalRefreshFailure(globalDataRefresh.flush());
 });
 
 // Refresh data when window regains focus
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    loadInitialData();
+    reportGlobalRefreshFailure(globalDataRefresh.invalidate());
   }
 });
 
 window.obelisk?.onIndexUpdated?.(() => {
-  loadInitialData();
+  reportGlobalRefreshFailure(globalDataRefresh.invalidate());
 });
 
 window.obelisk?.onSessionUpdated?.(({ sessionId } = {}) => {

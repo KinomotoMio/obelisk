@@ -1,6 +1,6 @@
 // Production renderer integration test for the dynamic SessionDetail timeline.
 // Run: npm run test:electron:timeline
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, nativeImage } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,6 +36,9 @@ const channels = [
 
 let failures = 0;
 let firstSessionListRead = true;
+let nextPatchDelayMs = 0;
+let stressGlobalCatalogue = false;
+let currentSessionTitle = 'Virtualized timeline integration';
 const ipcReads = {
   messages: 0,
   toolCalls: 0,
@@ -45,6 +48,12 @@ const ipcReads = {
   summaries: 0,
   patches: 0,
   patchMessageRows: [],
+};
+const globalReads = {
+  sessions: 0,
+  memories: 0,
+  projects: 0,
+  stats: 0,
 };
 const messages = Array.from({ length: messageCount }, (_, index) => ({
   uuid: `message-${index}`,
@@ -60,6 +69,10 @@ messages[focusMessageIndex].type = 'assistant';
 messages[focusMessageIndex].text = `Truncated preview ${'indexed content '.repeat(700)}`;
 const fullTextSentinel = `FULL TEXT SENTINEL ${'complete content '.repeat(80)}`;
 const codexExecSource = 'const result = { ok: true };\nreturn result;';
+const liveBashToolInput = {
+  command: "cat > /tmp/q_jul15b.mjs <<'EOF'\nconst codex = sessions({ source: 'codex', project: '%quiet-zero%', limit: 3 });\n\nconst tail = sql(`\n  SELECT substr(text, 1, 500) as snippet, timestamp, role\n  FROM messages\n  WHERE session_id = ?\n    AND timestamp > '2026-07-14T18:20:00'\n    AND text IS NOT NULL\n    AND COALESCE(is_meta, 0) = 0\n    AND length(text) > 30\n  ORDER BY timestamp DESC\n  LIMIT 5\n`, codex[0]?.id);\n\n// Any new codex sessions for quiet-zero\nconst newer = sql(`\n  SELECT id, title, started_at, ended_at, message_count\n  FROM sessions\n  WHERE COALESCE(source,'claude') = 'codex'\n    AND project LIKE '%quiet-zero%'\n    AND started_at > '2026-07-14T18:00:00'\n  ORDER BY started_at DESC\n  LIMIT 5\n`);\n\nreturn {\n  main: { id: codex[0]?.id, ended: codex[0]?.ended_at, msgs: codex[0]?.message_count },\n  afterLastSync: tail,\n  newerSessions: newer,\n};\nEOF\nnode /Users/tomiya/.claude/skills/obelisk/scripts/runtime.js --query /tmp/q_jul15b.mjs",
+  description: 'Query for activity since last sync',
+};
 let codexExecOutput = JSON.stringify([{
   type: 'input_text',
   text: 'Script completed\nWall time 0.1 seconds\nOutput:\n{"ok":true}',
@@ -88,7 +101,7 @@ const toolResults = [{
 function sessionSummary() {
   return {
     id: sessionId,
-    title: 'Virtualized timeline integration',
+    title: currentSessionTitle,
     project: 'quiet-zero',
     project_path: '/tmp/quiet-zero',
     source: 'claude',
@@ -97,6 +110,17 @@ function sessionSummary() {
     message_count: messages.length,
     git_branch: 'main',
   };
+}
+
+function sessionSummaries() {
+  return [sessionSummary(), ...Array.from({ length: 999 }, (_, index) => ({
+    ...sessionSummary(),
+    id: `background-session-${index}`,
+    title: `Background session ${index}`,
+    project: `project-${index % 250}`,
+    project_path: `/tmp/project-${index % 250}`,
+    message_count: index % 200,
+  }))];
 }
 
 function assert(condition, message) {
@@ -116,7 +140,7 @@ async function waitFor(webContents, expression, message, timeoutMs = 8000) {
   throw new Error(`Timed out waiting for ${message}`);
 }
 
-async function startRendererTrace(win) {
+async function startRendererTrace(win, { captureScreenshots = false } = {}) {
   const traceEvents = [];
   let completeTrace;
   const traceComplete = new Promise(resolve => { completeTrace = resolve; });
@@ -127,7 +151,13 @@ async function startRendererTrace(win) {
   win.webContents.debugger.attach('1.3');
   win.webContents.debugger.on('message', onMessage);
   await win.webContents.debugger.sendCommand('Tracing.start', {
-    categories: 'devtools.timeline,disabled-by-default-devtools.timeline,blink.user_timing,toplevel',
+    categories: [
+      'devtools.timeline',
+      'disabled-by-default-devtools.timeline',
+      'blink.user_timing',
+      'toplevel',
+      captureScreenshots ? 'disabled-by-default-devtools.screenshot' : '',
+    ].filter(Boolean).join(','),
     options: 'record-as-much-as-possible',
     transferMode: 'ReportEvents',
   });
@@ -137,6 +167,139 @@ async function startRendererTrace(win) {
     win.webContents.debugger.removeListener('message', onMessage);
     win.webContents.debugger.detach();
     return traceEvents;
+  };
+}
+
+function screenshotContentDeviation(event) {
+  const image = nativeImage.createFromBuffer(Buffer.from(event.args.snapshot, 'base64'));
+  const size = image.getSize();
+  const crop = image.crop({
+    x: Math.floor(size.width * 0.32),
+    y: Math.floor(size.height * 0.2),
+    width: Math.max(1, Math.floor(size.width * 0.5)),
+    height: Math.max(1, Math.floor(size.height * 0.6)),
+  });
+  const bitmap = crop.toBitmap();
+  let sum = 0;
+  let sumSquares = 0;
+  let samples = 0;
+  for (let offset = 0; offset + 3 < bitmap.length; offset += 4) {
+    const value = (bitmap[offset] + bitmap[offset + 1] + bitmap[offset + 2]) / 3;
+    sum += value;
+    sumSquares += value * value;
+    samples++;
+  }
+  const mean = sum / samples;
+  return Math.sqrt(Math.max(0, sumSquares / samples - mean * mean)) / 255;
+}
+
+let wheelTraceRun = 0;
+async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
+  const runId = wheelTraceRun++;
+  const startMark = `obelisk-wheel-${runId}-start`;
+  const endMark = `obelisk-wheel-${runId}-end`;
+  win.showInactive();
+  await delay(180);
+  await win.webContents.executeJavaScript(`(() => {
+    const tool = document.querySelector('[data-view-key="tool:call-1"]');
+    if (tool && !tool.classList.contains('open')) tool.querySelector('.toolcall-toggle')?.click();
+  })()`, true);
+  await delay(120);
+  const before = await win.webContents.executeJavaScript(
+    `document.querySelector('.detail-wrap')?.scrollTop || 0`,
+    true,
+  );
+  const stopRendererTrace = await startRendererTrace(win, { captureScreenshots: true });
+  await win.webContents.executeJavaScript(`(() => {
+    const wrap = document.querySelector('.detail-wrap');
+    const tool = document.querySelector('[data-view-key="tool:call-1"]');
+    const probe = {
+      gaps: [],
+      previous: performance.now(),
+      stop: false,
+      wheels: 0,
+      updateVisibleAtWheel: null,
+    };
+    const recordWheel = () => { probe.wheels++; };
+    const observer = new MutationObserver(() => {
+      if (
+        probe.updateVisibleAtWheel === null
+        && tool?.querySelector('.prompt-cmd')?.textContent.includes('/tmp/q_jul15b.mjs')
+      ) probe.updateVisibleAtWheel = probe.wheels;
+    });
+    wrap?.addEventListener('wheel', recordWheel, { passive: true });
+    if (tool) observer.observe(tool, { childList: true, characterData: true, subtree: true });
+    probe.cleanup = () => {
+      wrap?.removeEventListener('wheel', recordWheel);
+      observer.disconnect();
+    };
+    window.__wheelFrameProbe = probe;
+    function frame(now) {
+      probe.gaps.push(now - probe.previous);
+      probe.previous = now;
+      if (!probe.stop) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })()`, true);
+  if (updateTool) {
+    nextPatchDelayMs = 80;
+    replaceToolInput(win, 'call-1', liveBashToolInput, { notify: false });
+  }
+  await win.webContents.executeJavaScript(
+    `performance.mark(${JSON.stringify(startMark)})`,
+    true,
+  );
+  for (let index = 0; index < 8; index++) {
+    win.webContents.sendInputEvent({
+      type: 'mouseWheel',
+      x: 800,
+      y: 400,
+      deltaX: 0,
+      deltaY: -120,
+      canScroll: true,
+    });
+    if (updateTool && index === 2) {
+      // Production sends both notifications for one daemon build. The global
+      // catalogue invalidation must not reload 1000 sessions into the renderer
+      // while the current conversation owns the scroll gesture.
+      win.webContents.send('obelisk:index-updated', { affectedSessionIds: [sessionId] });
+      win.webContents.send('obelisk:session-updated', { sessionId });
+    }
+    await delay(45);
+  }
+  // Stop inside the scrollend grace window. Any patch preparation or DOM
+  // mutation seen here competed with the physical wheel burst.
+  await delay(60);
+  const after = await win.webContents.executeJavaScript(
+    `document.querySelector('.detail-wrap')?.scrollTop || 0`,
+    true,
+  );
+  const frameProbe = await win.webContents.executeJavaScript(`(() => {
+    performance.mark(${JSON.stringify(endMark)});
+    const probe = window.__wheelFrameProbe;
+    probe.stop = true;
+    probe.cleanup();
+    delete window.__wheelFrameProbe;
+    return { gaps: probe.gaps, updateVisibleAtWheel: probe.updateVisibleAtWheel };
+  })()`, true);
+  const traceEvents = await stopRendererTrace();
+  const screenshots = traceEvents
+    .filter(event => event.name === 'Screenshot' && event.args?.snapshot);
+  const deviations = screenshots.map(screenshotContentDeviation);
+  const taskMetrics = rendererTaskMetrics(traceEvents, startMark, endMark);
+  return {
+    before,
+    after,
+    screenshots: screenshots.length,
+    minDeviation: Math.min(Infinity, ...deviations),
+    maxFrameGap: Math.max(0, ...frameProbe.gaps),
+    maxTaskMs: taskMetrics.maxTaskMs,
+    maxFunctionCallMs: taskMetrics.maxFunctionCallMs,
+    updateVisibleAtWheel: frameProbe.updateVisibleAtWheel,
+    slowestChildren: taskMetrics.slowestChildren,
+    // A blank content crop is almost uniform (< 0.035); rendered fixture rows
+    // stay comfortably above 0.06 even while the compositor is scrolling.
+    blankFrames: deviations.filter(value => value < 0.035).length,
   };
 }
 
@@ -173,6 +336,16 @@ function rendererTaskMetrics(traceEvents, startMark, endMark) {
   return {
     tasks: taskDurations.length,
     maxTaskMs: Math.max(0, ...taskDurations),
+    maxFunctionCallMs: Math.max(0, ...traceEvents
+      .filter(event => (
+        event.name === 'FunctionCall'
+        && event.ph === 'X'
+        && event.pid === start.pid
+        && event.tid === start.tid
+        && event.ts >= start.ts
+        && event.ts <= end.ts
+      ))
+      .map(event => (event.dur || 0) / 1000)),
     slowestChildren,
   };
 }
@@ -211,31 +384,38 @@ async function traceStationaryAppend(win, index, expectedTotal, runIndex) {
 
 function registerHandlers() {
   ipcMain.handle('db:getSessions', async () => {
+    globalReads.sessions++;
     if (firstSessionListRead) {
       firstSessionListRead = false;
       await delay(120);
     }
-    return [sessionSummary()];
+    return stressGlobalCatalogue ? sessionSummaries() : [sessionSummary()];
   });
   ipcMain.handle('db:getSessionMessages', () => { ipcReads.messages++; return messages; });
   ipcMain.handle('db:getSessionToolCalls', () => { ipcReads.toolCalls++; return toolCalls; });
   ipcMain.handle('db:getSessionToolResults', () => { ipcReads.toolResults++; return toolResults; });
-  ipcMain.handle('db:getSessionPatch', (_event, _sessionId, cursor) => {
+  ipcMain.handle('db:getSessionPatch', async (_event, _sessionId, cursor) => {
     ipcReads.patches++;
+    const delayMs = nextPatchDelayMs;
+    nextPatchDelayMs = 0;
+    if (delayMs > 0) await delay(delayMs);
     const patch = createSessionPatch({
       messages: assembleSessionMessages({ messages, toolCalls, toolResults, subagents: [], workflows: [] }),
       workflows: [],
     }, cursor);
     ipcReads.patchMessageRows.push(patch.changes.messages.length);
-    return patch;
+    return { ...patch, session: sessionSummary() };
   });
   ipcMain.handle('db:getSessionSubagents', () => { ipcReads.subagents++; return []; });
   ipcMain.handle('db:getSessionWorkflows', () => { ipcReads.workflows++; return []; });
   ipcMain.handle('db:getSessionSummaries', () => { ipcReads.summaries++; return []; });
   ipcMain.handle('db:getMessageFullText', (_event, uuid) => uuid === focusMessageUuid ? fullTextSentinel : null);
-  ipcMain.handle('db:getMemories', () => []);
-  ipcMain.handle('db:getProjects', () => [{ project: 'quiet-zero', count: 1 }]);
-  ipcMain.handle('db:getStats', () => ({}));
+  ipcMain.handle('db:getMemories', () => { globalReads.memories++; return []; });
+  ipcMain.handle('db:getProjects', () => {
+    globalReads.projects++;
+    return [{ project: 'quiet-zero', count: 1 }];
+  });
+  ipcMain.handle('db:getStats', () => { globalReads.stats++; return {}; });
   ipcMain.handle('settings:get', () => ({}));
 }
 
@@ -265,6 +445,13 @@ function replaceToolResult(win, toolUseId, content) {
   win.webContents.send('obelisk:session-updated', { sessionId });
 }
 
+function replaceToolInput(win, toolUseId, input, { notify = true } = {}) {
+  const index = toolCalls.findIndex(toolCall => toolCall.id === toolUseId);
+  if (index < 0) throw new Error(`Cannot update missing tool call ${toolUseId}`);
+  toolCalls[index] = { ...toolCalls[index], input_json: JSON.stringify(input) };
+  if (notify) win.webContents.send('obelisk:session-updated', { sessionId });
+}
+
 async function run() {
   registerHandlers();
   const win = new BrowserWindow({
@@ -279,12 +466,71 @@ async function run() {
   });
 
   await win.loadFile(join(appRoot, 'out', 'renderer', 'index.html'), {
-    hash: `/sessions/${sessionId}`,
+    hash: '/sessions',
   });
+  await waitFor(
+    win.webContents,
+    `document.body.textContent.includes('Virtualized timeline integration')`,
+    'the session list before cold open',
+  );
+  await win.webContents.executeJavaScript(`(() => {
+    const probe = {
+      maxOverlaps: 0,
+      framesWithOverlap: 0,
+      samples: 0,
+      examples: [],
+      stop: false,
+    };
+    window.__coldOpenOverlapProbe = probe;
+    function sample() {
+      if (probe.stop) return;
+      const timeline = document.querySelector('.virtual-timeline');
+      const rows = timeline && getComputedStyle(timeline).visibility !== 'hidden'
+        ? [...timeline.querySelectorAll('.virtual-timeline-row')]
+        .map(row => row.getBoundingClientRect())
+        .filter(rect => rect.height > 0)
+        : [];
+      let overlaps = 0;
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index].top < rows[index - 1].bottom - 1) overlaps++;
+      }
+      probe.maxOverlaps = Math.max(probe.maxOverlaps, overlaps);
+      if (overlaps > 0) {
+        probe.framesWithOverlap++;
+        if (probe.examples.length < 2) {
+          probe.examples.push({
+            overlaps,
+            totalSize: document.querySelector('.virtual-timeline')?.style.height,
+            rows: [...document.querySelectorAll('.virtual-timeline-row')].slice(0, 4).map(row => ({
+              index: row.dataset.index,
+              transform: row.style.transform,
+              top: row.getBoundingClientRect().top,
+              height: row.getBoundingClientRect().height,
+            })),
+          });
+        }
+      }
+      probe.samples++;
+      requestAnimationFrame(sample);
+    }
+    requestAnimationFrame(sample);
+    window.location.hash = ${JSON.stringify(`/sessions/${sessionId}`)};
+  })()`, true);
   await waitFor(
     win.webContents,
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount}'`,
     'the cold-start session snapshot',
+  );
+  await delay(100);
+  const coldOpenOverlap = await win.webContents.executeJavaScript(`(() => {
+    const probe = window.__coldOpenOverlapProbe;
+    probe.stop = true;
+    delete window.__coldOpenOverlapProbe;
+    return probe;
+  })()`, true);
+  assert(
+    coldOpenOverlap.maxOverlaps === 0,
+    `cold-open timeline never paints intersecting message rows (${JSON.stringify(coldOpenOverlap)})`,
   );
 
   const initial = await win.webContents.executeJavaScript(`(() => ({
@@ -362,8 +608,55 @@ async function run() {
   await win.webContents.executeJavaScript(`document.querySelector('button[title="First"]')?.click()`, true);
   await delay(350);
 
+  const wheelBaseline = await traceWheelPaintContinuity(win);
+  await win.webContents.executeJavaScript(`document.querySelector('button[title="First"]')?.click()`, true);
+  await delay(350);
+  const globalReadsBeforeWheelUpdate = { ...globalReads };
+  stressGlobalCatalogue = true;
+  const wheelPaint = await traceWheelPaintContinuity(win, { updateTool: true });
+  stressGlobalCatalogue = false;
+  assert(
+    Math.abs(wheelPaint.after - wheelPaint.before) > 500 && wheelPaint.screenshots >= 4,
+    `wheel trace exercises compositor scrolling (${JSON.stringify(wheelPaint)})`,
+  );
+  assert(
+    wheelPaint.blankFrames === 0,
+    `fast wheel scrolling never presents a blank timeline frame (${JSON.stringify(wheelPaint)})`,
+  );
+  assert(
+    wheelPaint.maxFrameGap < 50,
+    `Bash tool update avoids a multi-frame renderer stall while scrolling (${JSON.stringify(wheelPaint)})`,
+  );
+  assert(
+    wheelPaint.maxFunctionCallMs <= wheelBaseline.maxFunctionCallMs + 2,
+    `Bash patch preparation stays off the scrolling renderer task budget (baseline ${wheelBaseline.maxFunctionCallMs.toFixed(2)}ms, update ${wheelPaint.maxFunctionCallMs.toFixed(2)}ms)`,
+  );
+  assert(
+    wheelPaint.updateVisibleAtWheel === null,
+    `Bash tool update stays out of the timeline DOM for the complete wheel burst (became visible after wheel ${wheelPaint.updateVisibleAtWheel})`,
+  );
+  assert(
+    JSON.stringify(globalReads) === JSON.stringify(globalReadsBeforeWheelUpdate),
+    `conversation updates do not reload global catalogues while scrolling (${JSON.stringify(globalReads)})`,
+  );
+  await waitFor(
+    win.webContents,
+    `Boolean(document.querySelector('[data-view-key="tool:call-1"] .prompt-cmd')?.textContent.includes('/tmp/q_jul15b.mjs'))`,
+    'post-scroll Bash tool update',
+  );
+
   await win.webContents.executeJavaScript(`window.location.hash = '#/sessions'`, true);
   await waitFor(win.webContents, `!document.querySelector('.virtual-timeline')`, 'session detail deactivation');
+  for (let attempt = 0; attempt < 100 && globalReads.sessions === globalReadsBeforeWheelUpdate.sessions; attempt++) {
+    await delay(20);
+  }
+  const expectedGlobalReadsAfterLeaving = Object.fromEntries(
+    Object.entries(globalReadsBeforeWheelUpdate).map(([key, value]) => [key, value + 1]),
+  );
+  assert(
+    JSON.stringify(globalReads) === JSON.stringify(expectedGlobalReadsAfterLeaving),
+    `leaving conversation detail flushes one coalesced global refresh (${JSON.stringify(globalReads)})`,
+  );
   await win.webContents.executeJavaScript(`(async () => {
     const search = document.querySelector('#search');
     search.value = 'SENTINEL';
@@ -494,6 +787,13 @@ async function run() {
     ));
     await delay(250);
   }
+  const liveHeaderMetadata = await win.webContents.executeJavaScript(`(() => ({
+    text: document.querySelector('.session-meta-inline')?.textContent || '',
+  }))()`, true);
+  assert(
+    liveHeaderMetadata.text.includes(`${messageCount + stationaryAppendRuns} messages`),
+    `session header metadata follows incremental patches without a global refresh (${liveHeaderMetadata.text.trim()})`,
+  );
   const stationaryAnchorSelector = `[data-uuid="${stationaryAnchorBefore?.uuid}"]`;
   const stationaryAnchorAfter = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
@@ -525,6 +825,20 @@ async function run() {
     assert(trace.maxTaskMs < 8.33, `stationary live commit ${runIndex + 1} stays inside a 120Hz renderer task budget (${trace.maxTaskMs.toFixed(2)}ms across ${trace.tasks} tasks)`);
   }
 
+  await win.webContents.executeJavaScript(`(() => {
+    const probe = { minRows: Infinity, zeroFrames: 0, samples: 0, stop: false };
+    window.__liveTimelineRowProbe = probe;
+    function sample() {
+      if (probe.stop) return;
+      const rows = document.querySelectorAll('.virtual-timeline-row').length;
+      probe.minRows = Math.min(probe.minRows, rows);
+      if (rows === 0) probe.zeroFrames++;
+      probe.samples++;
+      requestAnimationFrame(sample);
+    }
+    requestAnimationFrame(sample);
+  })()`, true);
+  currentSessionTitle = 'Live metadata title';
   setTimeout(() => appendMessage(win, scrollingAppendIndex), 250);
   const scrollProbe = await win.webContents.executeJavaScript(`new Promise(resolve => {
     const wrap = document.querySelector('.detail-wrap');
@@ -587,6 +901,25 @@ async function run() {
     `document.querySelector('.flap-slot.flipping')`,
     'post-scrollend flap animation',
   );
+  await waitFor(
+    win.webContents,
+    `document.title.includes('Live metadata title') && document.querySelector('.breadcrumb')?.textContent.includes('Live metadata title')`,
+    'shared route metadata update',
+  );
+  const sharedMetadataState = await win.webContents.executeJavaScript(`(() => ({
+    windowTitle: document.title.includes('Live metadata title'),
+    breadcrumb: document.querySelector('.breadcrumb')?.textContent.includes('Live metadata title'),
+  }))()`, true);
+  assert(
+    sharedMetadataState.windowTitle && sharedMetadataState.breadcrumb,
+    'session title patch updates the breadcrumb and window title without a catalogue reload',
+  );
+  const liveTimelineContinuity = await win.webContents.executeJavaScript(`(() => {
+    const probe = window.__liveTimelineRowProbe;
+    probe.stop = true;
+    delete window.__liveTimelineRowProbe;
+    return { minRows: probe.minRows, zeroFrames: probe.zeroFrames, samples: probe.samples };
+  })()`, true);
   const readerState = await win.webContents.executeJavaScript(`(() => {
     const wrap = document.querySelector('.detail-wrap');
     const anchorElement = document.querySelector(
@@ -601,7 +934,11 @@ async function run() {
       },
     };
   })()`, true);
-  assert(scrollProbe.rows < 60, `live scrolling keeps mounted rows bounded (${scrollProbe.rows})`);
+  assert(scrollProbe.rows < 80, `live scrolling keeps mounted rows bounded (${scrollProbe.rows})`);
+  assert(
+    liveTimelineContinuity.minRows > 0 && liveTimelineContinuity.zeroFrames === 0,
+    `live update never clears the mounted timeline (${JSON.stringify(liveTimelineContinuity)})`,
+  );
   assert(
     scrollProbe.totalBeforeScrollEnd === scrollProbe.totalBeforeGesture,
     `wheel-to-scrollend freezes the visible timeline (${scrollProbe.totalBeforeGesture} -> ${scrollProbe.totalBeforeScrollEnd})`,
@@ -664,9 +1001,9 @@ async function run() {
       && ipcReads.subagents === 1
       && ipcReads.workflows === 1
       && ipcReads.summaries === 1
-      && ipcReads.patches === 6
+      && ipcReads.patches === 7
       && ipcReads.patchMessageRows.every(count => count === 1),
-    `live updates use six single-message patches after one full snapshot (${JSON.stringify(ipcReads)})`,
+    `live updates use seven single-message patches after one full snapshot (${JSON.stringify(ipcReads)})`,
   );
 
   await win.webContents.executeJavaScript(`document.querySelector('button[title="Last"]')?.click()`, true);

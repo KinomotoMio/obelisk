@@ -1,8 +1,14 @@
 <script setup>
 import { ref, shallowRef, computed, reactive, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { state, FOLDER_SVG } from '../store.js';
-import { getCachedSessionDetail, loadSessionDetail, loadSessionDetailPatch, loadFullText } from '../data.js';
+import { state, FOLDER_SVG, getSessionSummary } from '../store.js';
+import {
+  fetchSessionDetailPatch,
+  getCachedSessionDetail,
+  loadSessionDetail,
+  loadFullText,
+  materializeSessionDetailPatch,
+} from '../data.js';
 import { clearSessionDirty, consumeGlobalSessionDirty, markSessionDirty } from '../session-live.mjs';
 import { applySnapshot } from '../session-timeline.mjs';
 import { reconcileTimelineItems } from '../session-timeline-items.mjs';
@@ -24,10 +30,14 @@ const router = useRouter();
 const route = useRoute();
 
 // --- Reactive state ---
-const session = computed(() => state.sessions.find(s => s.id === props.id));
+const liveSessionMetadata = shallowRef(null);
+const session = computed(() => (
+  liveSessionMetadata.value || getSessionSummary(props.id)
+));
 const messages = shallowRef([]);
 const timelineItems = shallowRef([]);
 const loading = ref(false);
+const timelineReady = ref(false);
 const progressPct = ref(0);
 const active = ref(false);
 const focusedItemKey = ref(null);
@@ -37,6 +47,7 @@ let removeSessionUpdated = null;
 let keydownAttached = false;
 let focusTimer = null;
 let loadRevision = 0;
+let initialMountComplete = false;
 
 // DOM refs
 const wrapRef = ref(null);
@@ -55,7 +66,7 @@ const timelineViewport = useSessionTimelineViewport({
   scrollPaddingEnd: NAV_HEIGHT,
   userScroll,
 });
-const { virtualRows, totalSize, measureElement } = timelineViewport;
+const { virtualRows, totalSize, measureElement, waitForStableLayout } = timelineViewport;
 const liveReloadCoordinator = createSessionLiveReloadCoordinator({
   isScrolling: () => userScroll.isActive(),
   load: loadLiveSnapshot,
@@ -141,16 +152,23 @@ onMounted(async () => {
     localStorage.setItem(HINT_KEY, '1');
     setTimeout(() => { showFontHint.value = false; }, 4000);
   }
-  await loadMessages({ force: consumeGlobalSessionDirty(props.id) });
-  await nextTick();
-  syncTimelineScrollMargin();
-  observeSessionHeader();
+  try {
+    await loadMessages({ force: consumeGlobalSessionDirty(props.id) });
+    await nextTick();
+    syncTimelineScrollMargin();
+    observeSessionHeader();
+  } finally {
+    initialMountComplete = true;
+  }
 });
 
 onActivated(async () => {
   active.value = true;
   userScroll.attach(wrapRef.value);
   attachKeydown();
+  // KeepAlive invokes onActivated during the initial mount as well. The
+  // onMounted path already owns that first load and layout reveal.
+  if (!initialMountComplete) return;
   if (route.query.focus) {
     state.pendingFocusUuid = route.query.focus;
   }
@@ -192,8 +210,10 @@ watch(() => props.id, async (newId, oldId) => {
     loadRevision++;
     userScroll.clearUpwardIntent();
     timelineViewport.resetForInitialSnapshot();
+    liveSessionMetadata.value = null;
     messages.value = [];
     timelineItems.value = [];
+    timelineReady.value = false;
     disclosures.retainMessages(new Set());
     expandedMessageText.clear();
     fullTextLoading.clear();
@@ -214,17 +234,38 @@ async function loadMessages({ force = false } = {}) {
   if (!requestedSessionId) return;
   const revision = ++loadRevision;
   const hadContent = messages.value.length > 0;
-  let latest;
+  let committed = false;
 
   loading.value = !hadContent;
+  if (!hadContent) timelineReady.value = false;
   try {
-    latest = await fetchSessionSnapshot(requestedSessionId, { force });
+    const latest = await fetchSessionSnapshot(requestedSessionId, { force });
+    if (revision !== loadRevision || requestedSessionId !== props.id) return;
+    await commitSessionSnapshot(latest);
+    committed = true;
   } finally {
-    if (revision === loadRevision) loading.value = false;
+    if (revision === loadRevision) {
+      loading.value = false;
+      if (!committed) timelineReady.value = true;
+    }
+  }
+  if (!hadContent) await revealColdTimeline(revision, requestedSessionId);
+}
+
+async function revealColdTimeline(revision, sessionId) {
+  await nextTick();
+  if (revision !== loadRevision || sessionId !== props.id) return;
+  syncTimelineScrollMargin();
+  if (timelineItems.value.length === 0) {
+    timelineReady.value = true;
+    return;
   }
 
-  if (revision !== loadRevision || requestedSessionId !== props.id) return;
-  await commitSessionSnapshot(latest);
+  await waitForStableLayout({
+    isCurrent: () => revision === loadRevision && sessionId === props.id,
+  });
+  if (revision !== loadRevision || sessionId !== props.id) return;
+  timelineReady.value = true;
 }
 
 async function fetchSessionSnapshot(sessionId, { force = false } = {}) {
@@ -241,8 +282,8 @@ async function loadLiveSnapshot() {
   const sessionId = props.id;
   if (!sessionId) return null;
   const revision = ++loadRevision;
-  const latest = await loadSessionDetailPatch(sessionId);
-  return { sessionId, revision, latest };
+  const patchRequest = await fetchSessionDetailPatch(sessionId);
+  return { sessionId, revision, patchRequest };
 }
 
 async function commitLiveSnapshot(snapshot) {
@@ -250,8 +291,13 @@ async function commitLiveSnapshot(snapshot) {
     markSessionDirty(snapshot.sessionId);
     return;
   }
-  await commitSessionSnapshot(snapshot.latest);
-  const accepted = snapshot.latest?.acceptMessagePatch?.() ?? true;
+  const latest = await materializeSessionDetailPatch(snapshot.patchRequest);
+  if (snapshot.revision !== loadRevision || snapshot.sessionId !== props.id) {
+    markSessionDirty(snapshot.sessionId);
+    return;
+  }
+  await commitSessionSnapshot(latest);
+  const accepted = latest?.acceptMessagePatch?.() ?? true;
   if (accepted) clearSessionDirty(snapshot.sessionId);
   else markSessionDirty(snapshot.sessionId);
 }
@@ -260,6 +306,7 @@ async function commitSessionSnapshot(latest) {
   // The route can mount before the initial session list arrives. Keep
   // first-snapshot tail following disabled until an actual session exists.
   if (!latest) return;
+  liveSessionMetadata.value = latest;
   const incoming = latest?.messages || [];
   const tailPatch = latest.messagePatch?.tailOnly
     ? {
@@ -417,13 +464,13 @@ function navigateToSubagent(agentId) {
       </div>
 
       <!-- Loading state -->
-      <div v-if="loading" class="empty" style="padding: 60px 0; text-align: center; color: var(--muted);">
+      <div v-if="loading || !timelineReady" class="empty first-open-loading">
         Loading session...
       </div>
 
       <!-- Session header -->
       <template v-if="session && !loading">
-        <div class="session-header" ref="headerRef">
+        <div class="session-header" :class="{ 'is-preparing': !timelineReady }" ref="headerRef">
           <div class="session-eyebrow">
             <span class="project-icon" v-html="FOLDER_SVG"></span>
             <span class="project-name">{{ formatProjectLabel(session.project) }}</span>
@@ -452,6 +499,7 @@ function navigateToSubagent(agentId) {
         <div
           ref="timelineRef"
           class="timeline virtual-timeline"
+          :class="{ 'is-preparing': !timelineReady }"
           :style="{ height: `${totalSize}px` }"
         >
           <div
@@ -503,11 +551,26 @@ function navigateToSubagent(agentId) {
 </template>
 
 <style scoped>
+.detail {
+  position: relative;
+}
 .detail-wrap {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
   position: relative;
+}
+.first-open-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 60px 0;
+  text-align: center;
+  color: var(--muted);
+}
+.session-header.is-preparing,
+.virtual-timeline.is-preparing {
+  visibility: hidden;
 }
 .virtual-timeline {
   display: block;

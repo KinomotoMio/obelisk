@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createViewportRangeExtractor } from '../app/src/renderer/src/session-timeline-viewport.mjs';
 
 const sessionDetail = readFileSync(
   new URL('../app/src/renderer/src/views/SessionDetail.vue', import.meta.url),
@@ -42,6 +43,7 @@ test('timeline viewport owns measurement and anchoring while SessionDetail alone
   assert.equal(appPackage.devDependencies['@tanstack/vue-virtual'], '^3.13.32');
   assert.match(viewportModule, /useVirtualizer/);
   assert.match(viewportModule, /overscan/);
+  assert.match(viewportModule, /rangeExtractor/);
   assert.match(viewportModule, /anchorTo:\s*'end'/);
   assert.match(viewportModule, /followOnAppend:\s*false/);
   assert.match(viewportModule, /resetForInitialSnapshot/);
@@ -60,6 +62,26 @@ test('timeline viewport owns measurement and anchoring while SessionDetail alone
     sessionDetail,
     /!userScroll\.hasUpwardIntent\(\)[\s\S]{0,100}timelineViewport\.isFollowingTail\(\)/,
   );
+});
+
+test('timeline viewport buffers by rendered pixels instead of a fixed row count', () => {
+  const rangeExtractor = createViewportRangeExtractor({
+    getScrollElement: () => ({ clientHeight: 700, scrollTop: 5000 }),
+    getVirtualizer: () => ({
+      getVirtualItemForOffset: offset => ({ index: Math.floor(offset / 50) }),
+    }),
+  });
+
+  const indexes = rangeExtractor({
+    startIndex: 100,
+    endIndex: 113,
+    overscan: 6,
+    count: 1000,
+  });
+
+  assert.equal(indexes[0], 44);
+  assert.equal(indexes.at(-1), 170);
+  assert.equal(indexes.length, 127);
 });
 
 test('timeline count and disclosure classes come from renderer state rather than DOM state', () => {
@@ -90,9 +112,10 @@ test('live patch state advances only after the visible snapshot commit is accept
   const commitLiveSnapshot = sessionDetail.match(/async function commitLiveSnapshot\(snapshot\) \{([\s\S]*?)\n\}/)?.[1] || '';
 
   assert.doesNotMatch(loadLiveSnapshot, /clearSessionDirty|acceptMessagePatch/);
+  assert.match(loadLiveSnapshot, /fetchSessionDetailPatch\(sessionId\)/);
   assert.match(
     commitLiveSnapshot,
-    /await commitSessionSnapshot\(snapshot\.latest\);[\s\S]*acceptMessagePatch[\s\S]*clearSessionDirty/,
+    /materializeSessionDetailPatch\(snapshot\.patchRequest\);[\s\S]*await commitSessionSnapshot\(latest\);[\s\S]*acceptMessagePatch[\s\S]*clearSessionDirty/,
   );
   assert.match(commitLiveSnapshot, /markSessionDirty\(snapshot\.sessionId\)/);
 });
