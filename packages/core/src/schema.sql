@@ -57,6 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source);
 CREATE INDEX IF NOT EXISTS idx_tc_session_name ON tool_calls(session_id, name);
 CREATE INDEX IF NOT EXISTS idx_tc_file ON tool_calls(file_path);
+CREATE INDEX IF NOT EXISTS idx_tr_session ON tool_results(session_id);
 CREATE INDEX IF NOT EXISTS idx_sa_session ON subagents(session_id);
 CREATE INDEX IF NOT EXISTS idx_wf_session ON workflows(session_id);
 CREATE INDEX IF NOT EXISTS idx_wa_run ON workflow_agents(run_id);

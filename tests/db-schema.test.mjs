@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 
 import { extractContentType, extractMessageIsMeta } from '../packages/core/src/db.ts';
 
@@ -47,6 +48,23 @@ test('messages schema stores the raw content block type', async () => {
   assert.match(source, /CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages/);
   assert.match(source, /CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages/);
   assert.match(source, /CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages/);
+});
+
+test('tool results schema indexes live session patch lookups', async () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(await readExecutableSchema());
+    const plan = db.prepare(
+      'EXPLAIN QUERY PLAN SELECT * FROM tool_results WHERE session_id = ?',
+    ).all('session-1');
+
+    assert.ok(
+      plan.some(row => /USING INDEX idx_tr_session/.test(String(row.detail))),
+      `expected idx_tr_session lookup, got: ${plan.map(row => row.detail).join('; ')}`,
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test('schema reference stays focused on raw SQL structure', async () => {
