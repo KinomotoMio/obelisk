@@ -55,7 +55,7 @@ You can use obelisk like:
 npx skills add tommy0103/obelisk-skill
 ```
 
-Or manually: copy `obelisk-skill/` into your project's `.claude/skills/`
+Or manually: copy `obelisk-skill/skills/obelisk into your project's `.claude/skills/`
 
 Then in any Claude Code session:
 
@@ -83,7 +83,7 @@ Core API: `search()`, `context()`, `sql()`, plus structured helpers (`sessions`,
 
 When a retrieval produces a conclusion worth keeping, the agent proposes a markdown memory file. After user approval, it registers the file with `runtime.js --attune <script>`. Memories are recalled via `memories()` in future sessions — a synthesis cache, not a replacement for raw evidence.
 
-## App: A surface for human
+## App: A surface for humans
 
 A companion desktop app for browsing what the skill indexes.
 
@@ -97,7 +97,46 @@ A companion desktop app for browsing what the skill indexes.
 - **Recap** — shareable weekly/monthly recap cards with archetype theming
 - **Settings** — data source configuration, auto-refresh, rebuild index
 
-macOS only. Download from [Releases](https://github.com/tommy0103/obelisk/releases).
+Prebuilt releases are currently available for macOS from
+[Releases](https://github.com/tommy0103/obelisk/releases). The source app can be
+run locally on macOS, Windows, and Linux.
+
+### Run locally
+
+Install [Node.js 22](https://nodejs.org/) and npm, then run the app from its own
+package directory:
+
+```bash
+git clone https://github.com/tommy0103/obelisk.git
+cd obelisk/app
+npm ci
+npm run dev
+```
+
+`electron-vite` starts the renderer dev server and launches Electron. On first
+run, Obelisk creates `~/.obelisk/obelisk.sqlite`, indexes the available Claude
+Code and Codex transcripts, and then watches them for changes. The default
+sources are `~/.claude/projects` and `~/.codex/sessions`; use **Settings** to
+point the app at different directories. On Windows, Obelisk also checks common
+WSL distributions for the Claude Code directory.
+
+### Debug the app
+
+- Renderer changes use Vite hot module replacement. Open Electron DevTools with
+  `Cmd+Option+I` on macOS or `Ctrl+Shift+I` on Windows/Linux.
+- Main-process and preload logs appear in the terminal running `npm run dev`;
+  their source changes are rebuilt by electron-vite.
+- To attach a Node debugger to the Electron main process, start it with
+  `npm run dev -- --inspect=5858`, then attach your debugger to port `5858`.
+- The development app reads and updates the real `~/.obelisk` index. Back it up
+  before testing destructive rebuilds. For an isolated run, launch with a
+  disposable home directory (`HOME=/tmp/obelisk-dev npm run dev` on
+  macOS/Linux, or set a temporary `USERPROFILE` first on Windows), then select
+  fixture source directories in **Settings**.
+
+`better-sqlite3` provides prebuilt binaries for common platforms. If `npm ci`
+falls back to compiling it locally, install the platform's C/C++ build tools and
+run `npm ci` again.
 
 ## What gets indexed
 
