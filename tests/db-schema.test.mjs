@@ -10,18 +10,18 @@ async function readExecutableSchema() {
 }
 
 async function readSchemaReference() {
-  return readFile(new URL('../references/schema.md', import.meta.url), 'utf8');
+  return readFile(new URL('../skill-doc/references/schema.md', import.meta.url), 'utf8');
 }
 
 async function readApiReference() {
-  return readFile(new URL('../references/api-reference.md', import.meta.url), 'utf8');
+  return readFile(new URL('../skill-doc/references/api-reference.md', import.meta.url), 'utf8');
 }
 
 async function readSkill() {
-  return readFile(new URL('../SKILL.md', import.meta.url), 'utf8');
+  return readFile(new URL('../skill-doc/SKILL.md', import.meta.url), 'utf8');
 }
 
-test('db module loads the executable schema from scripts/schema.sql', async () => {
+test('db module loads the executable schema from packages/core/src/schema.sql', async () => {
   const source = await readFile(new URL('../packages/core/src/db.ts', import.meta.url), 'utf8');
 
   assert.match(source, /schema\.sql/);

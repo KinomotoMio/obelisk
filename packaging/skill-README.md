@@ -6,8 +6,12 @@ layer over local Claude Code and Codex session history.
 ## Install
 
 ```bash
-npx skills add tommy0103/obelisk-skill
+npm install --global @obelisk-apps/cli
+obelisk install
 ```
+
+The CLI is the executable runtime. This repository contains only the agent
+instructions and progressive-disclosure references.
 
 Then in any Claude Code session:
 
@@ -17,7 +21,7 @@ Then in any Claude Code session:
 
 ## Source
 
-This repository is **auto-published** from the compiled skill artifact of
+This repository is **auto-published** from the docs-only skill artifact of
 [tommy0103/obelisk](https://github.com/tommy0103/obelisk). Do not open pull
 requests here — contribute to the source repo instead.
 
@@ -25,5 +29,5 @@ requests here — contribute to the source repo instead.
 
 MIT — see [LICENSE](LICENSE) in this repository. The
 [source repository](https://github.com/tommy0103/obelisk) is AGPL-3.0; this
-compiled skill artifact is explicitly relicensed under MIT by the copyright
+skill documentation artifact is explicitly relicensed under MIT by the copyright
 holder.

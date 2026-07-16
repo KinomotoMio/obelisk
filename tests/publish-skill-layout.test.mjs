@@ -23,12 +23,10 @@ test('skill release staging produces the npx skills repository layout', () => {
   const target = join(root, 'repo');
   try {
     mkdirSync(join(artifact, 'references'), { recursive: true });
-    mkdirSync(join(artifact, 'scripts'), { recursive: true });
     mkdirSync(join(target, '.git'), { recursive: true });
     writeFileSync(join(artifact, 'SKILL.md'), '---\nname: obelisk\ndescription: test\n---\n');
     writeFileSync(join(artifact, 'package.json'), '{"type":"module"}\n');
     writeFileSync(join(artifact, 'references', 'api-reference.md'), '# API\n');
-    writeFileSync(join(artifact, 'scripts', 'runtime.js'), 'export {};\n');
     writeFileSync(join(target, '.git', 'keep'), 'preserved\n');
     writeFileSync(join(target, 'stale.txt'), 'remove me\n');
 
@@ -44,7 +42,6 @@ test('skill release staging produces the npx skills repository layout', () => {
       'SKILL.md',
       'package.json',
       'references/api-reference.md',
-      'scripts/runtime.js',
     ]) {
       assert.equal(existsSync(join(target, 'skills', 'obelisk', relativePath)), true);
     }
@@ -61,4 +58,5 @@ test('CI and local publish use the same skill repository staging step', () => {
 
   assert.match(workflow, /packaging\/stage-skill-repo\.sh/);
   assert.match(localPublish, /packaging\/stage-skill-repo\.sh/);
+  assert.doesNotMatch(localPublish, /SKILL_ARTIFACT\/scripts/);
 });

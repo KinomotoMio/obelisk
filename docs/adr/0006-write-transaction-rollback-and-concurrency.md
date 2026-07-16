@@ -7,7 +7,7 @@ threw over the primary exception and turned a skippable per-file failure into a
 whole-build failure. The masked exception was not preserved, so contention
 (`SQLITE_BUSY` / `SQLITE_BUSY_SNAPSHOT`) is the leading explanation rather than
 a proven historical fact. It is plausible because daemon builds, manual
-rebuilds, skill passive-pull indexing, heartbeat writes, and reads share one WAL
+rebuilds, CLI passive-pull indexing, heartbeat writes, and reads share one WAL
 database.
 
 `busy_timeout` alone is not a correctness fix. In particular,
@@ -35,15 +35,15 @@ layers.
   failures propagate. `affectedSessionIds` is updated only after the relevant
   commit. Force cleanup is one atomic, retryable transaction, and finalize is
   likewise retried as a complete idempotent transaction.
-- A fresh `__app_heartbeat__` is policy ownership: while it is fresh, the skill
+- A fresh `__app_heartbeat__` is policy ownership: while it is fresh, the CLI
   opens no write connection and performs no migration, schema setup, checkpoint,
   index build, or `attune`. `__app_last_successful_build__` remains an
-  observability/freshness marker and is not required for ownership. The skill
+  observability/freshness marker and is not required for ownership. The CLI
   checks ownership again after acquiring the hard lease to close the TOCTOU
   window. Search/query connections are read-only.
 - A dedicated `.obelisk/writer.lock.sqlite` provides the cross-process safety
   mutex on every platform. Acquisition is `BEGIN IMMEDIATE` with non-blocking or
-  bounded waiting; release is idempotent. App builds and heartbeats, skill builds
+  bounded waiting; release is idempotent. App builds and heartbeats, CLI builds
   and attune, app schema/legacy migrations and memory mutations, and manual
   rebuild all participate. Manual rebuild's main process owns the lease across
   worker build, atomic target replacement, and database reopen; the worker uses
@@ -52,7 +52,7 @@ layers.
   deferral retains changed paths and schedules a short retry without announcing
   a successful build. Service start publishes the ownership heartbeat
   immediately, then refreshes it periodically.
-- Index-writer and skill read connections use an explicit 250 ms SQLite busy
+- Index-writer and CLI read connections use an explicit 250 ms SQLite busy
   timeout inside the larger bounded coordination budget. The long-lived app
   query connection retains a 5 s timeout; heartbeat is deliberately non-blocking
   (`0 ms`) so it never stalls the Electron main thread. Builds use

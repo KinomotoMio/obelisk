@@ -15,7 +15,7 @@ const cards = [
 ];
 
 test('skill routes only the explicit recap intent to the split recap overview', async () => {
-  const skill = await read('SKILL.md');
+  const skill = await read('skill-doc/SKILL.md');
 
   assert.match(skill, /## Intent Routing/);
   assert.match(skill, /references\/recap\/overview\.md/);
@@ -35,8 +35,8 @@ test('README lists the recap folder without making recap the core retrieval path
 
   assert.match(readme, /references\/recap\/overview\.md/);
   for (const [n, name] of cards) {
-    assert.match(readme, new RegExp(`references/recap/pattern${n}-${name}\\.md`));
-    assert.match(readme, new RegExp(`references/recap/writing${n}-${name}\\.md`));
+    assert.match(readme, new RegExp(`skill-doc/references/recap/pattern${n}-${name}\\.md`));
+    assert.match(readme, new RegExp(`skill-doc/references/recap/writing${n}-${name}\\.md`));
   }
   assert.match(readme, /optional .*\/obelisk recap/i);
   assert.match(readme, /explicit `\/obelisk recap` intent/);
@@ -44,8 +44,8 @@ test('README lists the recap folder without making recap the core retrieval path
 });
 
 test('old recap references are thin redirects to the split docs', async () => {
-  const retrieval = await read('references/recap-patterns.md');
-  const writing = await read('references/recap-writing.md');
+  const retrieval = await read('skill-doc/references/recap-patterns.md');
+  const writing = await read('skill-doc/references/recap-writing.md');
 
   assert.match(retrieval, /compatibility/i);
   assert.match(retrieval, /references\/recap\/overview\.md/);
@@ -58,7 +58,7 @@ test('old recap references are thin redirects to the split docs', async () => {
 });
 
 test('recap overview defines the card-by-card retrieval and writing loop', async () => {
-  const ref = await read('references/recap/overview.md');
+  const ref = await read('skill-doc/references/recap/overview.md');
 
   assert.match(ref, /Highest Priority: Phase Loop/i);
   assert.match(ref, /Spotify Wrapped-like/i);
@@ -77,7 +77,7 @@ test('recap overview defines the card-by-card retrieval and writing loop', async
 });
 
 test('recap overview stays narrow and leaves card details to per-card files', async () => {
-  const ref = await read('references/recap/overview.md');
+  const ref = await read('skill-doc/references/recap/overview.md');
 
   assert.ok(ref.split('\n').length < 90);
   assert.match(ref, /The per-card files own retrieval details/i);
@@ -102,8 +102,8 @@ test('recap overview stays narrow and leaves card details to per-card files', as
 
 test('each recap card has a separate retrieval pattern and writing reference', async () => {
   for (const [n, name] of cards) {
-    const pattern = await read(`references/recap/pattern${n}-${name}.md`);
-    const writing = await read(`references/recap/writing${n}-${name}.md`);
+    const pattern = await read(`skill-doc/references/recap/pattern${n}-${name}.md`);
+    const writing = await read(`skill-doc/references/recap/writing${n}-${name}.md`);
 
     assert.match(pattern, new RegExp(`# Card ${n} .* Retrieval`));
     assert.match(pattern, /Read this card's writing file immediately after/i);
@@ -123,8 +123,8 @@ test('each recap card has a separate retrieval pattern and writing reference', a
 });
 
 test('cover and closing writing own JSON initialization and final save rules', async () => {
-  const cover = await read('references/recap/writing1-cover.md');
-  const closing = await read('references/recap/writing5-closing.md');
+  const cover = await read('skill-doc/references/recap/writing1-cover.md');
+  const closing = await read('skill-doc/references/recap/writing5-closing.md');
 
   assert.match(cover, /First JSON Write/i);
   assert.match(cover, /schema_version: "obelisk\.recap\.v1"/);
@@ -137,8 +137,8 @@ test('cover and closing writing own JSON initialization and final save rules', a
 });
 
 test('cover card retrieval and writing choose one dominant human claim', async () => {
-  const pattern = await read('references/recap/pattern1-cover.md');
-  const writing = await read('references/recap/writing1-cover.md');
+  const pattern = await read('skill-doc/references/recap/pattern1-cover.md');
+  const writing = await read('skill-doc/references/recap/writing1-cover.md');
 
   assert.match(pattern, /dominant claim/i);
   assert.match(pattern, /persona/i);
@@ -153,8 +153,8 @@ test('cover card retrieval and writing choose one dominant human claim', async (
 });
 
 test('cover card schema uses claim instead of subtitle', async () => {
-  const pattern = await read('references/recap/pattern1-cover.md');
-  const writing = await read('references/recap/writing1-cover.md');
+  const pattern = await read('skill-doc/references/recap/pattern1-cover.md');
+  const writing = await read('skill-doc/references/recap/writing1-cover.md');
   const component = await read('app/src/renderer/src/components/recap/CoverCard.vue');
   const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
   const list = await read('app/src/renderer/src/views/RecapList.vue');
@@ -176,8 +176,8 @@ test('cover card schema uses claim instead of subtitle', async () => {
 });
 
 test('thinking card retrieval searches for turns instead of implementation timeline', async () => {
-  const pattern = await read('references/recap/pattern2-thinking.md');
-  const writing = await read('references/recap/writing2-thinking.md');
+  const pattern = await read('skill-doc/references/recap/pattern2-thinking.md');
+  const writing = await read('skill-doc/references/recap/writing2-thinking.md');
 
   assert.match(pattern, /turning points/i);
   assert.match(pattern, /user question/i);
@@ -195,8 +195,8 @@ test('thinking card retrieval searches for turns instead of implementation timel
 });
 
 test('thinking path schema uses turn instead of outcome', async () => {
-  const pattern = await read('references/recap/pattern2-thinking.md');
-  const writing = await read('references/recap/writing2-thinking.md');
+  const pattern = await read('skill-doc/references/recap/pattern2-thinking.md');
+  const writing = await read('skill-doc/references/recap/writing2-thinking.md');
   const component = await read('app/src/renderer/src/components/recap/PathCard.vue');
   const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
@@ -211,8 +211,8 @@ test('thinking path schema uses turn instead of outcome', async () => {
 });
 
 test('vibe card retrieval finds small user voice, not a correction audit', async () => {
-  const pattern = await read('references/recap/pattern3-vibe.md');
-  const writing = await read('references/recap/writing3-vibe.md');
+  const pattern = await read('skill-doc/references/recap/pattern3-vibe.md');
+  const writing = await read('skill-doc/references/recap/writing3-vibe.md');
 
   assert.match(pattern, /catchphrases/i);
   assert.match(pattern, /visible user messages/i);
@@ -229,7 +229,7 @@ test('vibe card retrieval finds small user voice, not a correction audit', async
 });
 
 test('vibe card schema uses voice_lines instead of observations', async () => {
-  const writing = await read('references/recap/writing3-vibe.md');
+  const writing = await read('skill-doc/references/recap/writing3-vibe.md');
   const component = await read('app/src/renderer/src/components/recap/VibeCard.vue');
   const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
   const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
@@ -245,8 +245,8 @@ test('vibe card schema uses voice_lines instead of observations', async () => {
 });
 
 test('workflow card retrieval scopes real workflow runs and user reactions', async () => {
-  const pattern = await read('references/recap/pattern4-workflow.md');
-  const writing = await read('references/recap/writing4-workflow.md');
+  const pattern = await read('skill-doc/references/recap/pattern4-workflow.md');
+  const writing = await read('skill-doc/references/recap/writing4-workflow.md');
 
   assert.match(pattern, /workflows\.timestamp/);
   assert.match(pattern, /workflows\(\{ project: .* after, before/i);
@@ -271,8 +271,8 @@ test('workflow card retrieval scopes real workflow runs and user reactions', asy
 });
 
 test('workflow card uses reaction instead of outcome for row copy', async () => {
-  const pattern = await read('references/recap/pattern4-workflow.md');
-  const writing = await read('references/recap/writing4-workflow.md');
+  const pattern = await read('skill-doc/references/recap/pattern4-workflow.md');
+  const writing = await read('skill-doc/references/recap/writing4-workflow.md');
   const component = await read('app/src/renderer/src/components/recap/WorkflowCard.vue');
   const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
 
@@ -287,7 +287,7 @@ test('workflow card uses reaction instead of outcome for row copy', async () => 
 });
 
 test('workflow card schema uses deck instead of summary for the visible line', async () => {
-  const writing = await read('references/recap/writing4-workflow.md');
+  const writing = await read('skill-doc/references/recap/writing4-workflow.md');
   const component = await read('app/src/renderer/src/components/recap/WorkflowCard.vue');
   const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
   const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
@@ -303,8 +303,8 @@ test('workflow card schema uses deck instead of summary for the visible line', a
 });
 
 test('closing card retrieval and writing keep a small personal receipt', async () => {
-  const pattern = await read('references/recap/pattern5-closing.md');
-  const writing = await read('references/recap/writing5-closing.md');
+  const pattern = await read('skill-doc/references/recap/pattern5-closing.md');
+  const writing = await read('skill-doc/references/recap/writing5-closing.md');
 
   assert.match(pattern, /same period and source scope/i);
   assert.match(pattern, /streak/i);
@@ -321,8 +321,8 @@ test('closing card retrieval and writing keep a small personal receipt', async (
 });
 
 test('closing card schema uses receipts instead of stats', async () => {
-  const pattern = await read('references/recap/pattern5-closing.md');
-  const writing = await read('references/recap/writing5-closing.md');
+  const pattern = await read('skill-doc/references/recap/pattern5-closing.md');
+  const writing = await read('skill-doc/references/recap/writing5-closing.md');
   const component = await read('app/src/renderer/src/components/recap/ClosingCard.vue');
   const detail = await read('app/src/renderer/src/views/RecapDetail.vue');
   const mock = await read('app/src/renderer/src/mock/recap-2026-W24.json');
@@ -340,9 +340,9 @@ test('closing card schema uses receipts instead of stats', async () => {
 });
 
 test('split recap writing keeps mixed-language rhythm and plain speech', async () => {
-  const overview = await read('references/recap/overview.md');
+  const overview = await read('skill-doc/references/recap/overview.md');
   const writingDocs = await Promise.all(
-    cards.map(([n, name]) => read(`references/recap/writing${n}-${name}.md`)),
+    cards.map(([n, name]) => read(`skill-doc/references/recap/writing${n}-${name}.md`)),
   );
   const combined = [overview, ...writingDocs].join('\n');
 

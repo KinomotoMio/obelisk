@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+import {
+  DB_PATH,
+  buildIndex,
+  searchText,
+  executeQuery,
+  executeAttune,
+} from '../../core/src/core.ts';
+
+async function main() {
+  const args = process.argv.slice(2);
+  const fail = (value: unknown): void => {
+    const error = value instanceof Error ? value : new Error(String(value));
+    process.stdout.write(JSON.stringify({ error: error.message, stack: error.stack }) + '\n');
+    process.exitCode = 1;
+  };
+  const emit = (value: unknown): void => {
+    process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+  };
+
+  if (args[0] === '--version' || args[0] === '-v') {
+    const packageJson = JSON.parse(
+      readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
+    ) as { version: string };
+    process.stdout.write(`${packageJson.version}\n`);
+    return;
+  }
+  if (args[0] === '--build') {
+    try {
+      buildIndex({ force: true });
+      process.stdout.write(JSON.stringify({ ok: true, db: DB_PATH }) + '\n');
+    } catch (error) { fail(error); }
+    return;
+  }
+  if (args[0] === '--search' && args[1]) {
+    try { emit(searchText(args.slice(1).join(' '))); } catch (error) { fail(error); }
+    return;
+  }
+  if (args[0] === '--query' && args[1]) {
+    try { emit(await executeQuery(readFileSync(resolve(args[1]), 'utf8'))); } catch (error) { fail(error); }
+    return;
+  }
+  if (args[0] === '--attune' && args[1]) {
+    try { emit(await executeAttune(readFileSync(resolve(args[1]), 'utf8'))); } catch (error) { fail(error); }
+    return;
+  }
+  if (args[0] === 'install') {
+    const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    const child = spawnSync(
+      npx,
+      ['--yes', 'skills', 'add', 'tommy0103/obelisk-skill', ...args.slice(1)],
+      { stdio: 'inherit', shell: process.platform === 'win32' },
+    );
+    if (child.error) {
+      process.stderr.write(`Unable to run the skills installer: ${child.error.message}\n`);
+      process.exitCode = 1;
+    } else {
+      process.exitCode = child.status ?? 1;
+    }
+    return;
+  }
+  process.stderr.write('Usage:\n  obelisk install [skills options]\n  obelisk --build\n  obelisk --search "text"\n  obelisk --query <file.js>\n  obelisk --attune <file.js>\n');
+  process.exitCode = 1;
+}
+
+void main();

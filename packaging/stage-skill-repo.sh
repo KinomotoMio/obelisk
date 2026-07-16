@@ -15,7 +15,7 @@ if [ "$TARGET_DIR" = "/" ] || [ "$TARGET_DIR" = "." ] || [ "$TARGET_DIR" = "$ROO
   exit 1
 fi
 
-for required in SKILL.md package.json references scripts; do
+for required in SKILL.md package.json references; do
   if [ ! -e "$ARTIFACT_DIR/$required" ]; then
     echo "Error: skill artifact missing $required at $ARTIFACT_DIR" >&2
     exit 1

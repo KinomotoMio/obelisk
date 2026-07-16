@@ -3,14 +3,13 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 
 import { acquireWriterLease, writerLockPathFor } from '../packages/core/src/writer-lease.ts';
+import { runCli } from './cli-test-helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
-const repoRoot = resolve(new URL('..', import.meta.url).pathname);
 
 test('a passive query does not mutate the index while a fresh daemon owns writes', () => {
   const home = mkdtempSync(join(tmpdir(), 'obelisk-daemon-arbitration-'));
@@ -27,11 +26,7 @@ test('a passive query does not mutate the index while a fresh daemon owns writes
 
   const queryPath = join(home, 'query.mjs');
   writeFileSync(queryPath, "return 'read-only';");
-  const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--query', queryPath], {
-    cwd: repoRoot,
-    env: { ...process.env, HOME: home },
-    encoding: 'utf8',
-  });
+  const result = runCli(['--query', queryPath], { home });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(JSON.parse(result.stdout), 'read-only');
 
@@ -55,11 +50,7 @@ test('attune refuses to mutate the index while a fresh daemon owns writes', () =
 
   const attunePath = join(home, 'attune.mjs');
   writeFileSync(attunePath, 'return true;');
-  const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--attune', attunePath], {
-    cwd: repoRoot,
-    env: { ...process.env, HOME: home },
-    encoding: 'utf8',
-  });
+  const result = runCli(['--attune', attunePath], { home });
   assert.equal(result.status, 1);
   assert.match(JSON.parse(result.stdout).error, /daemon owns index writes/i);
 
@@ -86,11 +77,7 @@ test('a passive query stays read-only when another process holds the writer leas
   try {
     const queryPath = join(home, 'query.mjs');
     writeFileSync(queryPath, "return 'writer-busy';");
-    const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--query', queryPath], {
-      cwd: repoRoot,
-      env: { ...process.env, HOME: home },
-      encoding: 'utf8',
-    });
+    const result = runCli(['--query', queryPath], { home });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(JSON.parse(result.stdout), 'writer-busy');
   } finally {
@@ -120,11 +107,7 @@ test('a passive query fails closed when daemon ownership cannot be read', () => 
   try {
     const queryPath = join(home, 'query.mjs');
     writeFileSync(queryPath, "return 'ownership-unknown';");
-    const result = spawnSync(process.execPath, ['packages/core/src/runtime.ts', '--query', queryPath], {
-      cwd: repoRoot,
-      env: { ...process.env, HOME: home },
-      encoding: 'utf8',
-    });
+    const result = runCli(['--query', queryPath], { home });
     assert.equal(result.status, 1, result.stderr || result.stdout);
     assert.match(JSON.parse(result.stdout).error, /no such column: mtime/i);
   } finally {

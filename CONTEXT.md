@@ -10,8 +10,9 @@ not a spec.
 
 **Runtime interface**:
 The public contract, expressed as four verbs — `build`, `search(text)`,
-`query(code)`, `attune(code)`. Skill, CLI, and MCP are transports over this same
-shape; none of them add their own retrieval surface.
+`query(code)`, `attune(code)`. CLI and a future MCP server are transports over
+this same shape; neither adds its own retrieval surface. The agent skill is
+docs-only guidance that invokes the CLI rather than a transport of its own.
 _Avoid_: API, tool surface
 
 **CodeAct**:
@@ -44,7 +45,7 @@ persistence happens.
 **Persist layer**:
 The single shared, provider- and binding-agnostic writer that consumes records
 from any adapter and writes them into an injected SQLite handle inside a
-transaction. The binding is injected — `node:sqlite` (skill/CLI) or
+transaction. The binding is injected — `node:sqlite` (CLI) or
 `better-sqlite3` (app) — so there is one persist implementation, not one per
 binding.
 _Avoid_: writer, sink, DAO
@@ -56,8 +57,8 @@ as files change.
 _Avoid_: watcher mode, live indexing
 
 **Passive pull mode**:
-On-demand incremental indexing performed by the skill when there is no active
-daemon: an invocation of the runtime brings the index up to date, then answers.
+On-demand incremental indexing performed by a CLI invocation when there is no
+active daemon: the command brings the index up to date, then answers.
 _Avoid_: lazy indexing, on-read indexing
 
 **index_state**:
@@ -68,7 +69,7 @@ arbitration.
 
 **Daemon arbitration**:
 The policy by which the passive pull mode detects a fresh daemon from the
-`__app_heartbeat__` marker and skips every skill-side mutation, including schema
+`__app_heartbeat__` marker and skips every CLI-side mutation, including schema
 setup, indexing, checkpointing, and `attune`. The heartbeat alone means “the
 daemon should write”; `__app_last_successful_build__` records coverage/freshness,
 not ownership. Both indexing modes use the same persist layer.

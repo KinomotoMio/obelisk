@@ -1,11 +1,11 @@
 // Obelisk Core package (see docs/adr/0003-core-typescript-esm-precompiled.md).
 //
-// The single shared implementation behind every transport. runtime.js (skill),
-// and later the CLI and MCP server, are thin shells over these four functions;
+// The single shared implementation behind every transport. The CLI and later
+// the MCP server are thin shells over these four functions;
 // none of them re-implement retrieval or own the DB lifecycle.
 //
 // Authored in TypeScript with erasable-only syntax so Node can run it directly
-// via type stripping in development, while the skill artifact ships readable,
+// via type stripping in development, while the CLI package ships readable,
 // non-bundled tsc output. Core source lives in the @obelisk/core workspace.
 
 import { createContext, runInNewContext } from 'node:vm';

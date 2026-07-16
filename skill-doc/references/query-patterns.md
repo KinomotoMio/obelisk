@@ -1,6 +1,6 @@
 # Obelisk Query Patterns
 
-These are copyable CodeAct patterns for `runtime.js --query` scripts plus
+These are copyable CodeAct patterns for `obelisk --query` scripts plus
 `--attune` memory mutation patterns. They are not new APIs. Adapt them to the
 user's scope and return compact evidence.
 
@@ -179,7 +179,7 @@ Use this only after the user approves writing memory and the markdown file
 already exists. `remember()` validates the file and stores a normalized absolute
 path, so keep the script small and return the registered record.
 
-Run this script with `runtime.js --attune <script>`. The `--attune` runtime
+Run this script with `obelisk --attune <script>`. The `--attune` runtime
 exposes only `remember()` and `forget()`, not retrieval helpers.
 
 ```js
@@ -204,7 +204,7 @@ the exact memory ID in a normal `--query` script first. If one candidate clearly
 matches the user's request, that request is approval to archive it; if several
 candidates match, ask which one to forget.
 
-Run the mutation with `runtime.js --attune <script>`:
+Run the mutation with `obelisk --attune <script>`:
 
 ```js
 return forget({

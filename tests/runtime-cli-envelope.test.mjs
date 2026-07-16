@@ -2,7 +2,7 @@
 //
 // These lock the four-verb CLI I/O envelope at the process boundary so the
 // upcoming TypeScript / runtime-core refactor cannot silently change what an
-// agent (or the skill/CLI/MCP transports) observes on stdout:
+// agent (through the CLI or a future MCP transport) observes on stdout:
 //   --build   -> { ok: true, db }
 //   --search  -> JSON array
 //   --query   -> pretty-printed JSON result, or { error, stack } + exit 1 on throw
@@ -16,19 +16,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-
-function runRuntime(args, { home }) {
-  return spawnSync(process.execPath, ['packages/core/src/runtime.ts', ...args], {
-    cwd: repoRoot,
-    env: { ...process.env, HOME: home },
-    encoding: 'utf8',
-  });
-}
+import { runCli as runRuntime } from './cli-test-helpers.mjs';
 
 function tempHome() {
   const home = mkdtempSync(join(tmpdir(), 'obelisk-cli-envelope-'));
@@ -118,4 +108,3 @@ test('--search tolerates FTS-special input via safe tokenization', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.ok(Array.isArray(JSON.parse(result.stdout)), 'search must return a JSON array');
 });
-

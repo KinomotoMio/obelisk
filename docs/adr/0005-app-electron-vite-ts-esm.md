@@ -25,7 +25,7 @@ decisions within this:
   injecting `better-sqlite3`. This
   works because the provider→parsing import graph is node:sqlite-free (ADR-0001),
   so nothing drags `node:sqlite` into the app. The `dist/` from `build:core`
-  (ADR-0003) remains for the skill artifact; the app does not need it.
+  (ADR-0003) remains for the CLI package; the app does not need it.
 - **better-sqlite3 stays the app's binding**, externalized (not bundled) and
   unpacked from the asar.
 - **The app main + preload source is TypeScript with types at its seams**, but

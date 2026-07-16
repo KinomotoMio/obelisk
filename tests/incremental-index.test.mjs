@@ -10,18 +10,15 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, utimesSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+import { runCli } from './cli-test-helpers.mjs';
+
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
 
 function runRuntime(args, home) {
-  return spawnSync(process.execPath, ['packages/core/src/runtime.ts', ...args], {
-    cwd: repoRoot, env: { ...process.env, HOME: home }, encoding: 'utf8',
-  });
+  return runCli(args, { home });
 }
 
 function line(uuid, type, ts) {

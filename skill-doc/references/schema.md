@@ -3,7 +3,7 @@
 Read this before writing non-trivial `sql()` queries. It is a compact field and
 join map for raw SQL, not the full helper API manual.
 
-- Executable DDL: `scripts/schema.sql`
+- Canonical executable DDL: [`packages/core/src/schema.sql`](https://github.com/tommy0103/obelisk/blob/main/packages/core/src/schema.sql) in the CLI source repository (not duplicated in this docs-only skill)
 - Helper signatures and return shapes: `references/api-reference.md`
 - Query recipes and synthesis patterns: `references/query-patterns.md`
 - FTS, alias, ordering, and compactness traps: `references/pitfalls.md`

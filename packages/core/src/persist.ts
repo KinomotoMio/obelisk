@@ -2,7 +2,7 @@
 //
 // Provider-agnostic and binding-agnostic: it consumes the IndexRecord stream
 // from any adapter's parse() and writes rows into the injected database handle
-// (node:sqlite for the skill/CLI, better-sqlite3 for the app — they share the
+// (node:sqlite for the CLI, better-sqlite3 for the app — they share the
 // prepare/run/get API). It is the ONLY layer that touches the database and the
 // only place that knows the schema. Adapters stay pure.
 //

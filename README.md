@@ -19,7 +19,9 @@ Every past Claude Code and Codex session -- queryable by your agent, browsable b
 
 Obelisk has two sides that share one SQLite index:
 
-**Skill side** — an agent skill that lets coding agents search and query their own session history. The agent writes JS queries, runs them locally, answers in plain language.
+**Agent side** — the `obelisk` CLI owns the local runtime, while a separate
+agent skill teaches coding agents how to search and query their session history.
+The agent writes JS queries, runs them locally, and answers in plain language.
 
 **App side** — an Electron desktop app for humans to browse sessions, manage memories, view usage stats, and see weekly recap cards.
 
@@ -51,11 +53,31 @@ You can use obelisk like:
 
 ### Install
 
+Obelisk requires Node.js 22.13 or newer. Install the platform-neutral CLI first:
+
 ```bash
-npx skills add tommy0103/obelisk-skill
+npm install --global @obelisk-apps/cli
+obelisk --version
 ```
 
-Or manually: copy `obelisk-skill/skills/obelisk into your project's `.claude/skills/`
+On macOS, Linux, or WSL, the CLI-only installer is equivalent:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/install.sh | sh
+```
+
+Then install the agent skill:
+
+```bash
+obelisk install
+```
+
+`obelisk install` delegates to the standard skills installer for
+`tommy0103/obelisk-skill`. To let an agent perform the one-time bootstrap, give
+it the repository's root
+[`SKILL.md`](https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md).
+That document installs the CLI and formal skill; it is not the query skill
+itself.
 
 Then in any Claude Code session:
 
@@ -72,7 +94,7 @@ You ask a question
   ↓
 Agent writes a JS query against the SQLite index
   ↓
-Runs it via node $SKILL_DIR/scripts/runtime.js --query <script>
+Runs it via obelisk --query <script>
   ↓
 Reads the JSON result, answers in natural language
 ```
@@ -81,11 +103,12 @@ Core API: `search()`, `context()`, `sql()`, plus structured helpers (`sessions`,
 
 ### Memory layer
 
-When a retrieval produces a conclusion worth keeping, the agent proposes a markdown memory file. After user approval, it registers the file with `runtime.js --attune <script>`. Memories are recalled via `memories()` in future sessions — a synthesis cache, not a replacement for raw evidence.
+When a retrieval produces a conclusion worth keeping, the agent proposes a markdown memory file. After user approval, it registers the file with `obelisk --attune <script>`. Memories are recalled via `memories()` in future sessions — a synthesis cache, not a replacement for raw evidence.
 
 ## App: A surface for humans
 
-A companion desktop app for browsing what the skill indexes.
+A companion desktop app for browsing the same index maintained by the CLI or
+the app daemon.
 
 <div align="center">
   <img src=".github/assets/app-screenshot.png" alt="Obelisk App" width="720">
@@ -170,23 +193,20 @@ packages/core/                # @obelisk/core npm workspace (TypeScript + ESM)
 │   ├── parsing.ts            # Pure helpers (node:sqlite-free, app-consumable)
 │   ├── db.ts                 # node:sqlite lifecycle + migrations
 │   ├── query.ts              # Query/attune sandbox API (helpers)
-│   ├── runtime.ts            # Thin CLI shell (--build/--search/--query/--attune)
 │   └── schema.sql            # SQLite schema (single source of truth)
 ├── package.json
 └── dist/                     # Generated package JS, declarations, and schema
 
-references/                   # Agent-readable docs (progressive disclosure)
-├── schema.md
-├── api-reference.md
-├── query-patterns.md
-├── retrieval-semantics.md
-├── pitfalls.md
-├── recap-patterns.md
-├── recap-writing.md
-└── recap/                    # Per-card pattern + writing references
-    ├── overview.md
-    ├── pattern1-cover.md … pattern5-closing.md
-    └── writing1-cover.md … writing5-closing.md
+packages/cli/                 # @obelisk-apps/cli npm workspace
+├── src/obelisk.ts            # CLI shell + skill installer delegation
+├── scripts/build.mjs         # Compiles CLI + readable Core into one package
+├── package.json
+└── dist/                     # Generated platform-neutral npm payload
+
+skill-doc/                    # Source for the docs-only obelisk agent skill
+├── SKILL.md                  # Query and memory workflow
+└── references/               # Progressive-disclosure API/schema/pattern docs
+    └── recap/                # Per-card recap retrieval + writing references
 
 app/                          # Electron desktop app (electron-vite + Vue)
 ├── src/main/                 # TypeScript main process (consumes shared core)
@@ -195,32 +215,37 @@ app/                          # Electron desktop app (electron-vite + Vue)
 └── electron.vite.config.ts
 
 packaging/                    # Skill publish infrastructure
+├── build-skill.mjs           # Builds the docs-only skill artifact
 ├── skill-package.json
 ├── skill-README.md
 ├── skill-LICENSE             # MIT (relicensed for the skill artifact)
 └── publish-skill.sh
 
-SKILL.md                      # Skill definition (installed with the artifact)
+SKILL.md                      # Remote one-time CLI + skill bootstrap guide
+install.sh                    # POSIX CLI-only installer
 CONTEXT.md                    # Project glossary
 docs/adr/                     # Architecture decision records (0001–0006)
 ```
 
 The optional `/obelisk recap` flow is loaded only for explicit `/obelisk recap` intent.
-It starts at `references/recap/overview.md` and proceeds card-by-card:
+It starts at `skill-doc/references/recap/overview.md` and proceeds card-by-card:
 
-- `references/recap/pattern1-cover.md` + `references/recap/writing1-cover.md`
-- `references/recap/pattern2-thinking.md` + `references/recap/writing2-thinking.md`
-- `references/recap/pattern3-vibe.md` + `references/recap/writing3-vibe.md`
-- `references/recap/pattern4-workflow.md` + `references/recap/writing4-workflow.md`
-- `references/recap/pattern5-closing.md` + `references/recap/writing5-closing.md`
+- `skill-doc/references/recap/pattern1-cover.md` + `skill-doc/references/recap/writing1-cover.md`
+- `skill-doc/references/recap/pattern2-thinking.md` + `skill-doc/references/recap/writing2-thinking.md`
+- `skill-doc/references/recap/pattern3-vibe.md` + `skill-doc/references/recap/writing3-vibe.md`
+- `skill-doc/references/recap/pattern4-workflow.md` + `skill-doc/references/recap/writing4-workflow.md`
+- `skill-doc/references/recap/pattern5-closing.md` + `skill-doc/references/recap/writing5-closing.md`
 
 ### Generated build outputs
 
 - `packages/core/dist/` is produced by `npm run build:core`. It is the compiled
-  `@obelisk/core` package: JavaScript, type declarations, and `schema.sql`.
+  internal `@obelisk/core` workspace: JavaScript, type declarations, and
+  `schema.sql`.
+- `packages/cli/dist/` is produced by `npm run build:cli`. It is the publishable
+  `@obelisk-apps/cli` payload: the thin command shell, readable compiled Core,
+  and `schema.sql`.
 - `dist/obelisk-skill/` is produced by `npm run build:skill`. It is the
-  install-ready skill artifact: readable plain JavaScript under `scripts/`,
-  `SKILL.md`, references, and the skill package metadata.
+  docs-only skill artifact: `SKILL.md`, references, and skill package metadata.
 - Skill publishing stages that artifact at `skills/obelisk/` in the
   `obelisk-skill` repository; only `README.md` and `LICENSE` remain at the
   repository root for `npx skills` discovery.
@@ -233,11 +258,13 @@ app imports `packages/core/src/` directly so electron-vite can bundle Core.
 The index rebuilds incrementally — only new or modified JSONL files are re-parsed.
 When the optional app is running, it is the active indexer: it watches Claude
 project files and builds in a worker thread. A fresh `__app_heartbeat__` alone
-means the daemon owns writes, so the skill remains read-only; a separate SQLite
+means the daemon owns writes, so CLI invocations remain read-only; a separate SQLite
 writer lease prevents cross-process writes from overlapping. The
 `__app_last_successful_build__` marker records index freshness, not ownership.
 
-Zero npm dependencies. Uses Node 22's built-in node:sqlite with FTS5. The entire runtime is ~400 lines.
+The CLI has zero runtime npm dependencies and uses Node 22's built-in
+`node:sqlite` with FTS5. The formal skill contains instructions and references,
+not a second executable runtime.
 
 20K lines of scattered JSONL → something the agent can search() and sql() against in milliseconds.
 
