@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 
 import { runCli as runRuntime } from './cli-test-helpers.mjs';
 
@@ -187,7 +187,7 @@ test('runtime indexes Codex root sessions into the shared query helpers', () => 
     id: `codex:${codexId}`,
     source: 'codex',
     project: '-tmp-obelisk-runtime',
-    project_path: '/tmp/obelisk-runtime',
+    project_path: normalize('/tmp/obelisk-runtime'),
     git_branch: 'feat/codex',
     version: '0.135.0-alpha.1',
     message_count: 3,
