@@ -6,7 +6,11 @@ export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const cliEntry = join(repoRoot, 'packages', 'cli', 'dist', 'cli', 'src', 'obelisk.js');
 
 export function runCli(args, { home, env = {}, cwd = repoRoot } = {}) {
-  return spawnSync(process.execPath, [cliEntry, ...args], {
+  return spawnSync(process.execPath, [
+    '--disable-warning=ExperimentalWarning',
+    cliEntry,
+    ...args,
+  ], {
     cwd,
     env: {
       ...process.env,

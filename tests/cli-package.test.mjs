@@ -30,6 +30,24 @@ test('obelisk --version reports the installed CLI package version', () => {
   assert.equal(result.stderr, '');
 });
 
+test('CLI test process suppresses only Node ExperimentalWarning output', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-cli-warning-'));
+  const preload = join(home, 'warnings.cjs');
+  writeFileSync(preload, `
+    process.emitWarning('simulated SQLite warning', 'ExperimentalWarning');
+    process.emitWarning('ordinary warning stays visible', 'ObeliskTestWarning');
+  `);
+
+  const result = runCli(['--version'], {
+    home,
+    env: { NODE_OPTIONS: `--require=${preload}` },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(result.stderr, /simulated SQLite warning/);
+  assert.match(result.stderr, /ordinary warning stays visible/);
+});
+
 test('obelisk install delegates official skill installation to the skills CLI', () => {
   const home = mkdtempSync(join(tmpdir(), 'obelisk-cli-install-'));
   const fakeBin = join(home, 'bin');

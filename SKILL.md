@@ -46,15 +46,36 @@ Verify the result:
 obelisk --version
 ```
 
-## 3. Install the official skill
+## 3. Choose the skill installation scope
+
+The standard skills installer defaults to the current project. Before running
+it, tell the user about that default and ask whether `/obelisk` should be
+installed:
+
+- **For the current project only** — available only in the project where the
+  installer runs.
+- **Globally** — available across the user's projects.
+
+Do not silently choose the current-project default. If the user already stated
+the scope explicitly, use that choice without asking again.
+
+Run the command that matches the user's answer:
+
+Current project:
 
 ```bash
 obelisk install
 ```
 
-Pass through any target or scope options the user requested. The command uses
-the standard skills installer, so follow its prompts instead of copying skill
-files by hand.
+Global:
+
+```bash
+obelisk install --global
+```
+
+Pass through any additional target options the user requested. The command
+uses the standard skills installer, so follow its prompts instead of copying
+skill files by hand.
 
 After installation, tell the user to reload their agent if the new `/obelisk`
 skill is not discovered immediately. This bootstrap document is not the query

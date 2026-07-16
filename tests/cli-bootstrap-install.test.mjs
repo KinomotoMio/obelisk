@@ -21,6 +21,10 @@ test('root SKILL.md bootstraps the CLI before installing the official skill', ()
   assert.match(source, /install\.sh/);
   assert.match(source, /obelisk --version/);
   assert.match(source, /obelisk install/);
+  assert.match(source, /defaults to the current project/i);
+  assert.match(source, /ask whether .*should be\s+installed/is);
+  assert.match(source, /obelisk install --global/);
+  assert.match(source, /Do not silently choose the current-project default/);
   assert.doesNotMatch(source, /obelisk --query/);
 });
 

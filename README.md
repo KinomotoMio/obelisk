@@ -65,8 +65,9 @@ curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md
 ```
 
 The agent will ask before changing your machine, install and verify the CLI,
-then install the formal `/obelisk` skill. The bootstrap guide is only for
-one-time setup; it is not the query skill itself.
+then ask whether the formal `/obelisk` skill should be installed for the current
+project or globally. The bootstrap guide is only for one-time setup; it is not
+the query skill itself.
 
 #### Install manually
 

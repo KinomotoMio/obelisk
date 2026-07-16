@@ -12,7 +12,8 @@ Install Obelisk by fetching and following this guide:
 curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md
 ```
 
-The agent installs and verifies the CLI first, then installs this skill.
+The agent installs and verifies the CLI first, then asks whether this skill
+should be installed for the current project or globally.
 
 ## Install manually
 
