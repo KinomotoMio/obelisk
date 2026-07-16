@@ -7,6 +7,7 @@ test('virtualizer scroll writes are discarded throughout a user scroll', () => {
   let scrolling = true;
   const element = { scrollTop: 100 };
   const writes = [];
+  const suppressed = [];
   const instance = { scrollElement: element };
   const policy = createSessionTimelineScrollPolicy({
     isUserScrolling: () => scrolling,
@@ -14,11 +15,19 @@ test('virtualizer scroll writes are discarded throughout a user scroll', () => {
       writes.push({ offset, ...options });
       element.scrollTop = offset + (options.adjustments || 0);
     },
+    onSuppressedAdjustment: (offset, options) => {
+      suppressed.push({ offset, ...options });
+    },
   });
 
   policy.scrollToFn(100, { behavior: 'auto', adjustments: 24 }, instance);
   policy.scrollToFn(124, { behavior: 'auto' }, instance);
   assert.deepEqual(writes, [], 'momentum is never interrupted by a programmatic write');
+  assert.deepEqual(
+    suppressed,
+    [{ offset: 100, behavior: 'auto', adjustments: 24 }],
+    'measurement adjustments are exposed for compositor compensation',
+  );
 
   scrolling = false;
   assert.equal(element.scrollTop, 100, 'scrollend never replays a suppressed correction');

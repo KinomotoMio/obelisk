@@ -65,6 +65,14 @@ const messages = Array.from({ length: messageCount }, (_, index) => ({
   content_type: index === 1 ? 'tool_use' : 'text',
   is_meta: 0,
 }));
+for (const startIndex of [96, 196]) {
+  for (let index = startIndex; index < startIndex + 8; index++) {
+    messages[index].text = Array.from(
+      { length: 120 },
+      (_, paragraph) => `Unmeasured paragraph ${paragraph} for message ${index} stays visible while scrolling.`,
+    ).join('\n\n');
+  }
+}
 messages[focusMessageIndex].type = 'assistant';
 messages[focusMessageIndex].text = `Truncated preview ${'indexed content '.repeat(700)}`;
 const fullTextSentinel = `FULL TEXT SENTINEL ${'complete content '.repeat(80)}`;
@@ -138,6 +146,98 @@ async function waitFor(webContents, expression, message, timeoutMs = 8000) {
     await delay(40);
   }
   throw new Error(`Timed out waiting for ${message}`);
+}
+
+async function probeOrdinaryScrollGeometry(win, { startIndex, direction }) {
+  await win.webContents.executeJavaScript(
+    `window.location.hash = '#/sessions/${sessionId}?focus=message-${startIndex}'`,
+    true,
+  );
+  await waitFor(
+    win.webContents,
+    `document.querySelector('[data-uuid="message-${startIndex}"].is-focused')`,
+    `ordinary-scroll geometry start ${startIndex}`,
+  );
+  await delay(100);
+  return win.webContents.executeJavaScript(`new Promise(resolve => {
+    const wrap = document.querySelector('.detail-wrap');
+    const direction = ${direction};
+    const originalScrollTo = wrap.scrollTo.bind(wrap);
+    const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
+    let programmaticScrolls = 0;
+    let maxVisibleOverlaps = 0;
+    let overlapExample = null;
+    let previousGeometry = null;
+    let maxResidualMotion = 0;
+    let residualExample = null;
+    wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
+    wrap.scrollTo = (...args) => {
+      programmaticScrolls++;
+      return originalScrollTo(...args);
+    };
+    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: direction * 70, bubbles: true }));
+    const startedAt = performance.now();
+    function frame(now) {
+      wrap.scrollTop += direction * 100;
+      const wrapRect = wrap.getBoundingClientRect();
+      const scrollTop = wrap.scrollTop;
+      const rows = [...document.querySelectorAll('.virtual-timeline-row')]
+        .map(row => {
+          const rect = row.getBoundingClientRect();
+          return {
+            index: Number(row.dataset.index),
+            uuid: row.querySelector('[data-uuid]')?.getAttribute('data-uuid'),
+            rect,
+          };
+        })
+        .filter(({ rect }) => rect.bottom > wrapRect.top && rect.top < wrapRect.bottom)
+        .sort((left, right) => left.index - right.index);
+      let overlaps = 0;
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index].rect.top < rows[index - 1].rect.bottom - 1) overlaps++;
+      }
+      if (overlaps > maxVisibleOverlaps) {
+        maxVisibleOverlaps = overlaps;
+        overlapExample = rows.slice(0, 5).map(row => ({
+          index: row.index,
+          top: row.rect.top,
+          bottom: row.rect.bottom,
+        }));
+      }
+      const geometry = new Map(rows.filter(row => row.uuid).map(row => [
+        row.uuid,
+        row.rect.top - wrapRect.top,
+      ]));
+      if (previousGeometry) {
+        for (const [uuid, top] of geometry) {
+          if (!previousGeometry.rows.has(uuid)) continue;
+          const screenDelta = top - previousGeometry.rows.get(uuid);
+          const scrollDelta = scrollTop - previousGeometry.scrollTop;
+          const residual = screenDelta + scrollDelta;
+          if (Math.abs(residual) > Math.abs(maxResidualMotion)) {
+            maxResidualMotion = residual;
+            residualExample = { uuid, screenDelta, scrollDelta, residual };
+          }
+        }
+      }
+      previousGeometry = { rows: geometry, scrollTop };
+      if (now - startedAt < 2000) {
+        requestAnimationFrame(frame);
+        return;
+      }
+      wrap.scrollTo = originalScrollTo;
+      wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+      wrap.dispatchEvent(new Event('scrollend'));
+      resolve({
+        programmaticScrolls,
+        maxVisibleOverlaps,
+        overlapExample,
+        maxResidualMotion,
+        residualExample,
+      });
+    }
+    requestAnimationFrame(frame);
+  })`, true);
 }
 
 async function startRendererTrace(win, { captureScreenshots = false } = {}) {
@@ -219,6 +319,8 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
       stop: false,
       wheels: 0,
       updateVisibleAtWheel: null,
+      maxVisibleOverlaps: 0,
+      overlapExample: null,
     };
     const recordWheel = () => { probe.wheels++; };
     const observer = new MutationObserver(() => {
@@ -237,6 +339,26 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     function frame(now) {
       probe.gaps.push(now - probe.previous);
       probe.previous = now;
+      const wrapRect = wrap.getBoundingClientRect();
+      const rows = [...document.querySelectorAll('.virtual-timeline-row')]
+        .map(row => ({
+          index: Number(row.dataset.index),
+          rect: row.getBoundingClientRect(),
+        }))
+        .filter(({ rect }) => rect.bottom > wrapRect.top && rect.top < wrapRect.bottom)
+        .sort((left, right) => left.index - right.index);
+      let overlaps = 0;
+      for (let index = 1; index < rows.length; index++) {
+        if (rows[index].rect.top < rows[index - 1].rect.bottom - 1) overlaps++;
+      }
+      if (overlaps > probe.maxVisibleOverlaps) {
+        probe.maxVisibleOverlaps = overlaps;
+        probe.overlapExample = rows.slice(0, 6).map(row => ({
+          index: row.index,
+          top: row.rect.top,
+          bottom: row.rect.bottom,
+        }));
+      }
       if (!probe.stop) requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
@@ -280,7 +402,12 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     probe.stop = true;
     probe.cleanup();
     delete window.__wheelFrameProbe;
-    return { gaps: probe.gaps, updateVisibleAtWheel: probe.updateVisibleAtWheel };
+    return {
+      gaps: probe.gaps,
+      updateVisibleAtWheel: probe.updateVisibleAtWheel,
+      maxVisibleOverlaps: probe.maxVisibleOverlaps,
+      overlapExample: probe.overlapExample,
+    };
   })()`, true);
   const traceEvents = await stopRendererTrace();
   const screenshots = traceEvents
@@ -296,6 +423,8 @@ async function traceWheelPaintContinuity(win, { updateTool = false } = {}) {
     maxTaskMs: taskMetrics.maxTaskMs,
     maxFunctionCallMs: taskMetrics.maxFunctionCallMs,
     updateVisibleAtWheel: frameProbe.updateVisibleAtWheel,
+    maxVisibleOverlaps: frameProbe.maxVisibleOverlaps,
+    overlapExample: frameProbe.overlapExample,
     slowestChildren: taskMetrics.slowestChildren,
     // A blank content crop is almost uniform (< 0.035); rendered fixture rows
     // stay comfortably above 0.06 even while the compositor is scrolling.
@@ -624,6 +753,10 @@ async function run() {
     `fast wheel scrolling never presents a blank timeline frame (${JSON.stringify(wheelPaint)})`,
   );
   assert(
+    wheelBaseline.maxVisibleOverlaps === 0,
+    `ordinary wheel scrolling never overlaps visible rows (${JSON.stringify(wheelBaseline.overlapExample)})`,
+  );
+  assert(
     wheelPaint.maxFrameGap < 50,
     `Bash tool update avoids a multi-frame renderer stall while scrolling (${JSON.stringify(wheelPaint)})`,
   );
@@ -732,6 +865,42 @@ async function run() {
   assert(
     fullTextSearchState.highlighted && fullTextSearchState.truncatedButtonRemoved,
     'full-text expansion re-renders the row and preserves search highlighting',
+  );
+  await delay(250);
+
+  const downwardGeometry = await probeOrdinaryScrollGeometry(win, {
+    startIndex: 40,
+    direction: 1,
+  });
+  const upwardGeometry = await probeOrdinaryScrollGeometry(win, {
+    startIndex: 260,
+    direction: -1,
+  });
+  for (const [label, geometry] of [
+    ['downward', downwardGeometry],
+    ['upward', upwardGeometry],
+  ]) {
+    assert(
+      geometry.maxVisibleOverlaps === 0,
+      `long rows never overlap during ordinary ${label} scrolling (${JSON.stringify(geometry.overlapExample)})`,
+    );
+    assert(
+      geometry.programmaticScrolls === 0,
+      `ordinary ${label} scrolling performs no programmatic scrollTo writes`,
+    );
+    assert(
+      Math.abs(geometry.maxResidualMotion) < 1.5,
+      `ordinary ${label} scrolling keeps visible messages fixed to scroll input (${JSON.stringify(geometry.residualExample)})`,
+    );
+  }
+  await win.webContents.executeJavaScript(
+    `window.location.hash = '#/sessions/${sessionId}?focus=${focusMessageUuid}'`,
+    true,
+  );
+  await waitFor(
+    win.webContents,
+    `document.querySelector('[data-uuid="${focusMessageUuid}"].is-focused')`,
+    'restored offscreen UUID focus',
   );
   await delay(250);
 
@@ -845,20 +1014,53 @@ async function run() {
     const totalBeforeGesture = Number(document.querySelector('.flap-number')?.getAttribute('aria-label'));
     const originalScrollTo = wrap.scrollTo.bind(wrap);
     let programmaticScrolls = 0;
+    let postScrollEndWrites = 0;
+    let phase = 'scrolling';
     const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
     wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
     wrap.scrollTo = (...args) => {
-      programmaticScrolls++;
+      if (phase === 'scrolling') programmaticScrolls++;
+      else postScrollEndWrites++;
       return originalScrollTo(...args);
     };
     const gaps = [];
     const startedAt = performance.now();
     let previous = startedAt;
-    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: 70, bubbles: true }));
+    let previousGeometry = null;
+    let maxResidualMotion = 0;
+    let residualExample = null;
+    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -70, bubbles: true }));
+    function sampleGeometry(now) {
+      const wrapRect = wrap.getBoundingClientRect();
+      const scrollTop = wrap.scrollTop;
+      const rows = new Map([...document.querySelectorAll('.virtual-timeline-row')]
+        .map(row => {
+          const rect = row.getBoundingClientRect();
+          const uuid = row.querySelector('[data-uuid]')?.getAttribute('data-uuid');
+          return uuid && rect.bottom > wrapRect.top && rect.top < wrapRect.bottom
+            ? [uuid, rect.top - wrapRect.top]
+            : null;
+        })
+        .filter(Boolean));
+      if (previousGeometry) {
+        for (const [uuid, top] of rows) {
+          if (!previousGeometry.rows.has(uuid)) continue;
+          const screenDelta = top - previousGeometry.rows.get(uuid);
+          const scrollDelta = scrollTop - previousGeometry.scrollTop;
+          const residual = screenDelta + scrollDelta;
+          if (Math.abs(residual) > Math.abs(maxResidualMotion)) {
+            maxResidualMotion = residual;
+            residualExample = { now: now - startedAt, uuid, screenDelta, scrollDelta, residual };
+          }
+        }
+      }
+      previousGeometry = { rows, scrollTop };
+    }
     function frame(now) {
       gaps.push(now - previous);
       previous = now;
-      if (now - startedAt >= 400) wrap.scrollTop += 70;
+      if (now - startedAt >= 400) wrap.scrollTop -= 70;
+      sampleGeometry(now);
       if (now - startedAt < 1200) requestAnimationFrame(frame);
       else {
         const wrapRect = wrap.getBoundingClientRect();
@@ -870,7 +1072,11 @@ async function run() {
         const anchorElement = anchorRow?.querySelector('[data-uuid]');
         const totalBeforeScrollEnd = Number(document.querySelector('.flap-number')?.getAttribute('aria-label'));
         const flapBeforeScrollEnd = Boolean(document.querySelector('.flap-slot.flipping'));
-        wrap.scrollTo = originalScrollTo;
+        phase = 'settled';
+        window.__scrollGeometryWriteProbe = {
+          read: () => postScrollEndWrites,
+          restore: () => { wrap.scrollTo = originalScrollTo; },
+        };
         wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
         wrap.dispatchEvent(new Event('scrollend'));
         resolve({
@@ -878,6 +1084,8 @@ async function run() {
           totalBeforeScrollEnd,
           flapBeforeScrollEnd,
           programmaticScrolls,
+          maxResidualMotion,
+          residualExample,
           maxFrameGap: Math.max(...gaps),
           frames: gaps.length,
           rows: document.querySelectorAll('.virtual-timeline-row').length,
@@ -906,6 +1114,13 @@ async function run() {
     `document.title.includes('Live metadata title') && document.querySelector('.breadcrumb')?.textContent.includes('Live metadata title')`,
     'shared route metadata update',
   );
+  const postScrollEndWrites = await win.webContents.executeJavaScript(`(() => {
+    const probe = window.__scrollGeometryWriteProbe;
+    const writes = probe?.read() ?? -1;
+    probe?.restore();
+    delete window.__scrollGeometryWriteProbe;
+    return writes;
+  })()`, true);
   const sharedMetadataState = await win.webContents.executeJavaScript(`(() => ({
     windowTitle: document.title.includes('Live metadata title'),
     breadcrumb: document.querySelector('.breadcrumb')?.textContent.includes('Live metadata title'),
@@ -947,6 +1162,14 @@ async function run() {
     scrollProbe.programmaticScrolls === 0,
     `wheel-to-scrollend performs zero programmatic scrollTo calls (got ${scrollProbe.programmaticScrolls})`,
   );
+  assert(
+    Math.abs(scrollProbe.maxResidualMotion) < 1.5,
+    `wheel-to-scrollend keeps visible messages fixed to scroll input (${JSON.stringify(scrollProbe.residualExample)})`,
+  );
+  assert(
+    postScrollEndWrites <= 1,
+    `scrollend batches deferred measurements into at most one anchor sync (got ${postScrollEndWrites})`,
+  );
   assert(!scrollProbe.flapBeforeScrollEnd, 'wheel-to-scrollend does not start the flap animation');
   assert(scrollProbe.anchor, 'reader anchor is captured before the deferred live commit');
   assert(
@@ -958,6 +1181,7 @@ async function run() {
   );
   assert(scrollProbe.maxFrameGap < 250, `live scroll has no catastrophic long frame (${scrollProbe.maxFrameGap.toFixed(1)}ms)`);
 
+  await waitFor(win.webContents, `!document.querySelector('.flap-slot.flipping')`, 'tail append flap settlement');
   const updatedReaderText = `Updated ${scrollProbe.anchor.uuid} ${'content identity '.repeat(20)}`;
   await win.webContents.executeJavaScript(`(() => {
     const original = window.marked.parse;
@@ -980,20 +1204,118 @@ async function run() {
       restore: () => { window.marked.parse = original; },
     };
   })()`, true);
-  replaceMessageText(win, scrollProbe.anchor.uuid, updatedReaderText);
+  setTimeout(() => replaceMessageText(win, scrollProbe.anchor.uuid, updatedReaderText), 200);
+  const existingUpdateProbe = await win.webContents.executeJavaScript(`new Promise(resolve => {
+    const wrap = document.querySelector('.detail-wrap');
+    const targetUuid = ${JSON.stringify(scrollProbe.anchor.uuid)};
+    const targetText = ${JSON.stringify(updatedReaderText.slice(0, 40))};
+    const originalScrollTo = wrap.scrollTo.bind(wrap);
+    const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
+    let programmaticScrolls = 0;
+    let previousGeometry = null;
+    let maxResidualMotion = 0;
+    let residualExample = null;
+    let steps = 0;
+    wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
+    wrap.scrollTo = (...args) => {
+      programmaticScrolls++;
+      return originalScrollTo(...args);
+    };
+    wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -40, bubbles: true }));
+    const startedAt = performance.now();
+    function frame(now) {
+      if (now - startedAt >= 250 && steps < 3) {
+        wrap.scrollTop -= 40;
+        steps++;
+      }
+      const wrapRect = wrap.getBoundingClientRect();
+      const scrollTop = wrap.scrollTop;
+      const rows = new Map([...document.querySelectorAll('.virtual-timeline-row')]
+        .map(row => {
+          const rect = row.getBoundingClientRect();
+          const uuid = row.querySelector('[data-uuid]')?.getAttribute('data-uuid');
+          return uuid && rect.bottom > wrapRect.top && rect.top < wrapRect.bottom
+            ? [uuid, rect.top - wrapRect.top]
+            : null;
+        })
+        .filter(Boolean));
+      if (previousGeometry) {
+        for (const [uuid, top] of rows) {
+          if (!previousGeometry.rows.has(uuid)) continue;
+          const screenDelta = top - previousGeometry.rows.get(uuid);
+          const scrollDelta = scrollTop - previousGeometry.scrollTop;
+          const residual = screenDelta + scrollDelta;
+          if (Math.abs(residual) > Math.abs(maxResidualMotion)) {
+            maxResidualMotion = residual;
+            residualExample = { uuid, screenDelta, scrollDelta, residual };
+          }
+        }
+      }
+      previousGeometry = { rows, scrollTop };
+      if (now - startedAt < 700) {
+        requestAnimationFrame(frame);
+        return;
+      }
+      const anchorRow = [...document.querySelectorAll('.virtual-timeline-row')]
+        .find(row => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > wrapRect.top && rect.top < wrapRect.bottom;
+        });
+      const anchorElement = anchorRow?.querySelector('[data-uuid]');
+      const targetVisibleBeforeScrollEnd = Boolean(
+        document.querySelector('[data-uuid="' + targetUuid + '"]')?.textContent.includes(targetText),
+      );
+      wrap.scrollTo = originalScrollTo;
+      wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+      wrap.dispatchEvent(new Event('scrollend'));
+      resolve({
+        targetVisibleBeforeScrollEnd,
+        programmaticScrolls,
+        maxResidualMotion,
+        residualExample,
+        anchor: anchorElement && {
+          uuid: anchorElement.getAttribute('data-uuid'),
+          offset: anchorRow.getBoundingClientRect().top - wrapRect.top,
+        },
+      });
+    }
+    requestAnimationFrame(frame);
+  })`, true);
   await waitFor(
     win.webContents,
     `document.querySelector('[data-uuid=${JSON.stringify(scrollProbe.anchor.uuid)}]')?.textContent.includes(${JSON.stringify(updatedReaderText.slice(0, 40))})`,
     'visible message content update',
   );
-  const contentIdentityCalls = await win.webContents.executeJavaScript(`(() => {
+  const updatedReaderState = await win.webContents.executeJavaScript(`(() => {
+    const wrap = document.querySelector('.detail-wrap');
+    const anchorElement = document.querySelector(
+      ${JSON.stringify(`[data-uuid="${existingUpdateProbe.anchor?.uuid}"]`)},
+    );
+    const anchorRow = anchorElement?.closest('.virtual-timeline-row');
     const calls = window.__timelineContentIdentityProbe.calls();
     window.__timelineContentIdentityProbe.restore();
     delete window.__timelineContentIdentityProbe;
-    return calls;
+    return {
+      calls,
+      anchor: anchorElement && {
+        uuid: anchorElement.getAttribute('data-uuid'),
+        offset: anchorRow.getBoundingClientRect().top - wrap.getBoundingClientRect().top,
+      },
+    };
   })()`, true);
-  assert(contentIdentityCalls.target === 1, `updated mounted row recomputes its Markdown once (got ${contentIdentityCalls.target})`);
-  assert(contentIdentityCalls.unchanged === 0, `updated mounted row leaves other mounted Markdown cached (got ${contentIdentityCalls.unchanged})`);
+  assert(!existingUpdateProbe.targetVisibleBeforeScrollEnd, 'existing message update stays out of the timeline until scrollend');
+  assert(existingUpdateProbe.programmaticScrolls === 0, 'existing message update performs no programmatic scroll during the gesture');
+  assert(
+    Math.abs(existingUpdateProbe.maxResidualMotion) < 1.5,
+    `existing message update keeps visible messages fixed to scroll input (${JSON.stringify(existingUpdateProbe.residualExample)})`,
+  );
+  assert(
+    existingUpdateProbe.anchor?.uuid === updatedReaderState.anchor?.uuid
+      && Math.abs(existingUpdateProbe.anchor.offset - updatedReaderState.anchor.offset) < 2,
+    `existing message update preserves reader anchor ${existingUpdateProbe.anchor?.uuid} (${existingUpdateProbe.anchor?.offset}px -> ${updatedReaderState.anchor?.offset}px)`,
+  );
+  assert(updatedReaderState.calls.target === 1, `updated mounted row recomputes its Markdown once (got ${updatedReaderState.calls.target})`);
+  assert(updatedReaderState.calls.unchanged === 0, `updated mounted row leaves other mounted Markdown cached (got ${updatedReaderState.calls.unchanged})`);
   assert(
     ipcReads.messages === 1
       && ipcReads.toolCalls === 1

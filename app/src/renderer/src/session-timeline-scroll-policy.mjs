@@ -1,8 +1,15 @@
-export function createSessionTimelineScrollPolicy({ isUserScrolling, writeScroll }) {
+export function createSessionTimelineScrollPolicy({
+  isUserScrolling,
+  writeScroll,
+  onSuppressedAdjustment = () => {},
+}) {
   let explicitDepth = 0;
 
   function scrollToFn(offset, options = {}, instance) {
     if (explicitDepth === 0 && isUserScrolling()) {
+      if (Number.isFinite(options.adjustments) && options.adjustments !== 0) {
+        onSuppressedAdjustment(offset, options, instance);
+      }
       return;
     }
     writeScroll(offset, options, instance);

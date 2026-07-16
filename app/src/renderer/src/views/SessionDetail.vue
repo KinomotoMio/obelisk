@@ -67,19 +67,29 @@ const userScroll = createSessionUserScroll({ onEnd: handleUserScrollEnd });
 const timelineViewport = useSessionTimelineViewport({
   items: timelineItems,
   scrollElement: wrapRef,
+  timelineElement: timelineRef,
   scrollMargin: timelineScrollMargin,
   scrollPaddingEnd: NAV_HEIGHT,
   userScroll,
 });
-const { virtualRows, totalSize, measureElement, waitForStableLayout } = timelineViewport;
+const {
+  virtualRows,
+  totalSize,
+  measureElement,
+  settleAfterUserScroll,
+  waitForStableLayout,
+} = timelineViewport;
 const liveReloadCoordinator = createSessionLiveReloadCoordinator({
   isScrolling: () => userScroll.isActive(),
   load: loadLiveSnapshot,
   commit: commitLiveSnapshot,
 });
 
-function handleUserScrollEnd() {
-  if (active.value) void liveReloadCoordinator.flush();
+async function handleUserScrollEnd() {
+  if (!active.value) return;
+  await settleAfterUserScroll(() => (
+    active.value ? liveReloadCoordinator.flush() : Promise.resolve()
+  ));
 }
 
 function syncTimelineScrollMargin() {

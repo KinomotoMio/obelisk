@@ -1,5 +1,10 @@
-import { computed, ref } from 'vue';
-import { defaultRangeExtractor, elementScroll, useVirtualizer } from '@tanstack/vue-virtual';
+import { computed, nextTick, ref } from 'vue';
+import {
+  defaultRangeExtractor,
+  elementScroll,
+  measureElement as measureVirtualElement,
+  useVirtualizer,
+} from '@tanstack/vue-virtual';
 import { createSessionTimelineScrollPolicy } from './session-timeline-scroll-policy.mjs';
 
 function estimatedTextHeight(text = '') {
@@ -74,6 +79,7 @@ export function resolveReaderAnchorIndex(anchor, items = []) {
 export function useSessionTimelineViewport({
   items,
   scrollElement,
+  timelineElement,
   scrollMargin,
   overscan = 6,
   gap = 14,
@@ -81,9 +87,16 @@ export function useSessionTimelineViewport({
   userScroll,
 }) {
   const tailFollowReady = ref(false);
+  let settlementActive = false;
+  let compensatedTimeline = null;
+  let originalTimelineTranslate = '';
+  let suppressedAdjustment = 0;
   const scrollPolicy = createSessionTimelineScrollPolicy({
-    isUserScrolling: () => userScroll?.isActive() ?? false,
+    isUserScrolling: () => (
+      settlementActive || (userScroll?.isActive() ?? false)
+    ),
     writeScroll: elementScroll,
+    onSuppressedAdjustment: applySuppressedAdjustment,
   });
   let virtualizer = null;
   const rangeExtractor = createViewportRangeExtractor({
@@ -106,15 +119,149 @@ export function useSessionTimelineViewport({
     isScrollingResetDelay: 450,
     useScrollendEvent: true,
     useAnimationFrameWithResizeObserver: true,
+    measureElement: measureVirtualElement,
     scrollToFn: scrollPolicy.scrollToFn,
   })));
 
   const virtualRows = computed(() => virtualizer.value.getVirtualItems());
   const totalSize = computed(() => virtualizer.value.getTotalSize());
 
+  function resolveTimelineElement(instance = virtualizer?.value) {
+    return timelineElement?.value
+      || [...(instance?.elementsCache?.values?.() || [])]
+        .find(element => element.isConnected)?.parentElement
+      || null;
+  }
+
+  function applySuppressedAdjustment(_offset, options, instance) {
+    const adjustment = Number(options.adjustments) || 0;
+    if (adjustment === 0) return;
+    const target = resolveTimelineElement(instance);
+    if (!target) return;
+    if (compensatedTimeline !== target) {
+      if (compensatedTimeline) {
+        compensatedTimeline.style.translate = originalTimelineTranslate;
+      }
+      compensatedTimeline = target;
+      originalTimelineTranslate = target.style.translate || '';
+      suppressedAdjustment = 0;
+    }
+    suppressedAdjustment += adjustment;
+    target.style.translate = `0 ${-suppressedAdjustment}px`;
+  }
+
+  function clearSuppressedAdjustment() {
+    if (compensatedTimeline) {
+      compensatedTimeline.style.translate = originalTimelineTranslate;
+    }
+    compensatedTimeline = null;
+    originalTimelineTranslate = '';
+    suppressedAdjustment = 0;
+  }
+
   function measureElement(element) {
     if (!element) return;
     virtualizer.value.measureElement(element);
+  }
+
+  async function settleAfterUserScroll(commit = () => Promise.resolve()) {
+    if (settlementActive) return false;
+    const instance = virtualizer.value;
+    const element = scrollElement.value;
+    if (!instance || !element) {
+      clearSuppressedAdjustment();
+      return false;
+    }
+
+    const scrollOffset = element.scrollTop;
+    const viewportRect = element.getBoundingClientRect();
+    const mountedRows = [...instance.elementsCache.entries()]
+      .filter(([, row]) => row.isConnected)
+      .map(([key, row]) => ({ key, row, rect: row.getBoundingClientRect() }));
+    const visibleAnchor = mountedRows
+      .filter(({ rect }) => (
+        rect.bottom > viewportRect.top && rect.top < viewportRect.bottom
+      ))
+      .sort((left, right) => left.rect.top - right.rect.top)[0];
+    const fallbackMeasurement = instance.getVirtualItemForOffset(scrollOffset);
+    const anchor = visibleAnchor
+      ? {
+          key: visibleAnchor.key,
+          screenOffset: visibleAnchor.rect.top - viewportRect.top,
+        }
+      : fallbackMeasurement
+        ? {
+            key: fallbackMeasurement.key,
+            screenOffset: fallbackMeasurement.start - scrollOffset,
+          }
+        : null;
+    settlementActive = true;
+    try {
+      // Publish the coalesced live patch inside the same geometry transaction.
+      // Real row sizes remain live throughout; only scrollTop corrections are
+      // suppressed until the reader anchor can be reconciled once.
+      await commit();
+      if (userScroll?.isActive() ?? false) return false;
+
+      const indexByKey = new Map(
+        items.value.map((item, index) => [item?.key || index, index]),
+      );
+      let appliedMeasurements = 0;
+      let stableFrames = 0;
+      for (let pass = 0; pass < 12 && stableFrames < 2; pass++) {
+        await nextTick();
+        if (userScroll?.isActive() ?? false) return false;
+        let changed = false;
+        const settledRows = [...instance.elementsCache.entries()]
+          .filter(([, row]) => row.isConnected)
+          .map(([key, row]) => ({ key, size: Math.round(row.getBoundingClientRect().height) }))
+          .filter(({ size }) => size > 0);
+        for (const { key, size } of settledRows) {
+          const index = indexByKey.get(key);
+          if (index === undefined) continue;
+          const cachedSize = instance.itemSizeCache.get(key)
+            ?? instance.options.estimateSize(index);
+          if (cachedSize === size) continue;
+          instance.resizeItem(index, size);
+          appliedMeasurements++;
+          changed = true;
+        }
+        stableFrames = changed ? 0 : stableFrames + 1;
+        const targetWindow = element.ownerDocument?.defaultView;
+        if (targetWindow) {
+          await new Promise(resolve => targetWindow.requestAnimationFrame(resolve));
+        }
+      }
+
+      let targetOffset = scrollOffset;
+      if (anchor) {
+        const anchorIndex = indexByKey.get(anchor.key);
+        const nextMeasurement = anchorIndex === undefined
+          ? null
+          : instance.getMeasurements?.()[anchorIndex];
+        if (nextMeasurement) targetOffset = nextMeasurement.start - anchor.screenOffset;
+      }
+
+      const viewportWasRepositioned = (userScroll?.isActive() ?? false)
+        || Math.abs(element.scrollTop - scrollOffset) >= 1;
+      if (viewportWasRepositioned) {
+        clearSuppressedAdjustment();
+        instance.scrollOffset = element.scrollTop;
+      } else if (Math.abs(element.scrollTop - targetOffset) >= 0.5) {
+        clearSuppressedAdjustment();
+        instance.scrollOffset = targetOffset;
+        elementScroll(targetOffset, { behavior: 'auto' }, instance);
+      } else {
+        clearSuppressedAdjustment();
+        instance.scrollOffset = element.scrollTop;
+      }
+      return appliedMeasurements > 0;
+    } catch (error) {
+      clearSuppressedAdjustment();
+      throw error;
+    } finally {
+      settlementActive = false;
+    }
   }
 
   function indexAtViewportEnd(inset = 0) {
@@ -248,6 +395,7 @@ export function useSessionTimelineViewport({
     virtualRows,
     totalSize,
     measureElement,
+    settleAfterUserScroll,
     indexAtViewportEnd,
     scrollToIndex,
     scrollToEnd,
