@@ -53,7 +53,24 @@ You can use obelisk like:
 
 ### Install
 
-Obelisk requires Node.js 22.13 or newer. Install the platform-neutral CLI first:
+#### Let your agent install it (recommended)
+
+The shortest path is to give the bootstrap guide directly to a coding agent
+with shell access. Paste this as a prompt into Claude Code, Codex, or another
+agent — not into your terminal:
+
+```text
+Install Obelisk by fetching and following this guide:
+curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md
+```
+
+The agent will ask before changing your machine, install and verify the CLI,
+then install the formal `/obelisk` skill. The bootstrap guide is only for
+one-time setup; it is not the query skill itself.
+
+#### Install manually
+
+Obelisk requires Node.js 22.13 or newer. Install the platform-neutral CLI:
 
 ```bash
 npm install --global @obelisk-apps/cli
@@ -73,11 +90,7 @@ obelisk install
 ```
 
 `obelisk install` delegates to the standard skills installer for
-`tommy0103/obelisk-skill`. To let an agent perform the one-time bootstrap, give
-it the repository's root
-[`SKILL.md`](https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md).
-That document installs the CLI and formal skill; it is not the query skill
-itself.
+`tommy0103/obelisk-skill`.
 
 Then in any Claude Code session:
 

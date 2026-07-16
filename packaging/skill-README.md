@@ -3,7 +3,18 @@
 Explicit memory infrastructure for coding agents — a queryable SQLite evidence
 layer over local Claude Code and Codex session history.
 
-## Install
+## Install with your agent (recommended)
+
+Paste this into a coding agent with shell access:
+
+```text
+Install Obelisk by fetching and following this guide:
+curl -fsSL https://raw.githubusercontent.com/tommy0103/obelisk/main/SKILL.md
+```
+
+The agent installs and verifies the CLI first, then installs this skill.
+
+## Install manually
 
 ```bash
 npm install --global @obelisk-apps/cli
