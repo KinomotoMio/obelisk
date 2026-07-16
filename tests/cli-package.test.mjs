@@ -110,6 +110,7 @@ test('npm pack installs one platform-neutral CLI with its schema resource', () =
       cwd: repoRoot,
       env: npmEnv,
       encoding: 'utf8',
+      shell: process.platform === 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   ));
@@ -123,7 +124,13 @@ test('npm pack installs one platform-neutral CLI with its schema resource', () =
   execFileSync(
     npmCommand,
     ['install', '--global', '--prefix', prefix, tarball, '--ignore-scripts'],
-    { cwd: repoRoot, env: npmEnv, encoding: 'utf8', stdio: 'pipe' },
+    {
+      cwd: repoRoot,
+      env: npmEnv,
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      stdio: 'pipe',
+    },
   );
 
   const installedBin = process.platform === 'win32'

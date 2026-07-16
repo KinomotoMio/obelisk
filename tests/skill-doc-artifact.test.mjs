@@ -13,6 +13,7 @@ test('build:skill produces a docs-only skill that delegates execution to the CLI
   execFileSync(npmCommand, ['run', 'build:skill'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    shell: process.platform === 'win32',
     stdio: 'pipe',
   });
 
