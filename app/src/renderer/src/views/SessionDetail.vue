@@ -1,5 +1,5 @@
 <script setup>
-import { ref, shallowRef, computed, reactive, onMounted, onUnmounted, nextTick, onActivated, onDeactivated, watch } from 'vue';
+import { ref, shallowRef, computed, reactive, onMounted, onBeforeUnmount, onUnmounted, nextTick, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { state, FOLDER_SVG, getSessionSummary } from '../store.js';
 import {
@@ -16,6 +16,7 @@ import { createSessionDisclosureState } from '../session-disclosures.mjs';
 import { createSessionLiveReloadCoordinator } from '../session-live-reload.mjs';
 import { createSessionUserScroll } from '../session-user-scroll.mjs';
 import { useSessionTimelineViewport } from '../session-timeline-viewport.mjs';
+import { sessionReaderStateCache } from '../session-reader-state.mjs';
 import FlapNumber from '../components/FlapNumber.vue';
 import SessionTimelineRow from '../components/SessionTimelineRow.vue';
 import {
@@ -41,13 +42,17 @@ const timelineReady = ref(false);
 const progressPct = ref(0);
 const active = ref(false);
 const focusedItemKey = ref(null);
+const pendingFocusUuid = ref(
+  typeof route.query.focus === 'string' ? route.query.focus : null,
+);
 const expandedMessageText = reactive(new Map());
 const fullTextLoading = reactive(new Set());
 let removeSessionUpdated = null;
 let keydownAttached = false;
 let focusTimer = null;
 let loadRevision = 0;
-let initialMountComplete = false;
+let pendingReaderState = sessionReaderStateCache.get(props.id);
+let readerStatePrepared = false;
 
 // DOM refs
 const wrapRef = ref(null);
@@ -87,6 +92,37 @@ function observeSessionHeader() {
   if (!headerRef.value || typeof ResizeObserver === 'undefined') return;
   headerResizeObserver = new ResizeObserver(syncTimelineScrollMargin);
   headerResizeObserver.observe(headerRef.value);
+}
+
+function saveReaderState(sessionId = props.id) {
+  if (!timelineReady.value || !sessionId || timelineItems.value.length === 0) return;
+  sessionReaderStateCache.set(sessionId, {
+    ...timelineViewport.captureReaderPosition(),
+    disclosures: disclosures.snapshot(),
+    expandedMessageIds: [...expandedMessageText.keys()],
+  });
+}
+
+async function prepareReaderState(messageUuids) {
+  if (readerStatePrepared || !pendingReaderState) return;
+  disclosures.restore(pendingReaderState.disclosures, messageUuids);
+  const expandedIds = pendingReaderState.expandedMessageIds
+    .filter(messageUuid => messageUuids.has(messageUuid));
+  await Promise.all(expandedIds.map(messageUuid => handleLoadFullText(messageUuid)));
+  readerStatePrepared = true;
+}
+
+async function restoreReaderStateAfterLayout() {
+  const explicitFocus = Boolean(pendingFocusUuid.value);
+  if (explicitFocus) {
+    await focusPendingMessage();
+  } else if (pendingReaderState) {
+    userScroll.clearUpwardIntent();
+    await timelineViewport.restoreReaderPosition(pendingReaderState);
+  }
+  updateScrollProgress();
+  pendingReaderState = null;
+  readerStatePrepared = false;
 }
 
 // --- Load session on mount or when id changes ---
@@ -140,9 +176,6 @@ onMounted(async () => {
   active.value = true;
   userScroll.attach(wrapRef.value);
   attachKeydown();
-  if (route.query.focus) {
-    state.pendingFocusUuid = route.query.focus;
-  }
   removeSessionUpdated = window.obelisk?.onSessionUpdated?.(({ sessionId } = {}) => {
     if (!active.value || !props.id || sessionId !== props.id) return;
     void liveReloadCoordinator.request();
@@ -152,41 +185,14 @@ onMounted(async () => {
     localStorage.setItem(HINT_KEY, '1');
     setTimeout(() => { showFontHint.value = false; }, 4000);
   }
-  try {
-    await loadMessages({ force: consumeGlobalSessionDirty(props.id) });
-    await nextTick();
-    syncTimelineScrollMargin();
-    observeSessionHeader();
-  } finally {
-    initialMountComplete = true;
-  }
-});
-
-onActivated(async () => {
-  active.value = true;
-  userScroll.attach(wrapRef.value);
-  attachKeydown();
-  // KeepAlive invokes onActivated during the initial mount as well. The
-  // onMounted path already owns that first load and layout reveal.
-  if (!initialMountComplete) return;
-  if (route.query.focus) {
-    state.pendingFocusUuid = route.query.focus;
-  }
-  if (props.id && (messages.value.length === 0 || consumeGlobalSessionDirty(props.id))) {
-    await loadMessages({ force: true });
-  } else if (state.pendingFocusUuid) {
-    await focusPendingMessage();
-  }
-  await liveReloadCoordinator.flush();
+  await loadMessages({ force: consumeGlobalSessionDirty(props.id) });
   await nextTick();
   syncTimelineScrollMargin();
   observeSessionHeader();
 });
 
-onDeactivated(() => {
-  active.value = false;
-  userScroll.detach();
-  detachKeydown();
+onBeforeUnmount(() => {
+  saveReaderState();
 });
 
 onUnmounted(() => {
@@ -205,28 +211,20 @@ onUnmounted(() => {
   removeSessionUpdated = null;
 });
 
-watch(() => props.id, async (newId, oldId) => {
-  if (newId && newId !== oldId) {
-    loadRevision++;
-    userScroll.clearUpwardIntent();
-    timelineViewport.resetForInitialSnapshot();
-    liveSessionMetadata.value = null;
-    messages.value = [];
-    timelineItems.value = [];
-    timelineReady.value = false;
-    disclosures.retainMessages(new Set());
-    expandedMessageText.clear();
-    fullTextLoading.clear();
-    progressPct.value = 0;
-    currentMsgIdx.value = 0;
-    await loadMessages({ force: consumeGlobalSessionDirty(newId) });
-  }
-});
-
 watch(() => session.value?.id, async sessionId => {
   if (sessionId === props.id && messages.value.length === 0) {
     await loadMessages({ force: true });
   }
+});
+
+watch(() => route.query.focus, async focus => {
+  pendingFocusUuid.value = typeof focus === 'string' ? focus : null;
+  if (
+    !pendingFocusUuid.value
+    || String(route.params.id || '') !== props.id
+    || !timelineReady.value
+  ) return;
+  await focusPendingMessage();
 });
 
 async function loadMessages({ force = false } = {}) {
@@ -257,6 +255,8 @@ async function revealColdTimeline(revision, sessionId) {
   if (revision !== loadRevision || sessionId !== props.id) return;
   syncTimelineScrollMargin();
   if (timelineItems.value.length === 0) {
+    pendingReaderState = null;
+    readerStatePrepared = false;
     timelineReady.value = true;
     return;
   }
@@ -264,6 +264,8 @@ async function revealColdTimeline(revision, sessionId) {
   await waitForStableLayout({
     isCurrent: () => revision === loadRevision && sessionId === props.id,
   });
+  if (revision !== loadRevision || sessionId !== props.id) return;
+  await restoreReaderStateAfterLayout();
   if (revision !== loadRevision || sessionId !== props.id) return;
   timelineReady.value = true;
 }
@@ -340,11 +342,12 @@ async function commitSessionSnapshot(latest) {
       for (const uuid of expandedMessageText.keys()) {
         if (!retainedMessageUuids.has(uuid)) expandedMessageText.delete(uuid);
       }
+      await prepareReaderState(retainedMessageUuids);
     }
   }
 
   if (!reconciliation.changed) {
-    if (state.pendingFocusUuid) await focusPendingMessage();
+    if (timelineReady.value && pendingFocusUuid.value) await focusPendingMessage();
     timelineViewport.completeInitialSnapshot();
     return;
   }
@@ -353,18 +356,16 @@ async function commitSessionSnapshot(latest) {
   timelineViewport.completeInitialSnapshot();
   if (restoreTail) await timelineViewport.scrollToEnd();
   syncTimelineScrollMargin();
-  if (!state.pendingFocusUuid) onScroll();
-
-  // Focus pending uuid if any
-  if (state.pendingFocusUuid) {
-    await focusPendingMessage();
+  if (timelineReady.value) {
+    if (!pendingFocusUuid.value) onScroll();
+    else await focusPendingMessage();
   }
 }
 
 async function focusPendingMessage() {
-  const targetUuid = state.pendingFocusUuid;
+  const targetUuid = pendingFocusUuid.value;
   if (!targetUuid) return;
-  state.pendingFocusUuid = null;
+  pendingFocusUuid.value = null;
   const targetIndex = timelineItems.value.findIndex(item => (
     item.anchorUuid === targetUuid || item.messageUuid === targetUuid
   ));

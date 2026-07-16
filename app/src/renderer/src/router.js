@@ -24,8 +24,7 @@ const routes = [
     path: '/sessions/:id',
     name: 'SessionDetail',
     component: SessionDetail,
-    props: true,
-    meta: { keepAlive: true }
+    props: true
   },
   {
     path: '/sessions/:id/agent/:agentId',

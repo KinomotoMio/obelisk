@@ -46,7 +46,6 @@ test('timeline viewport owns measurement and anchoring while SessionDetail alone
   assert.match(viewportModule, /rangeExtractor/);
   assert.match(viewportModule, /anchorTo:\s*'end'/);
   assert.match(viewportModule, /followOnAppend:\s*false/);
-  assert.match(viewportModule, /resetForInitialSnapshot/);
   assert.match(viewportModule, /completeInitialSnapshot/);
   assert.match(viewportModule, /scrollToFn:\s*scrollPolicy\.scrollToFn/);
   assert.match(viewportModule, /useScrollendEvent:\s*true/);

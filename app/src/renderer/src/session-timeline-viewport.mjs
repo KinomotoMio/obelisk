@@ -57,6 +57,20 @@ export function createViewportRangeExtractor({
   };
 }
 
+export function resolveReaderAnchorIndex(anchor, items = []) {
+  if (!items.length) return null;
+  if (anchor?.itemKey) {
+    const itemIndex = items.findIndex(item => item?.key === anchor.itemKey);
+    if (itemIndex >= 0) return itemIndex;
+  }
+  if (anchor?.messageUuid) {
+    const messageIndex = items.findIndex(item => item?.messageUuid === anchor.messageUuid);
+    if (messageIndex >= 0) return messageIndex;
+  }
+  const fallbackIndex = Number.isInteger(anchor?.fallbackIndex) ? anchor.fallbackIndex : 0;
+  return Math.max(0, Math.min(items.length - 1, fallbackIndex));
+}
+
 export function useSessionTimelineViewport({
   items,
   scrollElement,
@@ -115,9 +129,55 @@ export function useSessionTimelineViewport({
   function runWithMeasurementRetry(scroll) {
     scroll();
     const targetWindow = scrollElement.value?.ownerDocument?.defaultView;
-    targetWindow?.requestAnimationFrame(() => {
-      targetWindow.requestAnimationFrame(scroll);
-    });
+    if (!targetWindow) return Promise.resolve();
+    return new Promise(resolve => targetWindow.requestAnimationFrame(() => {
+      targetWindow.requestAnimationFrame(() => {
+        scroll();
+        resolve();
+      });
+    }));
+  }
+
+  function captureReaderPosition() {
+    if (isFollowingTail()) return { mode: 'tail', anchor: null };
+    const itemIndex = resolveReaderAnchorIndex(null, items.value);
+    if (itemIndex === null) return { mode: 'anchor', anchor: null };
+
+    const instance = virtualizer.value;
+    const scrollOffset = instance.scrollOffset ?? scrollElement.value?.scrollTop ?? 0;
+    const measurement = instance.getVirtualItemForOffset(scrollOffset)
+      || instance.getMeasurements?.()[itemIndex];
+    const index = measurement?.index ?? itemIndex;
+    const item = items.value[index];
+    return {
+      mode: 'anchor',
+      anchor: {
+        itemKey: item?.key || null,
+        messageUuid: item?.messageUuid || null,
+        offset: scrollOffset - (measurement?.start ?? scrollOffset),
+        fallbackIndex: index,
+      },
+    };
+  }
+
+  async function restoreReaderPosition(position) {
+    if (position?.mode === 'tail') {
+      await scrollToEnd();
+      return;
+    }
+    const index = resolveReaderAnchorIndex(position?.anchor, items.value);
+    if (index === null) return;
+    const offsetWithinItem = Number.isFinite(position?.anchor?.offset)
+      ? position.anchor.offset
+      : 0;
+    const scroll = () => {
+      const measurement = virtualizer.value.getMeasurements?.()[index];
+      const targetOffset = Math.max(0, (measurement?.start || 0) + offsetWithinItem);
+      scrollPolicy.runExplicit(() => {
+        virtualizer.value.scrollToOffset(targetOffset, { behavior: 'auto' });
+      });
+    };
+    await runWithMeasurementRetry(scroll);
   }
 
   function scrollToIndex(index, options = {}) {
@@ -129,7 +189,7 @@ export function useSessionTimelineViewport({
 
     // A far jump starts from estimates. Re-align after mounted rows have been
     // measured so the requested item does not remain only in overscan.
-    runWithMeasurementRetry(scroll);
+    return runWithMeasurementRetry(scroll);
   }
 
   async function scrollToEnd() {
@@ -157,13 +217,6 @@ export function useSessionTimelineViewport({
       return element.scrollHeight - element.clientHeight - element.scrollTop <= 50;
     }
     return virtualizer.value.isAtEnd(50);
-  }
-
-  function resetForInitialSnapshot() {
-    tailFollowReady.value = false;
-    scrollPolicy.runExplicit(() => {
-      virtualizer.value.scrollToOffset(0, { behavior: 'auto' });
-    });
   }
 
   function completeInitialSnapshot() {
@@ -198,8 +251,9 @@ export function useSessionTimelineViewport({
     indexAtViewportEnd,
     scrollToIndex,
     scrollToEnd,
+    captureReaderPosition,
+    restoreReaderPosition,
     isFollowingTail,
-    resetForInitialSnapshot,
     completeInitialSnapshot,
     waitForStableLayout,
   };

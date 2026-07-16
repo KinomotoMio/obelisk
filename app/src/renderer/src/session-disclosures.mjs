@@ -1,5 +1,23 @@
 import { reactive } from 'vue';
 
+export function normalizeSessionDisclosureSnapshot(snapshot, messageUuids = null) {
+  if (!Array.isArray(snapshot)) return [];
+  return snapshot
+    .filter(entry => (
+      entry
+      && typeof entry.key === 'string'
+      && typeof entry.messageUuid === 'string'
+      && (!messageUuids || messageUuids.has(entry.messageUuid))
+    ))
+    .map(entry => ({
+      key: entry.key,
+      messageUuid: entry.messageUuid,
+      open: entry.open === true,
+      raw: entry.raw === true,
+    }))
+    .filter(entry => entry.open || entry.raw);
+}
+
 export function createSessionDisclosureState() {
   const entries = reactive(new Map());
 
@@ -26,6 +44,19 @@ export function createSessionDisclosureState() {
     retainMessages(messageUuids) {
       for (const [key, entry] of entries) {
         if (!messageUuids.has(entry.messageUuid)) entries.delete(key);
+      }
+    },
+    snapshot() {
+      return [...entries].map(([key, entry]) => ({ key, ...entry }));
+    },
+    restore(snapshot, messageUuids = null) {
+      entries.clear();
+      for (const { key, ...entry } of normalizeSessionDisclosureSnapshot(snapshot, messageUuids)) {
+        entries.set(key, {
+          messageUuid: entry.messageUuid,
+          open: entry.open,
+          raw: entry.raw,
+        });
       }
     },
   };

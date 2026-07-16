@@ -198,9 +198,6 @@ onUnmounted(() => {
   clearTimeout(searchTimer);
 });
 
-// --- Keep-alive includes ---
-const keepAliveIncludes = ['SessionDetail'];
-
 const isExportRoute = computed(() => route.name === 'RecapExport');
 
 // --- Source health dots ---
@@ -583,9 +580,10 @@ provide('recapGenerateOpen', recapGenerateOpen);
         </div>
 
         <router-view v-slot="{ Component }">
-          <keep-alive :include="['SessionDetail']">
-            <component :is="Component" />
-          </keep-alive>
+          <component
+            :is="Component"
+            :key="route.name === 'SessionDetail' ? `session:${route.params.id}` : undefined"
+          />
         </router-view>
       </main>
     </div>

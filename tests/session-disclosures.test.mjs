@@ -29,3 +29,20 @@ test('disclosure state forgets entries owned by removed messages', () => {
   assert.equal(disclosures.isOpen('tool:call-1'), false);
   assert.equal(disclosures.isOpen('tool:call-2'), true);
 });
+
+test('disclosure state restores a serializable snapshot for retained messages', () => {
+  const source = createSessionDisclosureState();
+  source.toggleOpen('tool:call-1', 'message-1');
+  source.toggleRaw('tool:call-1', 'message-1');
+  source.toggleOpen('tool:call-2', 'message-2');
+
+  const restored = createSessionDisclosureState();
+  restored.restore(source.snapshot(), new Set(['message-1']));
+
+  assert.equal(restored.isOpen('tool:call-1'), true);
+  assert.equal(restored.isRaw('tool:call-1'), true);
+  assert.equal(restored.isOpen('tool:call-2'), false);
+  assert.deepEqual(restored.snapshot(), [
+    { key: 'tool:call-1', messageUuid: 'message-1', open: true, raw: true },
+  ]);
+});

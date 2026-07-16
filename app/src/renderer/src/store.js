@@ -10,7 +10,6 @@ export const state = reactive({
   projects: [],
   stats: {},
   view: 'active',          // 'active' | 'archived'
-  pendingFocusUuid: null,
   query: '',
   projectFilter: 'all',
   sourceFilter: 'all',

@@ -13,7 +13,8 @@
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
     "test:electron": "electron-vite build && electron --no-sandbox tests/electron-concurrency.mjs",
-    "test:electron:timeline": "electron-vite build && electron --no-sandbox tests/electron-session-virtualization.mjs"
+    "test:electron:timeline": "electron-vite build && electron --no-sandbox tests/electron-session-virtualization.mjs",
+    "test:electron:reader-state": "electron-vite build && electron --no-sandbox tests/electron-session-reader-state.mjs"
   },
   "build": {
     "appId": "com.obelisk.app",
