@@ -11,6 +11,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
 const sessionId = 'test-session';
 const messageCount = Number(process.env.OBELISK_TIMELINE_MESSAGE_COUNT || 2000);
+const coldOpenOnly = process.argv.includes('--cold-open-only');
 const focusMessageIndex = Math.floor(messageCount * 0.75);
 const focusMessageUuid = `message-${focusMessageIndex}`;
 const stationaryAppendRuns = 3;
@@ -645,11 +646,49 @@ async function run() {
     requestAnimationFrame(sample);
     window.location.hash = ${JSON.stringify(`/sessions/${sessionId}`)};
   })()`, true);
+  const coldOpenUpdateTimer = setTimeout(() => {
+    win.webContents.send('obelisk:session-updated', { sessionId });
+  }, 10);
   await waitFor(
     win.webContents,
     `document.querySelector('.flap-number')?.getAttribute('aria-label') === '${messageCount}'`,
     'the cold-start session snapshot',
   );
+  clearTimeout(coldOpenUpdateTimer);
+  for (let attempt = 0; attempt < 100 && ipcReads.patches === 0; attempt++) {
+    await delay(10);
+  }
+  const coldOpenPatchReads = ipcReads.patches;
+  await delay(250);
+  const coldOpenVisibility = await win.webContents.executeJavaScript(`(() => {
+    const header = document.querySelector('.session-header');
+    const timeline = document.querySelector('.virtual-timeline');
+    return {
+      total: Number(document.querySelector('.flap-number')?.getAttribute('aria-label')),
+      loading: Boolean(document.querySelector('.first-open-loading')),
+      headerVisibility: header ? getComputedStyle(header).visibility : null,
+      timelineVisibility: timeline ? getComputedStyle(timeline).visibility : null,
+      visibleRows: [...document.querySelectorAll('.virtual-timeline-row')]
+        .filter(row => getComputedStyle(row).visibility !== 'hidden').length,
+      patchReads: ${coldOpenPatchReads},
+    };
+  })()`, true);
+  const coldOpenRecovered = coldOpenVisibility.total === messageCount
+    && coldOpenVisibility.patchReads > 0
+    && !coldOpenVisibility.loading
+    && coldOpenVisibility.headerVisibility === 'visible'
+    && coldOpenVisibility.timelineVisibility === 'visible'
+    && coldOpenVisibility.visibleRows > 0;
+  assert(
+    coldOpenRecovered,
+    `a live update during cold-open layout cannot strand populated session content hidden (${JSON.stringify(coldOpenVisibility)})`,
+  );
+  if (!coldOpenRecovered) {
+    win.destroy();
+    return;
+  }
+  ipcReads.patches = 0;
+  ipcReads.patchMessageRows.length = 0;
   await delay(100);
   const coldOpenOverlap = await win.webContents.executeJavaScript(`(() => {
     const probe = window.__coldOpenOverlapProbe;
@@ -661,6 +700,10 @@ async function run() {
     coldOpenOverlap.maxOverlaps === 0,
     `cold-open timeline never paints intersecting message rows (${JSON.stringify(coldOpenOverlap)})`,
   );
+  if (coldOpenOnly) {
+    win.destroy();
+    return;
+  }
 
   const initial = await win.webContents.executeJavaScript(`(() => ({
     current: Number(document.querySelector('.msg-nav-current')?.textContent),

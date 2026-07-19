@@ -293,7 +293,9 @@ async function fetchSessionSnapshot(sessionId, { force = false } = {}) {
 async function loadLiveSnapshot() {
   const sessionId = props.id;
   if (!sessionId) return null;
-  const revision = ++loadRevision;
+  // Live reload ordering is owned by the coordinator. Capture the current
+  // full-load generation so a patch cannot invalidate cold-open layout work.
+  const revision = loadRevision;
   const patchRequest = await fetchSessionDetailPatch(sessionId);
   return { sessionId, revision, patchRequest };
 }
