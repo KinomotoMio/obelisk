@@ -1,7 +1,12 @@
 {
   "name": "obelisk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Memory management for Obelisk — let Claude Code search its own memory",
+  "homepage": "https://github.com/tommy0103/obelisk",
+  "author": {
+    "name": "Obelisk contributors",
+    "email": "tommy0103@users.noreply.github.com"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "start": "electron-vite preview",
@@ -12,6 +17,7 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
+    "verify:icons": "node scripts/verify-icons.mjs",
     "test:electron": "electron-vite build && electron --no-sandbox tests/electron-concurrency.mjs",
     "test:electron:timeline": "electron-vite build && electron --no-sandbox tests/electron-session-virtualization.mjs",
     "test:electron:reader-state": "electron-vite build && electron --no-sandbox tests/electron-session-reader-state.mjs"
@@ -43,7 +49,11 @@
         "AppImage",
         "deb"
       ],
-      "category": "Development"
+      "category": "Development",
+      "maintainer": "Obelisk contributors <tommy0103@users.noreply.github.com>"
+    },
+    "deb": {
+      "compression": "bzip2"
     },
     "files": [
       "out/**"
