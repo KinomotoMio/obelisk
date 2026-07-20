@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createSessionPatch } from '../src/shared/session-patch.mjs';
-import { assembleSessionMessages } from '../src/shared/session-detail-assembly.mjs';
+import { assembleSessionDetail } from '../src/shared/session-detail-assembly.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
@@ -106,13 +106,13 @@ function registerHandlers() {
   ipcMain.handle('db:getSessionPatch', (_event, sessionId, cursor) => {
     const fixture = fixtures[sessionId];
     const patch = createSessionPatch({
-      messages: assembleSessionMessages({
+      messages: assembleSessionDetail({
         messages: fixture.messages,
         toolCalls: fixture.toolCalls,
         toolResults: fixture.toolResults,
         subagents: [],
         workflows: [],
-      }),
+      }).messages,
       workflows: [],
     }, cursor);
     return { ...patch, session: summary(sessionId) };

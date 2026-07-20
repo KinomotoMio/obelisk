@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const require = createRequire(import.meta.url);
 import { buildIndex } from '../app/src/main/indexer.ts';
-import { CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER } from '../packages/core/src/providers/claude.ts';
+import { CLAUDE_CANONICAL_TRANSCRIPT_MARKER } from '../packages/core/src/providers/claude.ts';
 const { DatabaseSync } = require('node:sqlite');
 
 class TestDatabase {
@@ -123,7 +123,7 @@ test('app indexer refreshes unchanged Claude usage when input token semantics ch
   const stale = new TestDatabase(dbPath);
   stale.prepare('UPDATE messages SET input_tokens = 10 WHERE uuid = ?').run('msg-token-semantics-1');
   stale.prepare('DELETE FROM index_state WHERE jsonl_path = ?')
-    .run(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
+    .run(CLAUDE_CANONICAL_TRANSCRIPT_MARKER);
   stale.close();
 
   buildIndex({
@@ -140,7 +140,7 @@ test('app indexer refreshes unchanged Claude usage when input token semantics ch
   );
   assert.ok(
     refreshed.prepare('SELECT jsonl_path FROM index_state WHERE jsonl_path = ?')
-      .get(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER),
+      .get(CLAUDE_CANONICAL_TRANSCRIPT_MARKER),
   );
   refreshed.close();
 });
@@ -437,11 +437,12 @@ test('app indexer loads Codex root sessions into the shared schema', () => {
   ]);
   assert.equal(messages[1].turn_duration_ms, 4321);
 
-  const tool = db.prepare('SELECT * FROM tool_calls WHERE id=?').get('codex:call_codex_1');
+  const toolId = `codex:${codexId}:call_codex_1`;
+  const tool = db.prepare('SELECT * FROM tool_calls WHERE id=?').get(toolId);
   assert.equal(tool.session_id, `codex:${codexId}`);
   assert.equal(tool.name, 'exec_command');
   assert.equal(tool.message_uuid, `codex:${codexId}:000004`);
-  const toolResult = db.prepare('SELECT message_uuid, content FROM tool_results WHERE tool_use_id=?').get('codex:call_codex_1');
+  const toolResult = db.prepare('SELECT message_uuid, content FROM tool_results WHERE tool_use_id=?').get(toolId);
   assert.equal(toolResult.message_uuid, `codex:${codexId}:000004`);
   assert.equal(toolResult.content, '/tmp/obelisk-app');
   db.close();
@@ -771,7 +772,8 @@ test('app indexer maps Codex subagent threads onto parent sessions', () => {
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE id=?').get(`codex:${childId}`).c, 0);
   const subagent = db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(`codex:${childId}`);
   assert.equal(subagent.session_id, `codex:${parentId}`);
-  assert.equal(subagent.parent_tool_use_id, 'codex:call_spawn_1');
+  const spawnToolId = `codex:${parentId}:call_spawn_1`;
+  assert.equal(subagent.parent_tool_use_id, spawnToolId);
   assert.equal(subagent.agent_type, 'worker');
   assert.equal(subagent.description, 'Plato');
 
@@ -779,7 +781,7 @@ test('app indexer maps Codex subagent threads onto parent sessions', () => {
   assert.equal(spawnMessage.session_id, `codex:${parentId}`);
   assert.equal(spawnMessage.content_type, 'tool_use');
   assert.equal(spawnMessage.source, 'codex');
-  assert.equal(db.prepare('SELECT name, message_uuid FROM tool_calls WHERE id=?').get('codex:call_spawn_1').message_uuid, spawnMessage.uuid);
+  assert.equal(db.prepare('SELECT name, message_uuid FROM tool_calls WHERE id=?').get(spawnToolId).message_uuid, spawnMessage.uuid);
 
   const childMessages = db.prepare('SELECT session_id, agent_id, is_sidechain, source, text FROM messages WHERE agent_id=? ORDER BY timestamp, uuid').all(`codex:${childId}`);
   assert.deepEqual(childMessages.map(m => [m.session_id, m.agent_id, m.is_sidechain, m.source, m.text]), [

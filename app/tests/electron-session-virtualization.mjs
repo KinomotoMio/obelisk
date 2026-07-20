@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createSessionPatch } from '../src/shared/session-patch.mjs';
-import { assembleSessionMessages } from '../src/shared/session-detail-assembly.mjs';
+import { assembleSessionDetail } from '../src/shared/session-detail-assembly.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
@@ -530,7 +530,7 @@ function registerHandlers() {
     nextPatchDelayMs = 0;
     if (delayMs > 0) await delay(delayMs);
     const patch = createSessionPatch({
-      messages: assembleSessionMessages({ messages, toolCalls, toolResults, subagents: [], workflows: [] }),
+      messages: assembleSessionDetail({ messages, toolCalls, toolResults, subagents: [], workflows: [] }).messages,
       workflows: [],
     }, cursor);
     ipcReads.patchMessageRows.push(patch.changes.messages.length);

@@ -2,6 +2,7 @@
 import { createRequire } from 'node:module';
 import { CLAUDE_DIR, CODEX_DIR, TEXT_LIMIT, trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines } from './parsing.ts';
 import { configureConnection } from './tx.ts';
+import { migrateCoreSchemaColumns } from './schema-migrations.ts';
 import type { NodeSqliteDb, SqliteDb } from './sqlite-types.ts';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
@@ -26,9 +27,9 @@ function openDb(): NodeSqliteDb {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new DatabaseSync(DB_PATH);
   configureConnection(db, { busyTimeoutMs: 250 });
-  migrateExistingColumns(db);
+  migrateCoreSchemaColumns(db);
   db.exec(SCHEMA);
-  migrateDb(db);
+  migrateCoreSchemaColumns(db);
   return db;
 }
 
@@ -42,33 +43,6 @@ function openReadDb(): NodeSqliteDb {
 
 function openWriterLeaseDb(lockPath: string): NodeSqliteDb {
   return new DatabaseSync(lockPath);
-}
-
-function ensureColumn(db: SqliteDb, table: string, column: string, definition: string): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-function tableExists(db: SqliteDb, table: string): boolean {
-  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table));
-}
-
-function migrateExistingColumns(db: SqliteDb): void {
-  if (tableExists(db, 'sessions')) ensureColumn(db, 'sessions', 'source', "TEXT DEFAULT 'claude'");
-  if (tableExists(db, 'messages')) {
-    ensureColumn(db, 'messages', 'content_type', 'TEXT');
-    ensureColumn(db, 'messages', 'is_meta', 'INTEGER DEFAULT 0');
-    ensureColumn(db, 'messages', 'source', "TEXT DEFAULT 'claude'");
-  }
-  if (tableExists(db, 'memories')) {
-    ensureColumn(db, 'memories', 'anchors', 'TEXT');
-    ensureColumn(db, 'memories', 'deleted_at', 'TEXT');
-    ensureColumn(db, 'memories', 'deleted_reason', 'TEXT');
-  }
-}
-
-function migrateDb(db: SqliteDb): void {
-  migrateExistingColumns(db);
 }
 
 function rebuildMemoryFts(db: SqliteDb): void {

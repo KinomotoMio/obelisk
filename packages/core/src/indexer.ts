@@ -1,9 +1,6 @@
 // Passive-pull indexing orchestration for the Core package.
 import { DB_PATH, openDb, openReadDb, openWriterLeaseDb, rebuildMemoryFts } from './db.ts';
-import {
-  CLAUDE_DIR, CODEX_DIR, PROJECTS_DIR, fs, path, isDir, readLines,
-  inferProjectPath, codexDbId,
-} from './parsing.ts';
+import { fs, inferProjectPath } from './parsing.ts';
 import {
   createProviderIndexPlan,
   indexProviderPlan,
@@ -14,10 +11,6 @@ import { acquireWriterLease, writerLockPathFor } from './writer-lease.ts';
 import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from './write-coordinator.ts';
 import { createBuiltinProviderRegistry } from './providers/builtins.ts';
 import type { NodeSqliteDb, SqliteRow } from './sqlite-types.ts';
-
-const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
-
-type JsonRecord = Record<string, any>;
 
 interface SkippedFile {
   path: string;
@@ -35,23 +28,6 @@ function errorMessage(error: unknown): string {
 }
 
 
-function indexCodexSessionIndex(db: NodeSqliteDb): void {
-  const indexPath = path.join(CODEX_DIR, 'session_index.jsonl');
-  if (!fs.existsSync(indexPath)) return;
-  readLines(indexPath, (line) => {
-    let item: JsonRecord;
-    try {
-      item = JSON.parse(line);
-    } catch (e) {
-      process.stderr.write(`Warning: malformed Codex session index line: ${errorMessage(e)}\n`);
-      return;
-    }
-    if (!item.id || !item.thread_name) return;
-    db.prepare('UPDATE sessions SET title=COALESCE(title, ?), ended_at=COALESCE(ended_at, ?) WHERE id=? AND source=?')
-      .run(item.thread_name, item.updated_at || null, codexDbId(item.id), 'codex');
-  });
-}
-
 function refreshSessionProjectPaths(db: NodeSqliteDb): void {
   const sessions = db.prepare('SELECT id, project FROM sessions').all();
   const cwdStmt = db.prepare(`
@@ -66,61 +42,6 @@ function refreshSessionProjectPaths(db: NodeSqliteDb): void {
     const projectPath = inferProjectPath(session.project, cwds);
     if (projectPath) update.run(projectPath, session.id);
   }
-}
-
-function indexWorkflows(db: NodeSqliteDb): void {
-  if (!fs.existsSync(PROJECTS_DIR)) return;
-  let projects;
-  try { projects = fs.readdirSync(PROJECTS_DIR); } catch { return; }
-  for (const proj of projects) {
-    const pp = path.join(PROJECTS_DIR, proj);
-    if (!isDir(pp)) continue;
-    let entries;
-    try { entries = fs.readdirSync(pp); } catch { continue; }
-    for (const sd of entries) {
-      const wd = path.join(pp, sd, 'workflows');
-      if (!isDir(wd)) continue;
-      let wfFiles;
-      try { wfFiles = fs.readdirSync(wd); } catch { continue; }
-      for (const f of wfFiles) {
-        if (!f.endsWith('.json')) continue;
-        let wf: JsonRecord;
-        try {
-          wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
-        } catch (e) {
-          process.stderr.write(`Warning: failed to read workflow ${f}: ${errorMessage(e)}\n`);
-          continue;
-        }
-        if (!wf.runId) continue;
-        const ac = db.prepare('SELECT COUNT(*) as c FROM workflow_agents WHERE run_id=?').get(wf.runId);
-        db.prepare('INSERT OR REPLACE INTO workflows (run_id,session_id,task_id,script,result_json,timestamp,agent_count,duration_ms,total_tokens,status,workflow_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
-          wf.runId, sd, wf.taskId||null, wf.script||null,
-          wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0,
-          wf.durationMs||null, wf.totalTokens||null, wf.status||null, wf.workflowName||null);
-        const progress = wf.workflowProgress || [];
-        for (const item of progress) {
-          if (item.type !== 'workflow_agent' || !item.agentId) continue;
-          db.prepare('UPDATE workflow_agents SET phase=?, label=?, model=?, state=?, duration_ms=?, tokens=?, tool_calls=? WHERE agent_id=?').run(
-            item.phaseTitle||null, item.label||null, item.model||null, item.state||null,
-            item.durationMs||null, item.tokens||null, item.toolCalls||null, 'agent-' + item.agentId);
-        }
-      }
-    }
-  }
-}
-
-function indexHistory(db: NodeSqliteDb): void {
-  if (!fs.existsSync(HISTORY_PATH)) return;
-  readLines(HISTORY_PATH, (line) => {
-    let item: JsonRecord;
-    try {
-      item = JSON.parse(line);
-    } catch (e) {
-      process.stderr.write(`Warning: malformed history line: ${errorMessage(e)}\n`);
-      return;
-    }
-    if (item.sessionId && item.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(item.title, item.sessionId);
-  });
 }
 
 const BUILD_DEBOUNCE_MS = 30000;
@@ -221,10 +142,7 @@ function buildIndex({ force = false }: { force?: boolean } = {}) {
       // the build (a half-finalized index would be inconsistent).
       try {
         runRetryableWriteTransaction(txDb, () => {
-          indexWorkflows(db);
           refreshSessionProjectPaths(db);
-          indexHistory(db);
-          indexCodexSessionIndex(db);
           db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
           rebuildMemoryFts(db);
           db.prepare("INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES ('__last_build__', ?, 0)").run(Date.now());

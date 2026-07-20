@@ -173,8 +173,8 @@ test('runtime indexes Codex root sessions into the shared query helpers', () => 
       })),
       developerReplay: search('developer replay', { source: 'codex', limit: 5 }).length,
       rawHasEventLine: raw(${JSON.stringify(`codex:${codexId}:000002`)}, { limit: 1000 })?.text.includes('codex user asks for runtime indexing') || false,
-      tool: sql('SELECT id, message_uuid, session_id, name FROM tool_calls WHERE id=?', 'codex:call_codex_1')[0],
-      toolResult: sql('SELECT tool_use_id, message_uuid, session_id, content FROM tool_results WHERE tool_use_id=?', 'codex:call_codex_1')[0],
+      tool: sql('SELECT id, message_uuid, session_id, name FROM tool_calls WHERE id=?', ${JSON.stringify(`codex:${codexId}:call_codex_1`)})[0],
+      toolResult: sql('SELECT tool_use_id, message_uuid, session_id, content FROM tool_results WHERE tool_use_id=?', ${JSON.stringify(`codex:${codexId}:call_codex_1`)})[0],
       overviewSources: overview({ limit: 5 }).totals.sources
     };
   `);
@@ -440,7 +440,7 @@ test('runtime maps Codex child threads onto subagents', () => {
   assert.deepEqual(payload.subagents, [{
     agent_id: `codex:${childId}`,
     session_id: `codex:${parentId}`,
-    parent_tool_use_id: 'codex:call_spawn_1',
+    parent_tool_use_id: `codex:${parentId}:call_spawn_1`,
     agent_type: 'worker',
     description: 'Plato',
     messageCount: 2,

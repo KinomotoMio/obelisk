@@ -10,6 +10,7 @@ import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
+import { migrateCoreSchemaColumns } from '../../../packages/core/src/schema-migrations.ts';
 import { createBuiltinProviderRegistry } from '../../../packages/core/src/providers/builtins.ts';
 import {
   buildSourceCatalog,
@@ -32,7 +33,7 @@ import type {
   SessionWorkflowRow,
 } from '../shared/session-detail-types.ts';
 import { createSessionPatch } from '../shared/session-patch.mjs';
-import { assembleSessionMessages } from '../shared/session-detail-assembly.mjs';
+import { assembleSessionDetail } from '../shared/session-detail-assembly.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -160,35 +161,12 @@ function resolveSchemaPath() {
   return candidates.find(p => fs.existsSync(p));
 }
 
-function ensureColumn(db, table, column, definition) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-function tableExists(db, table) {
-  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table));
-}
-
-function migrateExistingColumns(db) {
-  if (tableExists(db, 'sessions')) ensureColumn(db, 'sessions', 'source', "TEXT DEFAULT 'claude'");
-  if (tableExists(db, 'messages')) {
-    ensureColumn(db, 'messages', 'content_type', 'TEXT');
-    ensureColumn(db, 'messages', 'is_meta', 'INTEGER DEFAULT 0');
-    ensureColumn(db, 'messages', 'source', "TEXT DEFAULT 'claude'");
-  }
-  if (tableExists(db, 'memories')) {
-    ensureColumn(db, 'memories', 'anchors', 'TEXT');
-    ensureColumn(db, 'memories', 'deleted_at', 'TEXT');
-    ensureColumn(db, 'memories', 'deleted_reason', 'TEXT');
-  }
-}
-
 function migrateDb(db) {
   if (typeof db.exec !== 'function' || typeof db.prepare !== 'function') return;
-  migrateExistingColumns(db);
+  migrateCoreSchemaColumns(db);
   const schemaPath = resolveSchemaPath();
   if (schemaPath) db.exec(fs.readFileSync(schemaPath, 'utf8'));
-  migrateExistingColumns(db);
+  migrateCoreSchemaColumns(db);
 }
 
 function closeDb() {
@@ -417,7 +395,7 @@ function querySessionMessages(sessionId: string): SessionMessageRow[] {
   return db.prepare(`
     SELECT m.uuid, m.session_id, m.type, m.parent_uuid, m.timestamp, m.role, m.text, m.model,
            m.is_sidechain, m.agent_id, m.input_tokens, m.output_tokens, m.cwd, m.skill, m.turn_duration_ms,
-           m.content_type, m.is_meta, m.source
+           m.content_type, m.is_meta, m.visibility, m.source
     FROM messages m WHERE m.session_id = ? AND m.agent_id IS NULL ORDER BY m.timestamp, m.uuid
   `).all(sessionId) as SessionMessageRow[];
 }
@@ -464,9 +442,11 @@ function querySessionSnapshot(sessionId: string): SessionDetailAssemblyInput {
 
 function querySessionDisplaySnapshot(sessionId: string): SessionPatchSnapshot {
   const snapshot = querySessionSnapshot(sessionId);
+  const detail = assembleSessionDetail(snapshot);
   return {
-    messages: assembleSessionMessages(snapshot),
-    workflows: snapshot.workflows,
+    messages: detail.messages,
+    workflows: detail.workflows,
+    summaries: detail.summaries,
   };
 }
 
@@ -544,7 +524,7 @@ ipcMain.handle('db:getSubagentMessages', (_, agentId) => {
   return db.prepare(`
     SELECT m.uuid, m.session_id, m.type, m.parent_uuid, m.timestamp, m.role, m.text, m.model,
            m.is_sidechain, m.agent_id, m.input_tokens, m.output_tokens, m.cwd, m.skill, m.turn_duration_ms,
-           m.content_type, m.is_meta, m.source
+           m.content_type, m.is_meta, m.visibility, m.source
     FROM messages m WHERE m.agent_id = ? ORDER BY m.timestamp, m.uuid
   `).all(agentId);
 });

@@ -258,6 +258,7 @@ test('main process watches every root declared by the built-in provider registry
     assert.equal(serviceOptions.length, 1);
     assert.deepEqual(serviceOptions[0].watchDirs, [
       join(claudeDir, 'projects'),
+      join(claudeDir, 'history.jsonl'),
       join(codexDir, 'sessions'),
       join(codexDir, 'session_index.jsonl'),
       join(home, '.kimi-code', 'sessions'),

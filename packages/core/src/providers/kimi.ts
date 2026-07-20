@@ -11,7 +11,7 @@ import { filePath, projectSlugFromPath, trunc, truncJson } from '../parsing.ts';
 import type {
   Cursor,
   DiscoverContext,
-  IndexRecord,
+  TranscriptRecord,
   IndexUnit,
   MessageRecord,
   ProviderAdapter,
@@ -50,12 +50,13 @@ interface ProjectedSession {
   readonly toolResults: ToolResultRecord[];
   readonly summaries: SummaryRecord[];
   readonly subagents: SubagentRecord[];
-  readonly durations: IndexRecord[];
+  readonly durations: TranscriptRecord[];
   readonly mainMessageCount: number;
   readonly mainWirePath: string;
 }
 
 const SOURCE = 'kimi';
+export const KIMI_CANONICAL_TRANSCRIPT_MARKER = '__kimi_canonical_transcript_v2__';
 
 function defaultKimiRoot(): string {
   return process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
@@ -203,6 +204,46 @@ function isRealUserMessage(message: JsonRecord): boolean {
     && origin.trigger === 'user-slash';
 }
 
+function slashCommandText(command: string, args: unknown): string {
+  const trimmedArgs = typeof args === 'string' ? args.trim() : '';
+  return trimmedArgs.length > 0 ? `${command} ${trimmedArgs}` : command;
+}
+
+function userSlashCommandText(message: JsonRecord): string | null {
+  const origin = message.origin as JsonRecord | undefined;
+  if (message.role === 'user' && origin?.trigger === 'user-slash') {
+    if (origin.kind === 'skill_activation' && typeof origin.skillName === 'string') {
+      return slashCommandText(`/${origin.skillName}`, origin.skillArgs);
+    }
+    if (
+      origin.kind === 'plugin_command'
+      && typeof origin.pluginId === 'string'
+      && typeof origin.commandName === 'string'
+    ) {
+      return slashCommandText(`/${origin.pluginId}:${origin.commandName}`, origin.commandArgs);
+    }
+  }
+  return null;
+}
+
+function projectedMessageText(message: JsonRecord): string | null {
+  const slashCommand = userSlashCommandText(message);
+  return slashCommand === null ? messageText(message.content) : trunc(slashCommand);
+}
+
+function isMetaMessage(message: JsonRecord): boolean {
+  const origin = message.origin as JsonRecord | undefined;
+  if (origin === undefined || origin.kind === 'user') return false;
+  return !isRealUserMessage(message);
+}
+
+function canonicalMessageContentType(message: JsonRecord): string {
+  const origin = message.origin as JsonRecord | undefined;
+  return origin?.kind === 'skill_activation' && !isRealUserMessage(message)
+    ? 'skill_instructions'
+    : messageContentType(message.content);
+}
+
 function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: JsonRecord): ProjectedSession {
   const cwd = typeof state.cwd === 'string'
     ? state.cwd
@@ -213,7 +254,7 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
   const toolCalls: ToolCallRecord[] = [];
   const toolResults: ToolResultRecord[] = [];
   const summaries: SummaryRecord[] = [];
-  const durations: IndexRecord[] = [];
+  const durations: TranscriptRecord[] = [];
   const childParentCalls = new Map<string, string>();
   let mainMessageCount = 0;
 
@@ -314,9 +355,10 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
           parent_uuid: previousUuid,
           timestamp,
           role: source.role,
-          text: messageText(source.content),
-          content_type: messageContentType(source.content),
-          is_meta: origin !== undefined && origin.kind !== 'user' ? 1 : 0,
+          text: projectedMessageText(source),
+          content_type: canonicalMessageContentType(source),
+          is_meta: isMetaMessage(source) ? 1 : 0,
+          visibility: 'visible',
           model,
           is_sidechain: wire.main ? 0 : 1,
           agent_id: agentDbId,
@@ -344,6 +386,7 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
               message_uuid: messageUuid,
               session_id: sessionId,
               name,
+              presentation: name === 'Skill' ? 'skill' : 'default',
               input_json: truncJson(args) ?? '{}',
               file_path: filePath(name, args as JsonRecord | undefined),
             });
@@ -405,6 +448,7 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
           text: partText(part),
           content_type: typeof part.type === 'string' ? part.type : 'unknown',
           is_meta: 0,
+          visibility: 'visible',
           model,
           is_sidechain: wire.main ? 0 : 1,
           agent_id: agentDbId,
@@ -421,7 +465,8 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
         const toolId = namespacedToolId(sessionId, wire.agentId, event.toolCallId);
         pushMessage({
           kind: 'message', uuid, session_id: sessionId, type: 'assistant', parent_uuid: previousUuid,
-          timestamp, role: 'assistant', text: null, content_type: 'tool_use', is_meta: 0, model,
+          timestamp, role: 'assistant', text: null, content_type: 'tool_use', is_meta: 0,
+          visibility: 'visible', model,
           is_sidechain: wire.main ? 0 : 1, agent_id: agentDbId, input_tokens: null,
           output_tokens: null, cwd, skill: null, source: SOURCE,
         }, event.stepUuid);
@@ -431,6 +476,7 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
           message_uuid: uuid,
           session_id: sessionId,
           name: String(event.name ?? 'tool'),
+          presentation: event.name === 'Skill' ? 'skill' : 'default',
           input_json: truncJson(event.args ?? {}) ?? '{}',
           file_path: filePath(String(event.name ?? 'tool'), event.args as JsonRecord | undefined),
         });
@@ -552,13 +598,19 @@ function rawFromWire(path: string, messageUuid: string): RawRecord | null {
   try {
     const record = JSON.parse(line) as JsonRecord;
     if (record.type === 'context.append_message') {
-      const content = (record.message as JsonRecord | undefined)?.content;
-      const parts = contentParts(content).map((part) => {
-        if (part.type === 'text' && typeof part.text === 'string') return part.text;
-        if (part.type === 'thinking' && typeof part.thinking === 'string') return part.thinking;
-        return null;
-      }).filter((part): part is string => part !== null);
-      projectedText = parts.length > 0 ? parts.join('\n') : null;
+      const message = record.message as JsonRecord | undefined;
+      if (message !== undefined) {
+        const slashCommand = userSlashCommandText(message);
+        if (slashCommand !== null) projectedText = slashCommand;
+        else {
+          const parts = contentParts(message.content).map((part) => {
+            if (part.type === 'text' && typeof part.text === 'string') return part.text;
+            if (part.type === 'thinking' && typeof part.thinking === 'string') return part.thinking;
+            return null;
+          }).filter((part): part is string => part !== null);
+          projectedText = parts.length > 0 ? parts.join('\n') : null;
+        }
+      }
     } else if (record.type === 'context.append_loop_event') {
       const part = (record.event as JsonRecord | undefined)?.part as JsonRecord | undefined;
       if (part?.type === 'text' && typeof part.text === 'string') projectedText = part.text;
@@ -580,6 +632,7 @@ export function createKimiProvider({ rootDir = defaultKimiRoot() }: { rootDir?: 
   return {
     name,
     descriptor: { id: name, name: 'Kimi Code', vendor: 'Moonshot AI', defaultRoot: rootDir, color: '#6d6afc' },
+    indexVersionMarker: KIMI_CANONICAL_TRANSCRIPT_MARKER,
     watchRoots: (configuredRoot) => [join(configuredRoot, 'sessions'), join(configuredRoot, 'session_index.jsonl')],
     discover(ctx: DiscoverContext): IndexUnit[] {
       const units: IndexUnit[] = [];
@@ -604,7 +657,7 @@ export function createKimiProvider({ rootDir = defaultKimiRoot() }: { rootDir?: 
       }
       return units;
     },
-    *parse(unit: IndexUnit, _cursor: Cursor): Generator<IndexRecord, Cursor> {
+    *parse(unit: IndexUnit, _cursor: Cursor): Generator<TranscriptRecord, Cursor> {
       const meta = unit.meta as KimiSessionUnitMeta;
       const before = cursorFor(meta.statePath, meta.wireFiles);
       const state = readState(meta.statePath);

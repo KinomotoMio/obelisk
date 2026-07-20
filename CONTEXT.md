@@ -40,13 +40,23 @@ node:fs/path/os — deliberately node:sqlite-free so the compiled providers can 
 consumed by the app (whose Electron runtime has no `node:sqlite`).
 _Avoid_: parse core, parser, ingest
 
-**Record**:
-One normalized row destined for the index (session, message, tool call, tool
-result, summary, subagent, workflow, …), emitted by a provider adapter before any
-persistence happens.
+**Transcript record**:
+One provider-normalized fact (session, message, tool call, tool result, summary,
+subagent, workflow, …) in the canonical transcript language. Provider adapters
+resolve source-specific deduplication, visibility, and identity before emitting
+it. The persist layer serializes transcript records; the session detail
+assembler can consume the same stream directly.
+_Avoid_: database row, raw event
+
+**Session detail assembler**:
+The provider-independent module that projects canonical transcript records into
+the timeline shape used by the app. It may consume records directly from a
+provider adapter's fresh full parse or after a SQLite round-trip. Provider deltas
+require prior state and are handled by the snapshot/patch seam instead. It never
+branches on provider and never infers provider semantics from message text.
 
 **Persist layer**:
-The single shared, provider- and binding-agnostic writer that consumes records
+The single shared, provider- and binding-agnostic writer that consumes transcript records
 from any adapter and writes them into an injected SQLite handle inside a
 transaction. The binding is injected — `node:sqlite` (CLI) or
 `better-sqlite3` (app) — so there is one persist implementation, not one per

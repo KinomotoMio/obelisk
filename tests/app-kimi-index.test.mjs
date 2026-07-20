@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildIndex } from '../app/src/main/indexer.ts';
+import { createKimiProvider } from '../packages/core/src/providers/kimi.ts';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
@@ -21,7 +22,7 @@ class TestDatabase {
   close() { return this.db.close(); }
 }
 
-function writeSession(kimiDir) {
+function writeSession(kimiDir, { userSlash = false } = {}) {
   const sessionDir = join(kimiDir, 'sessions', 'workspace-1', 'session-index-1');
   const mainDir = join(sessionDir, 'agents', 'main');
   mkdirSync(mainDir, { recursive: true });
@@ -35,7 +36,15 @@ function writeSession(kimiDir) {
   const wirePath = join(mainDir, 'wire.jsonl');
   const records = [
     { type: 'metadata', protocol_version: '1.5', created_at: 1753005600000 },
-    { type: 'context.append_message', time: 1753005601000, message: { role: 'user', content: [{ type: 'text', text: 'kimi index needle' }], toolCalls: [], origin: { kind: 'user' } } },
+    { type: 'context.append_message', time: 1753005601000, message: userSlash
+      ? {
+          role: 'user', content: 'Expanded skill instructions.', toolCalls: [],
+          origin: {
+            kind: 'skill_activation', trigger: 'user-slash', skillName: 'obelisk',
+            skillArgs: 'find prior decisions',
+          },
+        }
+      : { role: 'user', content: [{ type: 'text', text: 'kimi index needle' }], toolCalls: [], origin: { kind: 'user' } } },
   ];
   writeFileSync(wirePath, records.map((record) => JSON.stringify(record)).join('\n') + '\n');
   return { sessionDir, wirePath, records };
@@ -121,5 +130,39 @@ test('Kimi undo and clear replace the indexed session instead of leaving stale r
   db = new TestDatabase(dbPath);
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM messages').get().c, 0);
   assert.equal(db.prepare('SELECT message_count FROM sessions WHERE id=?').get('kimi:session-index-1').message_count, 0);
+  db.close();
+});
+
+test('Kimi prompt semantics marker replays unchanged sessions once', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-kimi-prompt-marker-'));
+  const claudeDir = join(home, '.claude');
+  const codexDir = join(home, '.codex');
+  const kimiDir = join(home, '.kimi-code');
+  const dbPath = join(home, '.obelisk', 'obelisk.sqlite');
+  writeSession(kimiDir, { userSlash: true });
+  const options = {
+    claudeDir,
+    codexDir,
+    providerRoots: { kimi: kimiDir },
+    dbPath,
+    DatabaseImpl: TestDatabase,
+  };
+
+  buildIndex(options);
+  let db = new TestDatabase(dbPath);
+  const marker = createKimiProvider({ rootDir: kimiDir }).indexVersionMarker;
+  assert.equal(typeof marker, 'string');
+  db.prepare("UPDATE messages SET text='stale expanded instructions', is_meta=1 WHERE source='kimi'").run();
+  db.prepare('DELETE FROM index_state WHERE jsonl_path=?').run(marker);
+  db.close();
+
+  const replay = buildIndex(options);
+  assert.deepEqual(replay.affectedSessionIds, ['kimi:session-index-1']);
+  db = new TestDatabase(dbPath);
+  assert.deepEqual(
+    { ...db.prepare("SELECT text,is_meta FROM messages WHERE source='kimi'").get() },
+    { text: '/obelisk find prior decisions', is_meta: 0 },
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM index_state WHERE jsonl_path=?').get(marker).c, 1);
   db.close();
 });

@@ -6,12 +6,13 @@
 //     NOT assumed to be a single JSONL file — an adapter may read a SQLite store,
 //     a directory tree, etc. So discovery, change-detection, and resume cursoring
 //     are all adapter-owned and format-specific.
-//   - Persist axis: one shared, provider- and binding-agnostic orchestration
-//     that consumes the records and writes them (index_state, FTS, upsert).
+//   - Consumer axis: shared, provider-agnostic modules consume the canonical
+//     transcript for persistence and session-detail presentation.
 //
-// This file defines only the shapes crossing that boundary. Record fields mirror
-// the columns in packages/core/src/schema.sql; keep them in sync. Types only — no runtime
-// code — so consumers must import with `import type`.
+// This file defines only the shapes crossing that seam. Many fields mirror the
+// SQLite schema, but the database is a serialization adapter rather than the
+// source of transcript semantics. Types only — no runtime code — so consumers
+// must import with `import type`.
 
 // Opaque per-unit resume/watermark token. The orchestration stores it verbatim
 // (in index_state) and hands it back on the next run; ONLY the adapter that
@@ -46,12 +47,10 @@ export interface DiscoverContext {
   changedPaths?: string[];
 }
 
-/** Discriminated union of everything an adapter's parse can emit. Each record
- * kind maps to one schema table (see packages/core/src/schema.sql); `delete-session` is
- * the exception — a retraction op, not a table. Sources without a table
- * (history.jsonl, codex session_index.jsonl) are not records: adapters fold them
- * into the SessionRecord they already emit. */
-export type IndexRecord =
+/** Canonical language emitted by every provider adapter. Persist serializes it;
+ * session-detail assembly consumes it directly. Most record kinds map to one
+ * schema table; update/retraction records encode canonical state transitions. */
+export type TranscriptRecord =
   | SessionRecord
   | MessageRecord
   | ToolCallRecord
@@ -62,6 +61,8 @@ export type IndexRecord =
   | WorkflowAgentRecord
   | MessageTurnDurationRecord
   | DeleteSessionRecord;
+
+export type MessageVisibility = 'visible' | 'hidden';
 
 export interface MessageRecord {
   kind: 'message';
@@ -74,6 +75,8 @@ export interface MessageRecord {
   text: string | null;
   content_type: string | null;
   is_meta: 0 | 1;
+  /** Provider-normalized display eligibility. Assemblers never infer this from text. */
+  visibility: MessageVisibility;
   model: string | null;
   is_sidechain: 0 | 1;
   agent_id: string | null;
@@ -91,6 +94,7 @@ export interface ToolCallRecord {
   message_uuid: string;
   session_id: string;
   name: string;
+  presentation: 'default' | 'skill';
   input_json: string;
   file_path: string | null;
 }
@@ -128,17 +132,18 @@ export interface SubagentRecord {
   total_tokens?: number | null;
 }
 
-// A workflow run. `agent_count` is intentionally absent: it is a derived
-// aggregate (COUNT of workflow_agents for this run) that persist computes, since
-// the agents may be indexed on different runs than the workflow metadata.
+// A workflow run. `agent_count` is optional presentation metadata; persist still
+// computes the authoritative aggregate because agents may arrive on other runs.
 export interface WorkflowRecord {
   kind: 'workflow';
   run_id: string;
   session_id: string;
+  parent_tool_use_id?: string | null;
   task_id: string | null;
   script: string | null;
   result_json: string | null;
   timestamp: string | null;
+  agent_count: number;
   duration_ms: number | null;
   total_tokens: number | null;
   status: string | null;
@@ -223,7 +228,7 @@ export interface Provider {
   /** Discover units needing (re)indexing, using stored cursors to detect change. */
   discover(ctx: DiscoverContext): IndexUnit[];
   /** Yield records for one unit resuming from `cursor`; return the new cursor. */
-  parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, Cursor>;
+  parse(unit: IndexUnit, cursor: Cursor): Generator<TranscriptRecord, Cursor>;
 }
 
 /** Serializable source metadata consumed by settings and renderer surfaces. */

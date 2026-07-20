@@ -9,7 +9,7 @@ import {
   loadSessionDetail,
   materializeSessionDetailPatch,
 } from '../app/src/renderer/src/data.js';
-import { assembleSessionMessages } from '../app/src/shared/session-detail-assembly.mjs';
+import { assembleSessionDetail } from '../app/src/shared/session-detail-assembly.mjs';
 import { createSessionPatch } from '../app/src/shared/session-patch.mjs';
 
 test('live updates coalesce while scrolling and load only the latest after scroll end', async () => {
@@ -123,13 +123,13 @@ test('a skipped live patch does not advance the visible patch baseline', async t
       getSessionWorkflows: async () => [],
       getSessionSummaries: async () => [],
       getSessionPatch: async (_id, cursor) => {
-        const snapshotAtCall = { messages: assembleSessionMessages({
+        const snapshotAtCall = { messages: assembleSessionDetail({
           messages: rows,
           toolCalls: [],
           toolResults: [],
           subagents: [],
           workflows: [],
-        }), workflows: [] };
+        }).messages, workflows: [] };
         patchCalls++;
         if (patchCalls === 1) {
           firstPatchStarted();

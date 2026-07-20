@@ -7,7 +7,7 @@ import {
   applySessionPatch,
   createSessionPatchCursor,
 } from '../../shared/session-patch.mjs';
-import { assembleSessionMessages } from '../../shared/session-detail-assembly.mjs';
+import { assembleSessionDetail } from '../../shared/session-detail-assembly.mjs';
 
 const sessionMessageSnapshots = new Map();
 const MAX_SESSION_MESSAGE_SNAPSHOTS = 3;
@@ -25,6 +25,7 @@ function sessionMetadata(session) {
   const metadata = { ...session };
   delete metadata.messages;
   delete metadata.workflow;
+  delete metadata.summaries;
   return markRaw(metadata);
 }
 
@@ -96,9 +97,11 @@ export async function loadSessionDetail(sessionId) {
     window.obelisk.getSessionWorkflows(sessionId),
     window.obelisk.getSessionSummaries(sessionId),
   ]);
+  const detail = assembleSessionDetail({ messages, toolCalls, toolResults, subagents, workflows, summaries });
   const snapshot = {
-    messages: assembleSessionMessages({ messages, toolCalls, toolResults, subagents, workflows }),
-    workflows,
+    messages: detail.messages,
+    workflows: detail.workflows,
+    summaries: detail.summaries,
   };
   const metadata = sessionMetadata(state.sessions.find(candidate => candidate.id === sessionId));
   rememberSessionMessageSnapshot(sessionId, {
@@ -154,13 +157,14 @@ export function getCachedSessionDetail(sessionId) {
   });
 }
 
-function commitSessionDetail(sessionId, { messages, workflows = [] }, { updateStore, metadata = null }) {
+function commitSessionDetail(sessionId, { messages, workflows = [], summaries = [] }, { updateStore, metadata = null }) {
   const session = state.sessions.find(candidate => candidate.id === sessionId);
   const assembled = {
     ...(session || {}),
     ...(metadata || {}),
     id: sessionId,
     messages: markRaw(messages),
+    summaries: markRaw(summaries),
   };
   if (workflows.length > 0) assembled.workflow = workflows[0];
 
@@ -181,13 +185,13 @@ export async function loadSubagentDetail(agentId) {
     window.obelisk.getSubagentToolCalls(agentId),
     window.obelisk.getSubagentToolResults(agentId),
   ]);
-  return assembleSessionMessages({
+  return assembleSessionDetail({
     messages,
     toolCalls,
     toolResults,
     subagents: [],
     workflows: [],
-  });
+  }).messages;
 }
 
 const TEXT_LIMIT = 10000;

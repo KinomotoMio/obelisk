@@ -6,14 +6,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
   uuid TEXT PRIMARY KEY, session_id TEXT, type TEXT, parent_uuid TEXT,
   timestamp TEXT, role TEXT, text TEXT, content_type TEXT,
-  is_meta INTEGER DEFAULT 0, model TEXT,
+  is_meta INTEGER DEFAULT 0, visibility TEXT DEFAULT 'visible', model TEXT,
   is_sidechain INTEGER DEFAULT 0, agent_id TEXT,
   input_tokens INTEGER, output_tokens INTEGER,
   cwd TEXT, skill TEXT, turn_duration_ms INTEGER,
   source TEXT DEFAULT 'claude');
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
-  name TEXT, input_json TEXT, file_path TEXT);
+  name TEXT, presentation TEXT DEFAULT 'default', input_json TEXT, file_path TEXT);
 CREATE TABLE IF NOT EXISTS tool_results (
   tool_use_id TEXT PRIMARY KEY, message_uuid TEXT, session_id TEXT,
   content TEXT, file_path TEXT, is_error INTEGER DEFAULT 0);
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS subagents (
   agent_id TEXT PRIMARY KEY, session_id TEXT, parent_tool_use_id TEXT,
   agent_type TEXT, description TEXT, duration_ms INTEGER, total_tokens INTEGER);
 CREATE TABLE IF NOT EXISTS workflows (
-  run_id TEXT PRIMARY KEY, session_id TEXT, task_id TEXT,
+  run_id TEXT PRIMARY KEY, session_id TEXT, parent_tool_use_id TEXT, task_id TEXT,
   script TEXT, result_json TEXT, timestamp TEXT, agent_count INTEGER DEFAULT 0,
   duration_ms INTEGER, total_tokens INTEGER, status TEXT, workflow_name TEXT);
 CREATE TABLE IF NOT EXISTS workflow_agents (

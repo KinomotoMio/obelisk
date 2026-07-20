@@ -5,11 +5,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parse } from '../packages/core/src/providers/codex.ts';
+import { createCodexProvider, parse } from '../packages/core/src/providers/codex.ts';
 
 function writeFixture(lines) {
   const dir = mkdtempSync(join(tmpdir(), 'obelisk-codex-parse-'));
@@ -56,9 +56,9 @@ test('codex parse() yields a deduped, tool-aware record stream with a total sess
   assert.equal(textAssistant.output_tokens, 50);
 
   // Tool call + result.
-  assert.deepEqual(byKind('tool_call').map(t => ({ id: t.id, name: t.name })), [{ id: 'codex:call_1', name: 'shell' }]);
+  assert.deepEqual(byKind('tool_call').map(t => ({ id: t.id, name: t.name })), [{ id: `codex:${META.id}:call_1`, name: 'shell' }]);
   assert.equal(byKind('tool_result').length, 1);
-  assert.equal(byKind('tool_result')[0].tool_use_id, 'codex:call_1');
+  assert.equal(byKind('tool_result')[0].tool_use_id, `codex:${META.id}:call_1`);
 
   // task_complete → turn duration on the text-assistant message.
   assert.deepEqual(byKind('message-turn-duration').map(d => d.turn_duration_ms), [1500]);
@@ -83,4 +83,26 @@ test('codex parse() retracts a guardian thread via delete-session and emits noth
   assert.equal(values.length, 1);
   assert.equal(values[0].kind, 'delete-session');
   assert.match(values[0].sessionId, /^codex:/);
+});
+
+test('codex provider folds session_index metadata into its canonical session record', () => {
+  const root = mkdtempSync(join(tmpdir(), 'obelisk-codex-index-meta-'));
+  const sessionsDir = join(root, 'sessions', '2026', '06', '10');
+  mkdirSync(sessionsDir, { recursive: true });
+  const path = join(sessionsDir, `rollout-${META.id}.jsonl`);
+  writeFileSync(path, `${JSON.stringify({
+    type: 'session_meta', timestamp: '2026-06-10T10:00:00Z', payload: META,
+  })}\n`);
+  const indexPath = join(root, 'session_index.jsonl');
+  writeFileSync(indexPath, `${JSON.stringify({
+    id: META.id, thread_name: 'Indexed title', updated_at: '2026-06-10T11:00:00Z',
+  })}\n`);
+  const provider = createCodexProvider({ rootDir: root });
+  const units = provider.discover({ lastCursor: () => '9999999999999:1', changedPaths: [indexPath] });
+
+  assert.equal(units.length, 1);
+  const { values } = drain(provider.parse(units[0], null));
+  const session = values.find(record => record.kind === 'session');
+  assert.equal(session.title, 'Indexed title');
+  assert.equal(session.ended_at, '2026-06-10T11:00:00Z');
 });

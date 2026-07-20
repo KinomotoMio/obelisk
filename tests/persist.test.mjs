@@ -92,10 +92,34 @@ test('fresh full re-scan (no prior cursor) resets message_count instead of accum
   assert.equal(db.prepare('SELECT COUNT(*) c FROM messages').get().c, 3);
 });
 
+test('persist round-trips canonical workflow records and their tool relationship', () => {
+  const db = freshDb();
+  function* records() {
+    yield {
+      kind: 'workflow', run_id: 'run-1', session_id: 'sid-p', parent_tool_use_id: 'tool-1',
+      task_id: 'task-1', script: 'review', result_json: '{}', timestamp: '2026-06-10T10:00:00Z',
+      agent_count: 1, duration_ms: 10, total_tokens: 20, status: 'complete', workflow_name: 'Review',
+    };
+    yield {
+      kind: 'workflow_agent', agent_id: 'agent-1', run_id: 'run-1', session_id: 'sid-p',
+      agent_type: 'reviewer', phase: 'review', label: 'Reviewer', state: 'complete', tokens: 20,
+    };
+    return null;
+  }
+
+  persist(db, { key: 'workflow', sessionId: 'sid-p' }, records());
+
+  assert.equal(db.prepare('SELECT parent_tool_use_id FROM workflows WHERE run_id=?').get('run-1').parent_tool_use_id, 'tool-1');
+  assert.equal(db.prepare('SELECT phase FROM workflow_agents WHERE agent_id=?').get('agent-1').phase, 'review');
+  db.close();
+});
+
 test('delete-session cascades across tables', () => {
   const db = freshDb();
   const unit = fixtureUnit();
   persist(db, unit, parse(unit, null));
+  db.prepare('INSERT INTO workflows (run_id,session_id) VALUES (?,?)').run('run-delete', 'sid-p');
+  db.prepare('INSERT INTO workflow_agents (agent_id,run_id,session_id) VALUES (?,?,?)').run('agent-delete', 'run-delete', 'sid-p');
 
   // Hand-roll a one-shot generator emitting a delete for the session.
   function* del() { yield { kind: 'delete-session', sessionId: 'sid-p' }; return null; }
@@ -104,4 +128,6 @@ test('delete-session cascades across tables', () => {
   assert.equal(db.prepare('SELECT COUNT(*) c FROM sessions WHERE id=?').get('sid-p').c, 0);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM messages WHERE session_id=?').get('sid-p').c, 0);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM tool_calls WHERE session_id=?').get('sid-p').c, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM workflows WHERE session_id=?').get('sid-p').c, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM workflow_agents WHERE session_id=?').get('sid-p').c, 0);
 });

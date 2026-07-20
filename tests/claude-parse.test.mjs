@@ -4,11 +4,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { parse } from '../packages/core/src/providers/claude.ts';
+import { createClaudeProvider, parse } from '../packages/core/src/providers/claude.ts';
+import { assembleSessionDetail } from '../packages/core/src/session-detail.ts';
+import { persist } from '../packages/core/src/persist.ts';
+
+const SCHEMA = readFileSync(new URL('../packages/core/src/schema.sql', import.meta.url), 'utf8');
 
 function writeFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'obelisk-claude-parse-'));
@@ -69,6 +74,10 @@ test('claude parse() yields the expected record stream for a main session', () =
   assert.equal(sessions[0].ended_at, '2026-06-10T10:00:10Z');
   assert.equal(sessions[0].git_branch, 'main');
 
+  const detail = assembleSessionDetail(values);
+  assert.deepEqual(detail.messages.map((message) => message.text), ['hi', 'ok']);
+  assert.equal(detail.messages[1].tool_calls[0].result.content, 'file body');
+
   // Cursor encodes mtime:lines (6 lines consumed).
   assert.equal(ret, `${statSync(path).mtimeMs}:6`);
 });
@@ -89,4 +98,67 @@ test('claude parse() resumes from a cursor, skipping already-indexed lines', () 
   // Only the (empty-chunk) session record, with message_count 0.
   assert.deepEqual(values.filter(r => r.kind !== 'session'), []);
   assert.equal(values.find(r => r.kind === 'session').message_count, 0);
+});
+
+test('claude provider emits workflow artifacts with an explicit canonical tool edge', () => {
+  const root = mkdtempSync(join(tmpdir(), 'obelisk-claude-workflow-'));
+  const projectDir = join(root, 'projects', '-proj');
+  const workflowDir = join(projectDir, 'sid-workflow', 'workflows');
+  const workflowAgentDir = join(projectDir, 'sid-workflow', 'subagents', 'workflows', 'run-workflow');
+  mkdirSync(workflowDir, { recursive: true });
+  mkdirSync(workflowAgentDir, { recursive: true });
+  writeFileSync(join(projectDir, 'sid-workflow.jsonl'), [
+    {
+      uuid: 'assistant-workflow', type: 'assistant', timestamp: '2026-06-10T10:00:00Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'workflow-tool', name: 'Workflow', input: {} }] },
+    },
+    {
+      uuid: 'workflow-result', type: 'user', timestamp: '2026-06-10T10:00:01Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'workflow-tool', content: 'run-workflow complete' }] },
+    },
+  ].map(line => JSON.stringify(line)).join('\n') + '\n');
+  writeFileSync(join(workflowDir, 'run-workflow.json'), JSON.stringify({
+    runId: 'run-workflow',
+    workflowName: 'Review',
+    status: 'complete',
+    workflowProgress: [{ type: 'workflow_agent', agentId: '7', phaseTitle: 'review', label: 'Reviewer' }],
+  }));
+  writeFileSync(join(workflowAgentDir, 'agent-7.jsonl'), `${JSON.stringify({
+    uuid: 'workflow-agent-message', type: 'user', timestamp: '2026-06-10T10:00:00Z',
+    message: { role: 'user', content: 'review it' },
+  })}\n`);
+  writeFileSync(join(workflowAgentDir, 'agent-7.meta.json'), JSON.stringify({
+    agentType: 'reviewer', description: 'Review the implementation',
+  }));
+  writeFileSync(join(root, 'history.jsonl'), `${JSON.stringify({
+    sessionId: 'sid-workflow', title: 'History-owned title',
+  })}\n`);
+  const provider = createClaudeProvider({ rootDir: root });
+  const units = provider.discover({ lastCursor: () => null });
+  const records = units.flatMap(unit => drain(provider.parse(unit, null)).values);
+
+  const workflow = records.find(record => record.kind === 'workflow');
+  assert.equal(workflow.parent_tool_use_id, 'workflow-tool');
+  const detail = assembleSessionDetail(records);
+  assert.equal(detail.session.title, 'History-owned title');
+  assert.equal(detail.messages[0].tool_calls[0].workflow.run_id, 'run-workflow');
+  assert.equal(detail.workflows[0].agents[0].label, 'Reviewer');
+  assert.equal(detail.workflows[0].agents.length, 1);
+
+  const db = new DatabaseSync(':memory:');
+  db.exec(SCHEMA);
+  for (const unit of units) persist(db, unit, provider.parse(unit, null));
+  const workflows = db.prepare('SELECT * FROM workflows').all();
+  for (const row of workflows) row.agents = db.prepare('SELECT * FROM workflow_agents WHERE run_id=?').all(row.run_id);
+  const persistedDetail = assembleSessionDetail({
+    session: db.prepare('SELECT * FROM sessions').get(),
+    messages: db.prepare('SELECT * FROM messages ORDER BY timestamp, uuid').all(),
+    toolCalls: db.prepare('SELECT * FROM tool_calls').all(),
+    toolResults: db.prepare('SELECT * FROM tool_results').all(),
+    subagents: db.prepare('SELECT * FROM subagents').all(),
+    workflows,
+    summaries: db.prepare('SELECT * FROM summaries').all(),
+  });
+  assert.deepEqual(persistedDetail, detail);
+  db.close();
 });

@@ -11,23 +11,18 @@ import {
   writeProviderIndexMarkers,
 } from '../../../packages/core/src/provider-indexing.ts';
 import { runWriteTransaction, configureConnection, betterSqliteTransactionAdapter } from '../../../packages/core/src/tx.ts';
+import { migrateCoreSchemaColumns } from '../../../packages/core/src/schema-migrations.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
 import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from '../../../packages/core/src/write-coordinator.ts';
 import {
   inferProjectPath,
-  isDir,
-  readLines,
-  codexDbId,
 } from '../../../packages/core/src/parsing.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_CLAUDE_DIR = path.join(os.homedir(), '.claude');
-const DEFAULT_CODEX_DIR = path.join(os.homedir(), '.codex');
 const DEFAULT_OBELISK_DIR = path.join(os.homedir(), '.obelisk');
 const DEFAULT_DB_PATH = path.join(DEFAULT_OBELISK_DIR, 'obelisk.sqlite');
-const DEFAULT_PROJECTS_DIR = path.join(DEFAULT_CLAUDE_DIR, 'projects');
-const DEFAULT_HISTORY_PATH = path.join(DEFAULT_CLAUDE_DIR, 'history.jsonl');
 
 function resolveSchemaPath() {
   const candidates = [
@@ -42,7 +37,7 @@ function resolveSchemaPath() {
 
 function installSchema(db, schemaPath = resolveSchemaPath()) {
   db.exec(fs.readFileSync(schemaPath, 'utf8'));
-  migrateDb(db);
+  migrateCoreSchemaColumns(db);
 }
 
 function openIndexDb({ dbPath = DEFAULT_DB_PATH, schemaPath = resolveSchemaPath(), DatabaseImpl = Database }: { dbPath?: string; schemaPath?: string; DatabaseImpl?: new (dbPath: string) => any } = {}) {
@@ -51,21 +46,6 @@ function openIndexDb({ dbPath = DEFAULT_DB_PATH, schemaPath = resolveSchemaPath(
   configureConnection(db, { busyTimeoutMs: 250 });
   installSchema(db, schemaPath);
   return db;
-}
-
-function ensureColumn(db, table, column, definition) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-function migrateDb(db) {
-  ensureColumn(db, 'sessions', 'source', "TEXT DEFAULT 'claude'");
-  ensureColumn(db, 'messages', 'content_type', 'TEXT');
-  ensureColumn(db, 'messages', 'is_meta', 'INTEGER DEFAULT 0');
-  ensureColumn(db, 'messages', 'source', "TEXT DEFAULT 'claude'");
-  ensureColumn(db, 'memories', 'anchors', 'TEXT');
-  ensureColumn(db, 'memories', 'deleted_at', 'TEXT');
-  ensureColumn(db, 'memories', 'deleted_reason', 'TEXT');
 }
 
 function copyMemoriesFromDb(db, sourceDbPath) {
@@ -126,23 +106,6 @@ function sessionIdFromChangedPath(projectsDir, changedPath) {
   return null;
 }
 
-function indexCodexSessionIndex(db, { codexDir = DEFAULT_CODEX_DIR } = {}) {
-  const indexPath = path.join(codexDir, 'session_index.jsonl');
-  if (!fs.existsSync(indexPath)) return;
-  readLines(indexPath, (line) => {
-    let item;
-    try {
-      item = JSON.parse(line);
-    } catch (error) {
-      console.warn(`Warning: malformed Codex session index line: ${(error as Error).message}`);
-      return;
-    }
-    if (!item.id || !item.thread_name) return;
-    db.prepare('UPDATE sessions SET title=COALESCE(title, ?), ended_at=COALESCE(ended_at, ?) WHERE id=? AND source=?')
-      .run(item.thread_name, item.updated_at || null, codexDbId(item.id), 'codex');
-  });
-}
-
 function refreshSessionProjectPaths(db) {
   const sessions = db.prepare('SELECT id, project FROM sessions').all();
   const cwdStmt = db.prepare(`
@@ -156,61 +119,6 @@ function refreshSessionProjectPaths(db) {
     const projectPath = inferProjectPath(session.project, cwds);
     if (projectPath) update.run(projectPath, session.id);
   }
-}
-
-function indexWorkflows(db, { projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
-  if (!fs.existsSync(projectsDir)) return;
-  let projects;
-  try { projects = fs.readdirSync(projectsDir); } catch { return; }
-  for (const proj of projects) {
-    const pp = path.join(projectsDir, proj);
-    if (!isDir(pp)) continue;
-    let entries;
-    try { entries = fs.readdirSync(pp); } catch { continue; }
-    for (const sd of entries) {
-      const wd = path.join(pp, sd, 'workflows');
-      if (!isDir(wd)) continue;
-      let wfFiles;
-      try { wfFiles = fs.readdirSync(wd); } catch { continue; }
-      for (const f of wfFiles) {
-        if (!f.endsWith('.json')) continue;
-        let wf;
-        try {
-          wf = JSON.parse(fs.readFileSync(path.join(wd, f), 'utf8'));
-        } catch (error) {
-          console.warn(`Warning: failed to read workflow ${f}: ${(error as Error).message}`);
-          continue;
-        }
-        if (!wf.runId) continue;
-        const ac = db.prepare('SELECT COUNT(*) as c FROM workflow_agents WHERE run_id=?').get(wf.runId);
-        db.prepare('INSERT OR REPLACE INTO workflows (run_id,session_id,task_id,script,result_json,timestamp,agent_count,duration_ms,total_tokens,status,workflow_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
-          wf.runId, sd, wf.taskId||null, wf.script||null,
-          wf.result ? JSON.stringify(wf.result) : null, wf.timestamp||null, ac?.c||0,
-          wf.durationMs||null, wf.totalTokens||null, wf.status||null, wf.workflowName||null);
-        const progress = wf.workflowProgress || [];
-        for (const item of progress) {
-          if (item.type !== 'workflow_agent' || !item.agentId) continue;
-          db.prepare('UPDATE workflow_agents SET phase=?, label=?, model=?, state=?, duration_ms=?, tokens=?, tool_calls=? WHERE agent_id=?').run(
-            item.phaseTitle||null, item.label||null, item.model||null, item.state||null,
-            item.durationMs||null, item.tokens||null, item.toolCalls||null, 'agent-' + item.agentId);
-        }
-      }
-    }
-  }
-}
-
-function indexHistory(db, { historyPath = DEFAULT_HISTORY_PATH } = {}) {
-  if (!fs.existsSync(historyPath)) return;
-  readLines(historyPath, (line) => {
-    let item;
-    try {
-      item = JSON.parse(line);
-    } catch (error) {
-      console.warn(`Warning: malformed history line: ${(error as Error).message}`);
-      return;
-    }
-    if (item.sessionId && item.title) db.prepare('UPDATE sessions SET title=? WHERE id=? AND title IS NULL').run(item.title, item.sessionId);
-  });
 }
 
 function rebuildFts(db) {
@@ -286,7 +194,6 @@ interface BuildIndexOptions {
   claudeDir?: string;
   codexDir?: string;
   projectsDir?: string;
-  historyPath?: string;
   dbPath?: string;
   schemaPath?: string;
   DatabaseImpl?: new (dbPath: string) => any;
@@ -339,7 +246,6 @@ function buildIndex({
   claudeDir = DEFAULT_CLAUDE_DIR,
   codexDir = path.join(path.dirname(claudeDir), '.codex'),
   projectsDir = path.join(claudeDir, 'projects'),
-  historyPath = path.join(claudeDir, 'history.jsonl'),
   dbPath = DEFAULT_DB_PATH,
   schemaPath = resolveSchemaPath(),
   DatabaseImpl = Database,
@@ -489,10 +395,7 @@ function buildIndex({
       // index would otherwise be left inconsistent).
       try {
         runRetryableWriteTransaction(txDb, () => {
-          indexWorkflows(db, { projectsDir });
           refreshSessionProjectPaths(db);
-          indexHistory(db, { historyPath });
-          indexCodexSessionIndex(db, { codexDir });
           if (messageFtsTriggersDropped) installSchema(db, schemaPath);
           ftsRebuilt = ensureFtsReady(db, { force });
           writeIndexMarker(db, '__last_build__');

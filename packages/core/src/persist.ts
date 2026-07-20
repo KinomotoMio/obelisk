@@ -1,6 +1,6 @@
 // Shared Core persist layer (see docs/adr/0001).
 //
-// Provider-agnostic and binding-agnostic: it consumes the IndexRecord stream
+// Provider-agnostic and binding-agnostic: it consumes the TranscriptRecord stream
 // from any adapter's parse() and writes rows into the injected database handle
 // (node:sqlite for the CLI, better-sqlite3 for the app — they share the
 // prepare/run/get API). It is the ONLY layer that touches the database and the
@@ -12,7 +12,7 @@
 // turn-duration is a targeted UPDATE; delete-session cascades. The generator's
 // return value is the new cursor, persisted verbatim into index_state.
 
-import type { Cursor, IndexRecord, IndexUnit } from './providers/types.ts';
+import type { Cursor, TranscriptRecord, IndexUnit } from './providers/types.ts';
 import type { SqliteDb } from './sqlite-types.ts';
 
 const minStr = (a: string | null, b: string | null) => (a == null ? b : b == null ? a : a < b ? a : b);
@@ -21,16 +21,17 @@ const maxStr = (a: string | null, b: string | null) => (a == null ? b : b == nul
 function statements(db: SqliteDb) {
   return {
     msg: db.prepare(`
-      INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO messages (uuid,session_id,type,parent_uuid,timestamp,role,text,content_type,is_meta,visibility,model,is_sidechain,agent_id,input_tokens,output_tokens,cwd,skill,source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(uuid) DO UPDATE SET
         session_id=excluded.session_id, type=excluded.type, parent_uuid=excluded.parent_uuid,
         timestamp=excluded.timestamp, role=excluded.role, text=excluded.text,
-        content_type=excluded.content_type, is_meta=excluded.is_meta, model=excluded.model,
+        content_type=excluded.content_type, is_meta=excluded.is_meta,
+        visibility=excluded.visibility, model=excluded.model,
         is_sidechain=excluded.is_sidechain, agent_id=excluded.agent_id,
         input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
         cwd=excluded.cwd, skill=excluded.skill, source=excluded.source`),
-    tc: db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,input_json,file_path) VALUES (?,?,?,?,?,?)'),
+    tc: db.prepare('INSERT OR REPLACE INTO tool_calls (id,message_uuid,session_id,name,presentation,input_json,file_path) VALUES (?,?,?,?,?,?,?)'),
     tr: db.prepare('INSERT OR REPLACE INTO tool_results (tool_use_id,message_uuid,session_id,content,file_path,is_error) VALUES (?,?,?,?,?,?)'),
     sum: db.prepare('INSERT OR REPLACE INTO summaries (id,session_id,timestamp,source,content) VALUES (?,?,?,?,?)'),
     ses: db.prepare('INSERT OR REPLACE INTO sessions (id,title,project,project_path,started_at,ended_at,git_branch,version,message_count,jsonl_path,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)'),
@@ -44,6 +45,25 @@ function statements(db: SqliteDb) {
         description=COALESCE(excluded.description, subagents.description),
         duration_ms=COALESCE(excluded.duration_ms, subagents.duration_ms),
         total_tokens=COALESCE(excluded.total_tokens, subagents.total_tokens)`),
+    wf: db.prepare(`
+      INSERT OR REPLACE INTO workflows
+        (run_id,session_id,parent_tool_use_id,task_id,script,result_json,timestamp,agent_count,duration_ms,total_tokens,status,workflow_name)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
+    wa: db.prepare(`
+      INSERT INTO workflow_agents
+        (agent_id,run_id,session_id,agent_type,description,phase,label,model,state,duration_ms,tokens,tool_calls)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(agent_id) DO UPDATE SET
+        run_id=excluded.run_id, session_id=excluded.session_id,
+        agent_type=COALESCE(excluded.agent_type, workflow_agents.agent_type),
+        description=COALESCE(excluded.description, workflow_agents.description),
+        phase=COALESCE(excluded.phase, workflow_agents.phase),
+        label=COALESCE(excluded.label, workflow_agents.label),
+        model=COALESCE(excluded.model, workflow_agents.model),
+        state=COALESCE(excluded.state, workflow_agents.state),
+        duration_ms=COALESCE(excluded.duration_ms, workflow_agents.duration_ms),
+        tokens=COALESCE(excluded.tokens, workflow_agents.tokens),
+        tool_calls=COALESCE(excluded.tool_calls, workflow_agents.tool_calls)`),
     turn: db.prepare('UPDATE messages SET turn_duration_ms=? WHERE uuid=?'),
     idx: db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,?,?)'),
     getSession: db.prepare('SELECT * FROM sessions WHERE id=?'),
@@ -56,22 +76,24 @@ function deleteSession(db: SqliteDb, sessionId: string) {
   db.prepare('DELETE FROM tool_calls WHERE session_id=? OR message_uuid IN (SELECT uuid FROM messages WHERE session_id=? OR agent_id=?)').run(sessionId, sessionId, sessionId);
   db.prepare('DELETE FROM messages WHERE session_id=? OR agent_id=?').run(sessionId, sessionId);
   db.prepare('DELETE FROM subagents WHERE agent_id=? OR session_id=?').run(sessionId, sessionId);
+  db.prepare('DELETE FROM workflow_agents WHERE session_id=?').run(sessionId);
+  db.prepare('DELETE FROM workflows WHERE session_id=?').run(sessionId);
   db.prepare('DELETE FROM summaries WHERE session_id=?').run(sessionId);
   db.prepare('DELETE FROM sessions WHERE id=?').run(sessionId);
 }
 
 // Consume one unit's record stream into the database and return the new cursor
 // (also written to index_state). `db` is any SQLite handle sharing prepare/run.
-export function persist(db: SqliteDb, unit: IndexUnit, gen: Generator<IndexRecord, Cursor>): Cursor {
+export function persist(db: SqliteDb, unit: IndexUnit, gen: Generator<TranscriptRecord, Cursor>): Cursor {
   const st = statements(db);
 
-  const write = (r: IndexRecord) => {
+  const write = (r: TranscriptRecord) => {
     switch (r.kind) {
       case 'message':
-        st.msg.run(r.uuid, r.session_id, r.type, r.parent_uuid, r.timestamp, r.role, r.text, r.content_type, r.is_meta, r.model, r.is_sidechain, r.agent_id, r.input_tokens, r.output_tokens, r.cwd, r.skill, r.source);
+        st.msg.run(r.uuid, r.session_id, r.type, r.parent_uuid, r.timestamp, r.role, r.text, r.content_type, r.is_meta, r.visibility, r.model, r.is_sidechain, r.agent_id, r.input_tokens, r.output_tokens, r.cwd, r.skill, r.source);
         break;
       case 'tool_call':
-        st.tc.run(r.id, r.message_uuid, r.session_id, r.name, r.input_json, r.file_path);
+        st.tc.run(r.id, r.message_uuid, r.session_id, r.name, r.presentation, r.input_json, r.file_path);
         break;
       case 'tool_result':
         st.tr.run(r.tool_use_id, r.message_uuid, r.session_id, r.content, r.file_path, r.is_error);
@@ -81,6 +103,12 @@ export function persist(db: SqliteDb, unit: IndexUnit, gen: Generator<IndexRecor
         break;
       case 'subagent':
         st.sub.run(r.agent_id, r.session_id, r.parent_tool_use_id ?? null, r.agent_type ?? null, r.description ?? null, r.duration_ms ?? null, r.total_tokens ?? null);
+        break;
+      case 'workflow':
+        st.wf.run(r.run_id, r.session_id, r.parent_tool_use_id ?? null, r.task_id, r.script, r.result_json, r.timestamp, r.agent_count, r.duration_ms, r.total_tokens, r.status, r.workflow_name);
+        break;
+      case 'workflow_agent':
+        st.wa.run(r.agent_id, r.run_id, r.session_id, r.agent_type ?? null, r.description ?? null, r.phase ?? null, r.label ?? null, r.model ?? null, r.state ?? null, r.duration_ms ?? null, r.tokens ?? null, r.tool_calls ?? null);
         break;
       case 'message-turn-duration':
         st.turn.run(r.turn_duration_ms, r.uuid);

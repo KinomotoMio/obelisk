@@ -200,9 +200,11 @@ Full-text search via FTS5 covers all layers.
 packages/core/                # @obelisk/core npm workspace (TypeScript + ESM)
 ├── src/
 │   ├── providers/
-│   │   ├── types.ts          # Provider + IndexRecord contract
+│   │   ├── types.ts          # Provider + TranscriptRecord contract
 │   │   ├── claude.ts         # Claude Code adapter (line-incremental)
-│   │   └── codex.ts          # Codex adapter (full-reparse)
+│   │   ├── codex.ts          # Codex adapter (full-reparse)
+│   │   └── kimi.ts           # Kimi Code adapter (session projection)
+│   ├── session-detail.ts     # Provider-independent transcript projection
 │   ├── persist.ts            # Binding-agnostic record writer (upsert/merge)
 │   ├── tx.ts                 # Write transaction + connection config
 │   ├── write-coordinator.ts  # Bounded retry policy

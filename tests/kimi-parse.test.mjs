@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createKimiProvider } from '../packages/core/src/providers/kimi.ts';
+import { assembleSessionDetail } from '../packages/core/src/session-detail.ts';
 
 function drain(gen) {
   const values = [];
@@ -71,7 +72,7 @@ test('kimi provider discovers a changed session directory and returns a stable c
   assert.deepEqual(unchanged, []);
 });
 
-test('kimi provider folds main and subagent wire logs into the existing record language', () => {
+test('kimi provider folds main and subagent wire logs into the canonical transcript language', () => {
   const { root } = writeKimiFixture();
   const provider = createKimiProvider({ rootDir: root });
   const unit = provider.discover({ lastCursor: () => null })[0];
@@ -83,7 +84,7 @@ test('kimi provider folds main and subagent wire logs into the existing record l
     : record);
   assert.equal(
     createHash('sha256').update(JSON.stringify(goldenRecords)).digest('hex'),
-    'ce3c70798bbc50e438605d86eafb28482630ee38dc2baa41a695975c84646822',
+    '09d76616919435a46a3395194349e696e0d8f6717a24b018515e1f3867ec347a',
     'complete yielded record sequence changed',
   );
 
@@ -125,6 +126,10 @@ test('kimi provider folds main and subagent wire logs into the existing record l
   assert.deepEqual(byKind('subagent').map((record) => [record.agent_id, record.parent_tool_use_id, record.agent_type]), [
     ['kimi:session-native-1:agent-7', 'kimi:session-native-1:main:call-1', 'explore'],
   ]);
+
+  const detail = assembleSessionDetail(values);
+  assert.equal(detail.messages.some((message) => message.text === 'child prompt'), false);
+  assert.equal(detail.messages.flatMap((message) => message.tool_calls ?? [])[0].result.content.includes('file body'), true);
 });
 
 test('kimi provider ignores a torn final wire line until it is completed', () => {
@@ -191,6 +196,56 @@ test('kimi provider scopes changed-path discovery to one session and bypasses an
   });
 
   assert.deepEqual(units.map(unit => unit.key), [firstDir]);
+});
+
+test('kimi provider presents user-slash activations as real user prompts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'obelisk-kimi-user-slash-'));
+  const sessionDir = join(root, 'sessions', 'workspace-1', 'session-user-slash-1');
+  const mainDir = join(sessionDir, 'agents', 'main');
+  mkdirSync(mainDir, { recursive: true });
+  writeFileSync(join(sessionDir, 'state.json'), JSON.stringify({ workDir: '/tmp/user-slash' }));
+  const records = [
+    { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+    { type: 'context.append_message', time: 2, message: {
+      role: 'user', content: 'User activated the skill and loaded its full instructions.', toolCalls: [],
+      origin: {
+        kind: 'skill_activation', trigger: 'user-slash', skillName: 'obelisk',
+        skillArgs: '  synthesize my history  ',
+      },
+    } },
+    { type: 'context.append_message', time: 3, message: {
+      role: 'user', content: 'Expanded plugin command implementation.', toolCalls: [],
+      origin: {
+        kind: 'plugin_command', trigger: 'user-slash', pluginId: 'demo',
+        commandName: 'ship', commandArgs: '  --fast  ',
+      },
+    } },
+    { type: 'context.append_message', time: 4, message: {
+      role: 'user', content: 'Model-triggered skill instructions.', toolCalls: [],
+      origin: { kind: 'skill_activation', trigger: 'model-tool', skillName: 'review' },
+    } },
+  ];
+  writeFileSync(join(mainDir, 'wire.jsonl'), records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const provider = createKimiProvider({ rootDir: root });
+  const unit = provider.discover({ lastCursor: () => null })[0];
+
+  const { values } = drain(provider.parse(unit, null));
+
+  const messages = values.filter(record => record.kind === 'message');
+  assert.deepEqual(messages.map(record => ({
+    text: record.text,
+    is_meta: record.is_meta,
+  })), [
+    { text: '/obelisk synthesize my history', is_meta: 0 },
+    { text: '/demo:ship --fast', is_meta: 0 },
+    { text: 'Model-triggered skill instructions.', is_meta: 1 },
+  ]);
+  assert.equal(provider.raw({
+    source: 'kimi',
+    messageUuid: messages[0].uuid,
+    session: { jsonl_path: join(mainDir, 'wire.jsonl') },
+    agentId: null,
+  }).messageText, '/obelisk synthesize my history');
 });
 
 test('kimi provider maps protocol-1.0 embedded tool calls and results', () => {

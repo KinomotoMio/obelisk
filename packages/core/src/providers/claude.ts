@@ -2,7 +2,7 @@
 //
 // Pure: discovers Claude transcript files and parses one into a record stream.
 // It never touches the Obelisk database. The per-line logic mirrors the original
-// indexJsonl exactly, but yields IndexRecords instead of writing rows; the shared
+// indexJsonl exactly, but yields canonical TranscriptRecords instead of writing rows; the shared
 // persist layer consumes them. Session aggregates here reflect only THIS chunk
 // (started_at/ended_at/message_count); persist merges them with any existing row.
 
@@ -13,14 +13,14 @@ const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 
 import {
-  extractText, extractContentType, extractMessageIsMeta,
-  filePath, trunc, truncJson, readLines, discoverJsonlFiles,
+  extractText, extractContentType, extractMessageIsMeta, isSkillInstructions,
+  filePath, trunc, truncJson, readLines, discoverJsonlFiles, isDir,
 } from '../parsing.ts';
 
 import type {
   Cursor,
   DiscoverContext,
-  IndexRecord,
+  TranscriptRecord,
   IndexUnit,
   ProviderAdapter,
   RawLookup,
@@ -37,7 +37,12 @@ function cursorToSkip(cursor: Cursor): number {
 }
 
 export const name = 'claude';
-export const CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER = '__claude_input_tokens_include_cache_v1__';
+export const CLAUDE_CANONICAL_TRANSCRIPT_MARKER = '__claude_canonical_transcript_v2__';
+
+interface ClaudeWorkflowUnitMeta {
+  readonly kind: 'workflow';
+  readonly mainTranscriptPath: string;
+}
 
 function totalInputTokens(usage: Record<string, unknown>): number | null {
   const fields = [
@@ -58,9 +63,25 @@ function totalInputTokens(usage: Record<string, unknown>): number | null {
 
 function discoverAt(rootDir: string, ctx: DiscoverContext): IndexUnit[] {
   const projectsDir = join(rootDir, 'projects');
+  const historyPath = normalize(join(rootDir, 'history.jsonl'));
+  const historyTitles = new Map<string, string>();
+  if (fs.existsSync(historyPath)) {
+    readLines(historyPath, (line: string) => {
+      try {
+        const item = JSON.parse(line);
+        if (item?.sessionId && item?.title) historyTitles.set(item.sessionId, item.title);
+      } catch { /* malformed history entry */ }
+    });
+  }
   const changedTranscriptPaths = new Set<string>();
+  const changedWorkflowPaths = new Set<string>();
   const forcedPaths = new Set<string>();
+  let historyChanged = false;
   for (const changedPath of ctx.changedPaths ?? []) {
+    const rootRelative = isAbsolute(changedPath)
+      ? normalize(changedPath)
+      : normalize(join(rootDir, changedPath));
+    if (rootRelative === historyPath) historyChanged = true;
     const absolute = isAbsolute(changedPath)
       ? normalize(changedPath)
       : normalize(join(projectsDir, changedPath));
@@ -72,13 +93,16 @@ function discoverAt(rootDir: string, ctx: DiscoverContext): IndexUnit[] {
       forcedPaths.add(transcript);
     } else if (absolute.toLowerCase().endsWith('.jsonl')) {
       changedTranscriptPaths.add(absolute);
+    } else if (absolute.toLowerCase().endsWith('.json')) {
+      changedWorkflowPaths.add(absolute);
     }
   }
-  return discoverJsonlFiles(projectsDir).filter((file) => {
+  const transcriptUnits = discoverJsonlFiles(projectsDir).filter((file) => {
     const normalizedPath = normalize(file.path);
-    if (ctx.changedPaths !== undefined && !changedTranscriptPaths.has(normalizedPath)) return false;
+    if (ctx.changedPaths !== undefined && !historyChanged && !changedTranscriptPaths.has(normalizedPath)) return false;
     const cursor = ctx.lastCursor(file.path);
-    return forcedPaths.has(normalizedPath)
+    return historyChanged
+      || forcedPaths.has(normalizedPath)
       || cursor === null
       || Number(cursor.split(':')[0]) < fs.statSync(file.path).mtimeMs;
   }).map((f: any) => ({
@@ -87,25 +111,155 @@ function discoverAt(rootDir: string, ctx: DiscoverContext): IndexUnit[] {
     project: f.project,
     isSubagent: f.isSubagent,
     agentId: f.agentId,
-    meta: f.workflowRunId ? { workflowRunId: f.workflowRunId } : undefined,
+    meta: {
+      ...(f.workflowRunId ? { workflowRunId: f.workflowRunId } : {}),
+      ...(historyTitles.has(f.sessionId) ? { historyTitle: historyTitles.get(f.sessionId) } : {}),
+    },
   }));
+
+  const workflowUnits: IndexUnit[] = [];
+  if (!fs.existsSync(projectsDir)) return transcriptUnits;
+  let projects: string[];
+  try { projects = fs.readdirSync(projectsDir); } catch { return transcriptUnits; }
+  for (const project of projects) {
+    const projectPath = join(projectsDir, project);
+    if (!isDir(projectPath)) continue;
+    let sessionIds: string[];
+    try { sessionIds = fs.readdirSync(projectPath); } catch { continue; }
+    for (const sessionId of sessionIds) {
+      const workflowDir = join(projectPath, sessionId, 'workflows');
+      if (!isDir(workflowDir)) continue;
+      const mainTranscriptPath = join(projectPath, `${sessionId}.jsonl`);
+      let files: string[];
+      try { files = fs.readdirSync(workflowDir); } catch { continue; }
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const workflowPath = join(workflowDir, file);
+        const normalizedPath = normalize(workflowPath);
+        const relationshipChanged = changedTranscriptPaths.has(normalize(mainTranscriptPath));
+        if (
+          ctx.changedPaths !== undefined
+          && !changedWorkflowPaths.has(normalizedPath)
+          && !relationshipChanged
+        ) continue;
+        const mtime = fs.statSync(workflowPath).mtimeMs;
+        const cursor = ctx.lastCursor(workflowPath);
+        if (!relationshipChanged && cursor !== null && Number(cursor.split(':')[0]) >= mtime) continue;
+        workflowUnits.push({
+          key: workflowPath,
+          sessionId,
+          project,
+          meta: { kind: 'workflow', mainTranscriptPath } satisfies ClaudeWorkflowUnitMeta,
+        });
+      }
+    }
+  }
+  return [...transcriptUnits, ...workflowUnits];
 }
 
 export function discover(ctx: DiscoverContext): IndexUnit[] {
   return discoverAt(join(homedir(), '.claude'), ctx);
 }
 
-export function* parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, Cursor> {
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => typeof part?.text === 'string' ? part.text : '').join('\n');
+}
+
+function workflowParentToolUseId(
+  transcriptPath: string,
+  runId: string,
+  workflowName: string | null,
+): string | null {
+  if (!fs.existsSync(transcriptPath)) return null;
+  const workflowToolIds = new Set<string>();
+  let parentToolUseId: string | null = null;
+  readLines(transcriptPath, (line: string) => {
+    let record: any;
+    try { record = JSON.parse(line); } catch { return; }
+    const content = record?.message?.content;
+    if (!Array.isArray(content)) return;
+    if (record.type === 'assistant') {
+      for (const block of content) {
+        if (block?.type === 'tool_use' && block?.name === 'Workflow' && typeof block.id === 'string') {
+          workflowToolIds.add(block.id);
+        }
+      }
+      return;
+    }
+    if (record.type !== 'user') return;
+    for (const block of content) {
+      if (block?.type !== 'tool_result' || !workflowToolIds.has(block.tool_use_id)) continue;
+      const text = toolResultText(block.content);
+      if (!text.includes(runId) && !(workflowName && text.includes(workflowName))) continue;
+      parentToolUseId = block.tool_use_id;
+      return false;
+    }
+  });
+  return parentToolUseId;
+}
+
+function* parseWorkflow(unit: IndexUnit): Generator<TranscriptRecord, Cursor> {
+  const mtime = fs.statSync(unit.key).mtimeMs;
+  const outCursor = `${mtime}:1`;
+  let workflow: any;
+  try { workflow = JSON.parse(fs.readFileSync(unit.key, 'utf8')); } catch { return outCursor; }
+  if (!workflow?.runId) return outCursor;
+  const meta = unit.meta as ClaudeWorkflowUnitMeta;
+  const progress = Array.isArray(workflow.workflowProgress) ? workflow.workflowProgress : [];
+  const agents = progress.filter((item: any) => item?.type === 'workflow_agent' && item.agentId);
+  yield {
+    kind: 'workflow',
+    run_id: workflow.runId,
+    session_id: unit.sessionId,
+    parent_tool_use_id: workflowParentToolUseId(
+      meta.mainTranscriptPath,
+      workflow.runId,
+      workflow.workflowName || null,
+    ),
+    task_id: workflow.taskId || null,
+    script: workflow.script || null,
+    result_json: workflow.result ? JSON.stringify(workflow.result) : null,
+    timestamp: workflow.timestamp || null,
+    agent_count: agents.length,
+    duration_ms: workflow.durationMs || null,
+    total_tokens: workflow.totalTokens || null,
+    status: workflow.status || null,
+    workflow_name: workflow.workflowName || null,
+  };
+  for (const item of agents) {
+    yield {
+      kind: 'workflow_agent',
+      agent_id: `agent-${item.agentId}`,
+      run_id: workflow.runId,
+      session_id: unit.sessionId,
+      phase: item.phaseTitle || null,
+      label: item.label || null,
+      model: item.model || null,
+      state: item.state || null,
+      duration_ms: item.durationMs || null,
+      tokens: item.tokens || null,
+      tool_calls: item.toolCalls || null,
+    };
+  }
+  return outCursor;
+}
+
+export function* parse(unit: IndexUnit, cursor: Cursor): Generator<TranscriptRecord, Cursor> {
+  if ((unit.meta as ClaudeWorkflowUnitMeta | undefined)?.kind === 'workflow') {
+    return yield* parseWorkflow(unit);
+  }
   const skip = cursorToSkip(cursor);
   const mtime = fs.statSync(unit.key).mtimeMs;
   const isSubagent = unit.isSubagent === true;
-  const records: IndexRecord[] = [];
+  const records: TranscriptRecord[] = [];
   const sm = {
     started_at: null as string | null,
     ended_at: null as string | null,
     git_branch: null as string | null,
     version: null as string | null,
-    title: null as string | null,
+    title: ((unit.meta as { historyTitle?: string } | undefined)?.historyTitle ?? null) as string | null,
     n: 0,
   };
   const subagentStats = {
@@ -149,15 +303,17 @@ export function* parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, 
     sm.n++;
 
     const text = extractText(msg.content);
-    const contentType = extractContentType(msg.content);
+    const rawContentType = extractContentType(msg.content);
     const isMeta = extractMessageIsMeta(obj, text);
+    const contentType = isMeta && isSkillInstructions(text) ? 'skill_instructions' : rawContentType;
     const aid = isSubagent ? (unit.agentId ?? null) : (obj.agentId || null);
 
     if (obj.uuid) {
       records.push({
         kind: 'message', uuid: obj.uuid, session_id: sid, type: obj.type,
         parent_uuid: obj.parentUuid || null, timestamp: ts, role: msg.role || obj.type,
-        text, content_type: contentType, is_meta: (isMeta ? 1 : 0), model: msg.model || null,
+        text, content_type: contentType, is_meta: (isMeta ? 1 : 0), visibility: 'visible',
+        model: msg.model || null,
         is_sidechain: obj.isSidechain ? 1 : 0, agent_id: aid,
         input_tokens: totalInputTokens(usage), output_tokens: usage.output_tokens || null,
         cwd: obj.cwd || null, skill: obj.attributionSkill || null, source: 'claude',
@@ -167,7 +323,7 @@ export function* parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, 
     if (obj.type === 'assistant' && Array.isArray(msg.content)) {
       for (const b of msg.content) {
         if (b.type === 'tool_use' && b.id)
-          records.push({ kind: 'tool_call', id: b.id, message_uuid: obj.uuid, session_id: sid, name: b.name, input_json: truncJson(b.input || {}) as string, file_path: filePath(b.name, b.input) });
+          records.push({ kind: 'tool_call', id: b.id, message_uuid: obj.uuid, session_id: sid, name: b.name, presentation: b.name === 'Skill' ? 'skill' : 'default', input_json: truncJson(b.input || {}) as string, file_path: filePath(b.name, b.input) });
       }
     }
 
@@ -270,8 +426,11 @@ export function createClaudeProvider({ rootDir = join(homedir(), '.claude') }: {
   return {
     name,
     descriptor: { id: name, name: 'Claude Code', vendor: 'Anthropic', defaultRoot: rootDir, color: '#d97757' },
-    indexVersionMarker: CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER,
-    watchRoots: (configuredRoot) => [join(configuredRoot, 'projects')],
+    indexVersionMarker: CLAUDE_CANONICAL_TRANSCRIPT_MARKER,
+    watchRoots: (configuredRoot) => [
+      join(configuredRoot, 'projects'),
+      join(configuredRoot, 'history.jsonl'),
+    ],
     discover: (ctx) => discoverAt(rootDir, ctx),
     parse,
     raw: rawClaude,

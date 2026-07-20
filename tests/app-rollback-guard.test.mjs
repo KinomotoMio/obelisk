@@ -223,13 +223,7 @@ test('BEGIN contention during finalize defers the build', () => {
 
 test('a finalize database error is propagated instead of swallowed as malformed input', () => {
   const { home, dbPath, projectsDir } = twoFileHome('hello alpha', 'hello beta');
-  const workflowDir = join(projectsDir, '-tmp-proj', 'alpha', 'workflows');
-  mkdirSync(workflowDir, { recursive: true });
-  writeFileSync(join(workflowDir, 'run.json'), JSON.stringify({
-    runId: 'workflow-1',
-    workflowName: 'POISON WORKFLOW',
-  }));
-  const Db = makeDbClass(args => args.some(arg => typeof arg === 'string' && arg.includes('POISON WORKFLOW')));
+  const Db = makeDbClass(args => args.some(arg => arg === '__last_build__'));
 
   assert.throws(() => buildIndex({
     force: false,

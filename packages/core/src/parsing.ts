@@ -85,11 +85,16 @@ function extractContentType(content: JsonValue): string {
 }
 
 const COMMAND_ENVELOPE_RE = /^\s*(<command-name>[^<]+<\/command-name>|<(?:task-notification|system-reminder)\b|<local-command(?:\b|-))/;
+const SKILL_INSTRUCTIONS_RE = /^\s*Base directory for this skill(?:\s*:|\s*\r?\n)/;
 
 function extractMessageIsMeta(record: JsonRecord, text: string | null = extractText(record?.message?.content)): 0 | 1 {
   const msg = record?.message || {};
   if (record?.isMeta === true || msg.isMeta === true) return 1;
   return typeof text === 'string' && COMMAND_ENVELOPE_RE.test(text) ? 1 : 0;
+}
+
+function isSkillInstructions(text: unknown): boolean {
+  return typeof text === 'string' && SKILL_INSTRUCTIONS_RE.test(text);
 }
 
 function filePath(name: string, input: JsonRecord | null | undefined): string | null {
@@ -226,9 +231,9 @@ function codexLineUuid(threadId: unknown, lineNum: number): string {
   return `codex:${codexRawId(threadId)}:${String(lineNum).padStart(6, '0')}`;
 }
 
-function codexCallId(callId: unknown): string | null {
-  if (!callId) return null;
-  return `codex:${String(callId).replace(/^codex:/, '')}`;
+function codexCallId(threadId: unknown, callId: unknown): string | null {
+  if (!threadId || !callId) return null;
+  return `codex:${codexRawId(threadId)}:${String(callId).replace(/^codex:/, '')}`;
 }
 
 function codexParentThreadId(meta: JsonRecord): string | null {
@@ -313,7 +318,22 @@ function codexEventText(payload: JsonRecord): string | null {
 function codexMessagePayloadText(payload: JsonRecord): string | null {
   if (!Array.isArray(payload?.content)) return null;
   const parts: string[] = [];
-  for (const block of payload.content) {
+  for (let index = 0; index < payload.content.length; index++) {
+    const block = payload.content[index];
+    const image = payload.content[index + 1];
+    const close = payload.content[index + 2];
+    if (
+      block?.type === 'input_text'
+      && typeof block.text === 'string'
+      && block.text.trim() === '<image>'
+      && image?.type === 'input_image'
+      && close?.type === 'input_text'
+      && typeof close.text === 'string'
+      && close.text.trim() === '</image>'
+    ) {
+      index += 2;
+      continue;
+    }
     if (typeof block?.text === 'string') parts.push(block.text);
   }
   return parts.length ? parts.join('\n') : null;
@@ -340,7 +360,7 @@ function codexToolOutput(payload: JsonRecord): string | null {
 
 export {
   fs, path, os, CLAUDE_DIR, CODEX_DIR, PROJECTS_DIR, CODEX_SESSIONS_DIR, TEXT_LIMIT,
-  trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, filePath, isDir, readLines,
+  trunc, truncJson, extractText, extractContentType, extractMessageIsMeta, isSkillInstructions, filePath, isDir, readLines,
   legacyProjectPathFromSlug, normalizeObservedCwd, projectSlugFromPath, inferProjectPath,
   discoverJsonlFiles, discoverCodexJsonlFiles,
   codexDbId, codexRawId, codexLineUuid, codexCallId, codexParentThreadId, codexIsGuardianThread,
