@@ -2,19 +2,17 @@
 import { DB_PATH, openDb, openReadDb, openWriterLeaseDb, rebuildMemoryFts } from './db.ts';
 import {
   CLAUDE_DIR, CODEX_DIR, PROJECTS_DIR, fs, path, isDir, readLines,
-  inferProjectPath, discoverJsonlFiles, discoverCodexJsonlFiles, codexDbId, readCodexGuardianThreadInfo,
+  inferProjectPath, codexDbId,
 } from './parsing.ts';
-import { persist } from './persist.ts';
+import {
+  createProviderIndexPlan,
+  indexProviderPlan,
+  writeProviderIndexMarkers,
+} from './provider-indexing.ts';
 import { nodeSqliteTransactionAdapter } from './tx.ts';
 import { acquireWriterLease, writerLockPathFor } from './writer-lease.ts';
 import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from './write-coordinator.ts';
-import {
-  CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER,
-  parse as claudeParse,
-} from './providers/claude.ts';
-import { parse as codexParse } from './providers/codex.ts';
-import type { Cursor, IndexRecord } from './providers/types.ts';
-import type { ClaudeJsonlFile } from './parsing.ts';
+import { createBuiltinProviderRegistry } from './providers/builtins.ts';
 import type { NodeSqliteDb, SqliteRow } from './sqlite-types.ts';
 
 const HISTORY_PATH = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -34,14 +32,6 @@ interface BuildCheckOptions {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-
-function needsReindex(db: NodeSqliteDb, fp: string) {
-  const mt = fs.statSync(fp).mtimeMs;
-  const row = db.prepare('SELECT mtime, lines_processed FROM index_state WHERE jsonl_path = ?').get(fp);
-  if (!row) return { needed: true, skip: 0 };
-  return mt > row.mtime ? { needed: true, skip: row.lines_processed } : { needed: false, skip: 0 };
 }
 
 
@@ -75,27 +65,6 @@ function refreshSessionProjectPaths(db: NodeSqliteDb): void {
     const cwds = cwdStmt.all(session.id).map((row: SqliteRow) => row.cwd);
     const projectPath = inferProjectPath(session.project, cwds);
     if (projectPath) update.run(projectPath, session.id);
-  }
-}
-
-function indexSubagentMeta(db: NodeSqliteDb, fi: ClaudeJsonlFile): void {
-  if (!fi.isSubagent) return;
-  const mp = fi.path.replace('.jsonl', '.meta.json');
-  if (!fs.existsSync(mp)) return;
-  let meta: JsonRecord;
-  try {
-    meta = JSON.parse(fs.readFileSync(mp, 'utf8'));
-  } catch (e) {
-    process.stderr.write(`Warning: failed to read subagent meta ${mp}: ${errorMessage(e)}\n`);
-    return;
-  }
-  const tok = db.prepare('SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0) as t FROM messages WHERE agent_id=?').get(fi.agentId);
-  const ts = db.prepare('SELECT MIN(timestamp) as t0, MAX(timestamp) as t1 FROM messages WHERE agent_id=?').get(fi.agentId);
-  const dur = ts?.t0 && ts?.t1 ? new Date(ts.t1).getTime() - new Date(ts.t0).getTime() : null;
-  if (fi.workflowRunId) {
-    db.prepare('INSERT OR REPLACE INTO workflow_agents (agent_id,run_id,session_id,agent_type,description) VALUES(?,?,?,?,?)').run(fi.agentId, fi.workflowRunId, fi.sessionId, meta.agentType||null, meta.description||null);
-  } else {
-    db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
   }
 }
 
@@ -191,13 +160,6 @@ function inspectBuildOwnership({ force = false }: { force?: boolean } = {}) {
   }
 }
 
-// A one-shot record stream that retracts a session, for routing guardian sweeps
-// through persist (the single db writer) instead of deleting rows directly.
-function* guardianDelete(sessionId: string): Generator<IndexRecord, Cursor> {
-  yield { kind: 'delete-session', sessionId };
-  return null;
-}
-
 function buildIndex({ force = false }: { force?: boolean } = {}) {
   const ownership = inspectBuildOwnership({ force });
   if (ownership.skip) return ownership;
@@ -213,17 +175,7 @@ function buildIndex({ force = false }: { force?: boolean } = {}) {
 
     const db = openDb();
     const txDb = nodeSqliteTransactionAdapter(db);
-    const claudeInputMarkerMissing = !db.prepare(
-      'SELECT jsonl_path FROM index_state WHERE jsonl_path = ?',
-    ).get(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
-    const claudeInputSemanticsOutdated = claudeInputMarkerMissing && Boolean(db.prepare(`
-      SELECT 1 FROM messages
-      WHERE COALESCE(source, 'claude') = 'claude'
-        AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
-      LIMIT 1
-    `).get());
     const skippedFiles: SkippedFile[] = [];
-    let claudeInputMigrationFailed = false;
     try {
       try {
         if (force) {
@@ -246,56 +198,24 @@ function buildIndex({ force = false }: { force?: boolean } = {}) {
         throw error;
       }
 
-      const files = [
-        ...discoverJsonlFiles(),
-        ...discoverCodexJsonlFiles(),
-      ];
-      for (const f of files) {
-        try {
-          runRetryableWriteTransaction(txDb, () => {
-            if (f.source === 'codex') {
-              // Codex goes through the pure adapter + shared persist (docs/adr/0001),
-              // full-reparse (countMode 'total') when the file changed. An unchanged
-              // file is not reparsed, but is still swept for stale guardian rows: a
-              // guardian/auto-review thread must never linger in the index, even if it
-              // was indexed before guardian detection removed it.
-              const { needed } = needsReindex(db, f.path);
-              if (needed) {
-                persist(db, { key: f.path, sessionId: '' }, codexParse({ key: f.path, sessionId: '' }, null));
-              } else {
-                const guardian = readCodexGuardianThreadInfo(f.path);
-                if (guardian) {
-                  const sessionId = codexDbId(guardian.threadRawId);
-                  if (sessionId) persist(db, { key: f.path, sessionId: '' }, guardianDelete(sessionId));
-                }
-              }
-            } else {
-              // Claude transcripts now go through the pure adapter + shared persist
-              // (docs/adr/0001). needsReindex keeps the "skip unchanged file" fast path;
-              // the cursor's line count drives incremental resume inside parse().
-              const { needed, skip } = needsReindex(db, f.path);
-              if (needed || claudeInputSemanticsOutdated) {
-                const unit = { key: f.path, sessionId: f.sessionId, project: f.project, isSubagent: f.isSubagent, agentId: f.agentId };
-                const cursor = !claudeInputSemanticsOutdated && skip > 0 ? `0:${skip}` : null;
-                persist(db, unit, claudeParse(unit, cursor));
-              }
-              indexSubagentMeta(db, f);
-            }
-          }, { label: `file:${f.path}` });
-        } catch (e) {
-          if (isBeginBusyFailure(e)) {
-            return { skip: true, reason: 'database_busy', skipped: skippedFiles.length, skippedFiles };
-          }
-          if (hasUnusableTransaction(e)) throw e;
-          if (claudeInputSemanticsOutdated && f.source !== 'codex') {
-            claudeInputMigrationFailed = true;
-          }
-          // A per-file failure is skippable: log and move on.
-          const error = e as { message?: unknown; obelisk?: unknown } | null;
-          const message = errorMessage(e);
-          skippedFiles.push({ path: f.path, error: message, diagnostics: error?.obelisk });
-          process.stderr.write(`Warning: failed to index ${f.path}: ${message}\n`);
-        }
+      const registry = createBuiltinProviderRegistry();
+      const providerPlan = createProviderIndexPlan(db, registry, { force });
+      const providerResult = indexProviderPlan({
+        db,
+        plan: providerPlan,
+        runTransaction: (label, work) => runRetryableWriteTransaction(txDb, work, { label }),
+        onError: (error, { provider, unit }) => {
+          if (isBeginBusyFailure(error)) return 'stop';
+          if (hasUnusableTransaction(error)) throw error;
+          const detail = error as { message?: unknown; obelisk?: unknown } | null;
+          const message = errorMessage(error);
+          skippedFiles.push({ path: unit.key, error: message, diagnostics: detail?.obelisk });
+          process.stderr.write(`Warning: failed to index ${provider.name} unit ${unit.key}: ${message}\n`);
+          return 'skip';
+        },
+      });
+      if (providerResult.stopped) {
+        return { skip: true, reason: 'database_busy', skipped: skippedFiles.length, skippedFiles };
       }
       // Finalize is one transaction and is NOT swallowed: a finalize failure fails
       // the build (a half-finalized index would be inconsistent).
@@ -308,10 +228,7 @@ function buildIndex({ force = false }: { force?: boolean } = {}) {
           db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
           rebuildMemoryFts(db);
           db.prepare("INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES ('__last_build__', ?, 0)").run(Date.now());
-          if (!claudeInputSemanticsOutdated || !claudeInputMigrationFailed) {
-            db.prepare('INSERT OR REPLACE INTO index_state (jsonl_path, mtime, lines_processed) VALUES (?, ?, 0)')
-              .run(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER, Date.now());
-          }
+          writeProviderIndexMarkers(db, providerPlan, providerResult);
         }, { label: 'finalize' });
       } catch (error) {
         if (isBeginBusyFailure(error)) {

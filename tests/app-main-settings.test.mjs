@@ -197,13 +197,14 @@ test('dev mode does not open DevTools unless explicitly requested', async () => 
   assert.equal(devtoolsWindows[0].devToolsOpened, true);
 });
 
-test('main process watches Codex sessions directory instead of Codex root', async () => {
+test('main process watches every root declared by the built-in provider registry', async () => {
   const originalHome = process.env.HOME;
   const home = join(tmpdir(), `obelisk-main-watch-dirs-${Date.now()}`);
   const claudeDir = join(home, '.claude');
   const codexDir = join(home, '.codex');
   mkdirSync(join(claudeDir, 'projects'), { recursive: true });
   mkdirSync(join(codexDir, 'sessions'), { recursive: true });
+  mkdirSync(join(home, '.kimi-code', 'sessions'), { recursive: true });
   mkdirSync(join(home, '.obelisk'), { recursive: true });
   writeFileSync(join(home, '.obelisk', 'obelisk.sqlite'), '');
   process.env.HOME = home;
@@ -258,6 +259,9 @@ test('main process watches Codex sessions directory instead of Codex root', asyn
     assert.deepEqual(serviceOptions[0].watchDirs, [
       join(claudeDir, 'projects'),
       join(codexDir, 'sessions'),
+      join(codexDir, 'session_index.jsonl'),
+      join(home, '.kimi-code', 'sessions'),
+      join(home, '.kimi-code', 'session_index.jsonl'),
     ]);
     assert.equal(serviceOptions[0].watchDirs.includes(codexDir), false);
   } finally {
@@ -414,10 +418,7 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
 
     await ipcHandlers.get('settings:get')();
     assert.ok(
-      queries.some(q => /COUNT\(\*\) as c FROM sessions WHERE COALESCE\(source, 'claude'\) = 'claude'/.test(q.sql)),
-    );
-    assert.ok(
-      queries.some(q => /MAX\(started_at\) as t FROM sessions WHERE COALESCE\(source, 'claude'\) = 'claude'/.test(q.sql)),
+      queries.some(q => /GROUP BY COALESCE\(source, 'claude'\)/.test(q.sql)),
     );
   } finally {
     restore();

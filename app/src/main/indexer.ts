@@ -3,12 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { createBuiltinProviderRegistry } from '../../../packages/core/src/providers/builtins.ts';
+import type { ProviderRegistry } from '../../../packages/core/src/providers/registry.ts';
 import {
-  CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER,
-  parse as claudeParse,
-} from '../../../packages/core/src/providers/claude.ts';
-import { parse as codexParse } from '../../../packages/core/src/providers/codex.ts';
-import { persist } from '../../../packages/core/src/persist.ts';
+  createProviderIndexPlan,
+  indexProviderPlan,
+  writeProviderIndexMarkers,
+} from '../../../packages/core/src/provider-indexing.ts';
 import { runWriteTransaction, configureConnection, betterSqliteTransactionAdapter } from '../../../packages/core/src/tx.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
 import { runRetryableWriteTransaction, isBeginBusyFailure, hasUnusableTransaction } from '../../../packages/core/src/write-coordinator.ts';
@@ -17,9 +18,6 @@ import {
   isDir,
   readLines,
   codexDbId,
-  codexRawId,
-  codexParentThreadId,
-  readCodexGuardianThreadInfo,
 } from '../../../packages/core/src/parsing.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,16 +28,6 @@ const DEFAULT_OBELISK_DIR = path.join(os.homedir(), '.obelisk');
 const DEFAULT_DB_PATH = path.join(DEFAULT_OBELISK_DIR, 'obelisk.sqlite');
 const DEFAULT_PROJECTS_DIR = path.join(DEFAULT_CLAUDE_DIR, 'projects');
 const DEFAULT_HISTORY_PATH = path.join(DEFAULT_CLAUDE_DIR, 'history.jsonl');
-
-interface FileInfo {
-  path: string;
-  sessionId?: string;
-  project?: string;
-  isSubagent?: boolean;
-  agentId?: string;
-  workflowRunId?: string;
-  source?: string;
-}
 
 function resolveSchemaPath() {
   const candidates = [
@@ -119,52 +107,10 @@ function copyMemoriesFromDb(db, sourceDbPath) {
   }
 }
 
-function discoverJsonlFiles({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = undefined }: { projectsDir?: string; changedPaths?: string[] } = {}) {
-  if (Array.isArray(changedPaths) && changedPaths.length) {
-    const changedFiles = discoverJsonlFilesForChanges({ projectsDir, changedPaths });
-    if (changedFiles.length) return changedFiles;
-  }
-  return discoverJsonlFilesFull({ projectsDir });
-}
-
 function normalizeChangedPath(projectsDir, changedPath) {
   if (!changedPath) return null;
   const raw = String(changedPath);
   return path.isAbsolute(raw) ? path.normalize(raw) : path.normalize(path.join(projectsDir, raw));
-}
-
-function jsonlFileInfoFromPath(projectsDir, changedPath) {
-  let fp = normalizeChangedPath(projectsDir, changedPath);
-  if (fp?.toLowerCase().endsWith('.meta.json')) {
-    fp = fp.slice(0, -'.meta.json'.length) + '.jsonl';
-  }
-  if (!fp || !fp.endsWith('.jsonl')) return null;
-  if (!fs.existsSync(fp)) return null;
-  const rel = path.relative(projectsDir, fp);
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
-  const parts = rel.split(path.sep);
-  const project = parts[0];
-  if (!project) return null;
-  if (parts.length === 2) {
-    const filename = parts[1];
-    return { path: fp, sessionId: filename.slice(0, -6), project, isSubagent: false };
-  }
-  if (parts.length === 4 && parts[2] === 'subagents') {
-    const filename = parts[3];
-    return { path: fp, sessionId: parts[1], project, isSubagent: true, agentId: filename.slice(0, -6) };
-  }
-  if (parts.length === 6 && parts[2] === 'subagents' && parts[3] === 'workflows') {
-    const filename = parts[5];
-    return {
-      path: fp,
-      sessionId: parts[1],
-      project,
-      isSubagent: true,
-      agentId: filename.slice(0, -6),
-      workflowRunId: parts[4],
-    };
-  }
-  return null;
 }
 
 function sessionIdFromChangedPath(projectsDir, changedPath) {
@@ -178,186 +124,6 @@ function sessionIdFromChangedPath(projectsDir, changedPath) {
   }
   if (parts.length >= 3) return fs.existsSync(fp) ? parts[1] || null : null;
   return null;
-}
-
-function dedupeFileInfos(files) {
-  const byPath = new Map();
-  for (const file of files) byPath.set(file.path, file);
-  return [...byPath.values()];
-}
-
-function discoverJsonlFilesForChanges({ projectsDir = DEFAULT_PROJECTS_DIR, changedPaths = [] }: { projectsDir?: string; changedPaths?: string[] } = {}) {
-  const files: FileInfo[] = [];
-  for (const changedPath of changedPaths) {
-    const info = jsonlFileInfoFromPath(projectsDir, changedPath);
-    if (info) files.push(info);
-  }
-  return dedupeFileInfos(files);
-}
-
-function discoverJsonlFilesFull({ projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
-  const files: FileInfo[] = [];
-  if (!fs.existsSync(projectsDir)) return files;
-  let projects;
-  try { projects = fs.readdirSync(projectsDir); } catch { return files; }
-  for (const proj of projects) {
-    const projPath = path.join(projectsDir, proj);
-    if (!isDir(projPath)) continue;
-    let entries;
-    try { entries = fs.readdirSync(projPath); } catch { continue; }
-    for (const f of entries) {
-      if (f.endsWith('.jsonl'))
-        files.push({ path: path.join(projPath, f), sessionId: f.slice(0, -6), project: proj, isSubagent: false });
-    }
-    for (const sd of entries) {
-      const saDir = path.join(projPath, sd, 'subagents');
-      if (!isDir(saDir)) continue;
-      let saEntries;
-      try { saEntries = fs.readdirSync(saDir); } catch { continue; }
-      for (const sf of saEntries) {
-        if (sf.endsWith('.jsonl'))
-          files.push({ path: path.join(saDir, sf), sessionId: sd, project: proj, isSubagent: true, agentId: sf.slice(0, -6) });
-      }
-      const wfRoot = path.join(saDir, 'workflows');
-      if (!isDir(wfRoot)) continue;
-      let wfDirs;
-      try { wfDirs = fs.readdirSync(wfRoot); } catch { continue; }
-      for (const wfDir of wfDirs) {
-        const wfPath = path.join(wfRoot, wfDir);
-        if (!isDir(wfPath)) continue;
-        let wfEntries;
-        try { wfEntries = fs.readdirSync(wfPath); } catch { continue; }
-        for (const wf of wfEntries) {
-          if (wf.endsWith('.jsonl'))
-            files.push({ path: path.join(wfPath, wf), sessionId: sd, project: proj, isSubagent: true, agentId: wf.slice(0, -6), workflowRunId: wfDir });
-        }
-      }
-    }
-  }
-  return files;
-}
-
-function discoverCodexJsonlFiles({ codexDir = DEFAULT_CODEX_DIR, changedPaths = undefined }: { codexDir?: string; changedPaths?: string[] } = {}) {
-  if (Array.isArray(changedPaths) && changedPaths.length) {
-    const changedFiles = discoverCodexJsonlFilesForChanges({ codexDir, changedPaths });
-    if (changedFiles.length) return changedFiles;
-    return [];
-  }
-  return discoverCodexJsonlFilesFull({ codexDir });
-}
-
-function codexSessionsDir(codexDir = DEFAULT_CODEX_DIR) {
-  return path.join(codexDir, 'sessions');
-}
-
-function normalizeChangedPathForRoot(rootDir, changedPath) {
-  if (!changedPath) return null;
-  const raw = String(changedPath);
-  return path.isAbsolute(raw) ? path.normalize(raw) : path.normalize(path.join(rootDir, raw));
-}
-
-function isPathInside(rootDir, candidate) {
-  if (!rootDir || !candidate) return false;
-  const rel = path.relative(rootDir, candidate);
-  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
-
-function discoverCodexJsonlFilesForChanges({ codexDir = DEFAULT_CODEX_DIR, changedPaths = [] }: { codexDir?: string; changedPaths?: string[] } = {}) {
-  const files: FileInfo[] = [];
-  const sessionsDir = codexSessionsDir(codexDir);
-  for (const changedPath of changedPaths) {
-    const rootRelativePath = normalizeChangedPathForRoot(codexDir, changedPath);
-    if (!rootRelativePath) continue;
-    if (path.normalize(rootRelativePath) === path.join(codexDir, 'session_index.jsonl')) {
-      return discoverCodexJsonlFilesFull({ codexDir });
-    }
-    const sessionRelativePath = normalizeChangedPathForRoot(sessionsDir, changedPath);
-    const fp = isPathInside(sessionsDir, rootRelativePath) ? rootRelativePath : sessionRelativePath;
-    if (!fp || !fp.endsWith(".jsonl") || !isPathInside(sessionsDir, fp)) continue;
-    if (!fs.existsSync(fp)) continue;
-    files.push({ path: fp, source: 'codex' });
-  }
-  return dedupeFileInfos(files);
-}
-
-function discoverCodexJsonlFilesFull({ codexDir = DEFAULT_CODEX_DIR } = {}) {
-  const root = codexSessionsDir(codexDir);
-  const files: FileInfo[] = [];
-  if (!fs.existsSync(root)) return files;
-  const stack = [root];
-  while (stack.length) {
-    const current = stack.pop()!;
-    let entries;
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      const fp = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(fp);
-      } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        files.push({ path: fp, source: 'codex' });
-      }
-    }
-  }
-  return files.sort((a, b) => a.path.localeCompare(b.path));
-}
-
-function needsReindex(db, fp) {
-  const mt = fs.statSync(fp).mtimeMs;
-  const row = db.prepare('SELECT mtime, lines_processed FROM index_state WHERE jsonl_path = ?').get(fp);
-  if (!row) return { needed: true, skip: 0, mtime: mt };
-  return mt > row.mtime ? { needed: true, skip: row.lines_processed, mtime: mt } : { needed: false, skip: 0, mtime: mt };
-}
-
-// Index one Claude transcript via the shared provider + persist core.
-// Returns { sessionId, path } when reindexed, undefined when skipped.
-function indexClaudeFile(db, file, { forceFull = false } = {}) {
-  const { needed, skip, mtime } = needsReindex(db, file.path);
-  if (!needed && !forceFull) return undefined;
-  const unit = {
-    key: file.path,
-    sessionId: file.sessionId,
-    project: file.project,
-    isSubagent: file.isSubagent,
-    agentId: file.agentId,
-  };
-  const cursor = !forceFull && skip > 0 ? `${mtime}:${skip}` : null;
-  persist(db, unit, claudeParse(unit, cursor));
-  return { sessionId: file.sessionId, path: file.path };
-}
-
-function codexSessionMeta(filePath) {
-  let meta: any = null;
-  readLines(filePath, (line) => {
-    let obj;
-    try { obj = JSON.parse(line); } catch { return; }
-    if (obj?.type === 'session_meta' && obj.payload?.id) {
-      meta = obj.payload;
-      return false;
-    }
-  });
-  return meta;
-}
-
-// Index one Codex rollout via the shared provider + persist core (full reparse).
-// Returns { sessionId, path } when reindexed, undefined when skipped.
-function indexCodexFile(db, file) {
-  const { needed } = needsReindex(db, file.path);
-  const guardian = readCodexGuardianThreadInfo(file.path);
-  if (!needed) {
-    if (guardian) {
-      persist(db, { key: file.path, sessionId: '' }, (function* () {
-        yield { kind: "delete-session", sessionId: codexDbId(guardian.threadRawId) as string };
-        return null;
-      })());
-    }
-    return undefined;
-  }
-  const unit = { key: file.path, sessionId: '' };
-  persist(db, unit, codexParse(unit, null));
-  if (guardian) return undefined;
-  const meta = codexSessionMeta(file.path);
-  const sessionId = meta ? codexDbId(codexParentThreadId(meta) || codexRawId(meta.id)) : undefined;
-  return { sessionId, path: file.path };
 }
 
 function indexCodexSessionIndex(db, { codexDir = DEFAULT_CODEX_DIR } = {}) {
@@ -390,28 +156,6 @@ function refreshSessionProjectPaths(db) {
     const projectPath = inferProjectPath(session.project, cwds);
     if (projectPath) update.run(projectPath, session.id);
   }
-}
-
-function indexSubagentMeta(db, fi) {
-  if (!fi.isSubagent) return false;
-  const mp = fi.path.replace('.jsonl', '.meta.json');
-  if (!fs.existsSync(mp)) return false;
-  let meta;
-  try {
-    meta = JSON.parse(fs.readFileSync(mp, 'utf8'));
-  } catch (error) {
-    console.warn(`Warning: failed to read subagent meta ${mp}: ${(error as Error).message}`);
-    return false;
-  }
-  const tok = db.prepare('SELECT COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0) as t FROM messages WHERE agent_id=?').get(fi.agentId);
-  const ts = db.prepare('SELECT MIN(timestamp) as t0, MAX(timestamp) as t1 FROM messages WHERE agent_id=?').get(fi.agentId);
-  const dur = ts?.t0 && ts?.t1 ? new Date(ts.t1).getTime() - new Date(ts.t0).getTime() : null;
-  if (fi.workflowRunId) {
-    db.prepare('INSERT OR REPLACE INTO workflow_agents (agent_id,run_id,session_id,agent_type,description) VALUES(?,?,?,?,?)').run(fi.agentId, fi.workflowRunId, fi.sessionId, meta.agentType||null, meta.description||null);
-  } else {
-    db.prepare('INSERT OR REPLACE INTO subagents VALUES(?,?,?,?,?,?,?)').run(fi.agentId, fi.sessionId, meta.toolUseId||null, meta.agentType||null, meta.description||null, dur, tok?.t||0);
-  }
-  return true;
 }
 
 function indexWorkflows(db, { projectsDir = DEFAULT_PROJECTS_DIR } = {}) {
@@ -537,6 +281,8 @@ function writeHeartbeat({
 }
 
 interface BuildIndexOptions {
+  providerRoots?: Record<string, string>;
+  providerRegistry?: ProviderRegistry;
   claudeDir?: string;
   codexDir?: string;
   projectsDir?: string;
@@ -588,6 +334,8 @@ function deferredBuildResult(
 }
 
 function buildIndex({
+  providerRoots = {},
+  providerRegistry,
   claudeDir = DEFAULT_CLAUDE_DIR,
   codexDir = path.join(path.dirname(claudeDir), '.codex'),
   projectsDir = path.join(claudeDir, 'projects'),
@@ -620,30 +368,40 @@ function buildIndex({
   try {
     const db = openIndexDb({ dbPath, schemaPath, DatabaseImpl });
     const txDb = betterSqliteTransactionAdapter(db);
-    const claudeInputMarkerMissing = !db.prepare(
-      'SELECT jsonl_path FROM index_state WHERE jsonl_path = ?',
-    ).get(CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
-    const claudeInputSemanticsOutdated = claudeInputMarkerMissing && Boolean(db.prepare(`
-      SELECT 1 FROM messages
-      WHERE COALESCE(source, 'claude') = 'claude'
-        AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
-      LIMIT 1
-    `).get());
     let messageFtsTriggersDropped = false;
     try {
       if (preserveDbPath && path.resolve(preserveDbPath) !== path.resolve(dbPath)) {
         copyMemoriesFromDb(db, preserveDbPath);
       }
-      const files = [
-        ...discoverJsonlFiles({
-          projectsDir,
-          changedPaths: force || claudeInputSemanticsOutdated ? undefined : changedPaths,
+      const defaultHome = os.homedir();
+      const compatibilityHome = path.dirname(claudeDir);
+      const relocatedDefaults = Object.fromEntries(
+        createBuiltinProviderRegistry().catalog().map((descriptor) => {
+          const relativeDefault = path.relative(defaultHome, descriptor.defaultRoot);
+          const root = compatibilityHome !== defaultHome
+            && relativeDefault
+            && !relativeDefault.startsWith('..')
+            && !path.isAbsolute(relativeDefault)
+            ? path.join(compatibilityHome, relativeDefault)
+            : descriptor.defaultRoot;
+          return [descriptor.id, root];
         }),
-        ...discoverCodexJsonlFiles({ codexDir, changedPaths: force ? undefined : changedPaths }),
-      ];
-      const latestSourceMtime = files.reduce((latest, file) => {
+      );
+      const roots = {
+        ...relocatedDefaults,
+        claude: claudeDir,
+        codex: codexDir,
+        ...providerRoots,
+      };
+      const registry = providerRegistry ?? createBuiltinProviderRegistry(roots);
+      const providerPlan = createProviderIndexPlan(db, registry, { force, changedPaths });
+      let latestSourceMtime = providerPlan.items.reduce((latest, { unit }) => {
+        const providerCursor = (unit.meta as { currentCursor?: unknown } | undefined)?.currentCursor;
+        if (typeof providerCursor === 'string') {
+          return Math.max(latest, Number(providerCursor.split(':')[0]) || 0);
+        }
         try {
-          return Math.max(latest, fs.statSync(file.path).mtimeMs);
+          return Math.max(latest, fs.statSync(unit.key).mtimeMs);
         } catch {
           return latest;
         }
@@ -668,7 +426,7 @@ function buildIndex({
       } catch (error) {
         if (isBeginBusyFailure(error)) {
           return deferredBuildResult('database_busy', {
-            files: files.length,
+            files: providerPlan.items.length,
             latestSourceMtime,
           });
         }
@@ -697,39 +455,34 @@ function buildIndex({
         }
       }
       const skipped: SkippedFile[] = [];
-      let claudeInputMigrationFailed = false;
-      for (const file of files) {
-        try {
-          // The write is committed before affectedSessionIds is updated, so a
-          // failed/rolled-back file never reports a phantom updated session.
-          const indexed = runRetryableWriteTransaction(txDb, () => {
-            const result = file.source === 'codex'
-              ? indexCodexFile(db, file)
-              : indexClaudeFile(db, file, { forceFull: claudeInputSemanticsOutdated });
-            const metaIndexed = file.source !== 'codex' && indexSubagentMeta(db, file);
-            if (!result?.sessionId && metaIndexed && changedMetaJsonlPaths.has(file.path)) {
-              return { sessionId: file.sessionId, path: file.path };
-            }
-            return result;
-          }, { label: `file:${file.path}` });
-          if (indexed?.sessionId) affectedSessionIds.add(indexed.sessionId);
-        } catch (error) {
-          if (isBeginBusyFailure(error)) {
-            return deferredBuildResult('database_busy', {
-              files: files.length,
-              latestSourceMtime,
-              affectedSessionIds: [...affectedSessionIds],
-              skipped: skipped.length,
-              skippedFiles: skipped,
-            });
-          }
+      const providerResult = indexProviderPlan({
+        db,
+        plan: providerPlan,
+        runTransaction: (label, work) => runRetryableWriteTransaction(txDb, work, { label }),
+        onCommitted: ({ unit }, nextCursor) => {
+          if (nextCursor) latestSourceMtime = Math.max(latestSourceMtime, Number(nextCursor.split(':')[0]) || 0);
+          if (unit.sessionId) affectedSessionIds.add(unit.sessionId);
+        },
+        onError: (error, { provider, unit }) => {
+          if (isBeginBusyFailure(error)) return 'stop';
           if (hasUnusableTransaction(error)) throw error;
-          if (claudeInputSemanticsOutdated && file.source !== 'codex') {
-            claudeInputMigrationFailed = true;
-          }
-          skipped.push({ path: file.path, error: (error as Error).message, diagnostics: (error as { obelisk?: unknown }).obelisk });
-          console.warn(`Warning: failed to index ${file.path}: ${(error as Error).message}`);
-        }
+          skipped.push({
+            path: unit.key,
+            error: (error as Error).message,
+            diagnostics: (error as { obelisk?: unknown }).obelisk,
+          });
+          console.warn(`Warning: failed to index ${provider.name} unit ${unit.key}: ${(error as Error).message}`);
+          return 'skip';
+        },
+      });
+      if (providerResult.stopped) {
+        return deferredBuildResult('database_busy', {
+          files: providerPlan.items.length,
+          latestSourceMtime,
+          affectedSessionIds: [...affectedSessionIds],
+          skipped: skipped.length,
+          skippedFiles: skipped,
+        });
       }
       let ftsRebuilt = false;
       // Finalize is one transaction; a failure here fails the whole build (the
@@ -745,15 +498,13 @@ function buildIndex({
           writeIndexMarker(db, '__last_build__');
           writeIndexMarker(db, '__app_last_successful_build__');
           writeIndexMarker(db, '__indexer_owner_app__');
-          if (!claudeInputSemanticsOutdated || !claudeInputMigrationFailed) {
-            writeIndexMarker(db, CLAUDE_INPUT_TOKEN_SEMANTICS_MARKER);
-          }
+          writeProviderIndexMarkers(db, providerPlan, providerResult);
           if (latestSourceMtime) writeIndexMarker(db, '__last_source_mtime__', latestSourceMtime);
         }, { label: 'finalize' });
       } catch (error) {
         if (isBeginBusyFailure(error)) {
           return deferredBuildResult('database_busy', {
-            files: files.length,
+            files: providerPlan.items.length,
             latestSourceMtime,
             affectedSessionIds: [...affectedSessionIds],
             skipped: skipped.length,
@@ -764,7 +515,7 @@ function buildIndex({
       }
       for (const sessionId of finalizeAffectedSessionIds) affectedSessionIds.add(sessionId);
       return {
-        files: files.length,
+        files: providerPlan.items.length,
         latestSourceMtime,
         affectedSessionIds: [...affectedSessionIds],
         ftsRebuilt,
@@ -792,6 +543,5 @@ export {
   buildIndex,
   writeHeartbeat,
   openIndexDb,
-  discoverJsonlFiles,
   inferProjectPath,
 };

@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { formatProjectLabel } from '../utils.js';
 import { activitySessionMetaParts } from '../activity-ledger.mjs';
+import { state } from '../store.js';
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -17,6 +18,7 @@ const metaParts = computed(() => activitySessionMetaParts(props.session, {
   mixedSources: props.mixedSources,
   projectLabel: formatProjectLabel(props.session.project) || '',
   includeProject: props.includeProject,
+  sourceCatalog: state.sources,
 }));
 </script>
 

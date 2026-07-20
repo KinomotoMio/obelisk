@@ -20,13 +20,20 @@ binding-agnostic and does not need a per-binding implementation.
 
 **Decision.** Split indexing along two orthogonal axes.
 
-- **Provider axis — a registry of pure adapters.** Each source (claude, codex,
-  later opencode, pi, …) is a provider adapter implementing
-  `discover(opts) → files` and `parse(file, fromLine) → Iterable<Record>`. An
+- **Provider axis — a registry of pure adapters.** Each source (Claude Code,
+  Codex, Kimi Code, later Pi, …) is a provider adapter implementing one complete
+  boundary: serializable descriptor metadata, `watchRoots(root)`,
+  `discover(context) → IndexUnit[]`, `parse(unit, cursor) → Iterable<Record>`,
+  and `raw(lookup)`. An `IndexUnit` is deliberately not a file abstraction: Kimi
+  uses one session directory containing state plus multiple agent wire logs. An
   adapter is *pure*: it emits normalized records and never touches a database.
   Adding a source means adding one adapter and registering it; nothing else
-  changes. `parse` is a streaming iterator, preserving memory-friendly indexing
-  and the `lines_processed` resume-from-line semantics in `index_state`.
+  changes. `parse` exposes an iterator as its common interface and streams when
+  the provider semantics permit it. An adapter may buffer one complete
+  `IndexUnit` when correctness requires whole-unit semantics — for example,
+  Codex duplicate reconciliation or Kimi `context.undo` / `context.clear`
+  replay. Each adapter maps its own resume/change semantics onto the existing
+  `mtime` and `lines_processed` cursor pair in `index_state`.
 - **Persist axis — one shared orchestration.** A single provider-agnostic,
   binding-agnostic layer consumes records from any adapter and writes them:
   incremental `index_state` bookkeeping, FTS maintenance, and the canonical
@@ -48,3 +55,12 @@ strategy injected into the shared orchestration, not a fork of it. The Electron
 main process migrates to ESM (ADR-0003) to import the shared core. The real work
 is disentangling the currently interleaved parse-and-write inside `indexJsonl` /
 `indexCodexJsonl` into (pure adapter parse) + (shared persist).
+
+The SQLite schema and normalized `IndexRecord` union are the stable center of
+the design. Provider-only concepts are either projected lossily into that
+language or ignored; they do not add provider columns or tables. The registry,
+not provider switches, drives both indexers, watcher roots, persisted source
+roots, source catalog/UI labels and colors, and raw-record routing. Adding Pi
+therefore changes the Pi adapter, its registration, and its conformance tests;
+the shared schema, persist layer, indexers, settings, query API, and renderer do
+not acquire Pi-specific branches.

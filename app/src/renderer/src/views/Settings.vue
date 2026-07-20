@@ -29,8 +29,7 @@ async function browseSourcePath(source) {
   if (!window.obelisk?.browseFolder) return;
   const result = await window.obelisk.browseFolder();
   if (result) {
-    const key = source.id === 'claude' ? 'claudeDir' : 'codexDir';
-    await saveSetting(key, result);
+    await saveSetting(source.settingKey || `providerRoots.${source.id}`, result);
     await loadSettings();
   }
 }
@@ -107,8 +106,8 @@ function fmtRelative(iso) {
           :class="{ error: src.status === 'error', warn: src.status === 'warn' }"
         >
           <div class="source-card-head">
-            <div class="source-card-mark" :class="src.id">
-              <span class="mark-dot"></span>
+            <div class="source-card-mark">
+              <span class="mark-dot" :style="{ background: src.color, boxShadow: `0 0 6px ${src.color}80` }"></span>
             </div>
             <div class="source-card-info">
               <div class="source-card-name">
@@ -261,8 +260,6 @@ function fmtRelative(iso) {
   display: grid; place-items: center; flex-shrink: 0;
 }
 .source-card-mark .mark-dot { width: 8px; height: 8px; border-radius: 50%; }
-.source-card-mark.claude .mark-dot { background: #d97757; box-shadow: 0 0 6px rgba(217,119,87,0.5); }
-.source-card-mark.codex .mark-dot { background: #10a37f; box-shadow: 0 0 6px rgba(16,163,127,0.5); }
 .source-card-info { flex: 1; min-width: 0; }
 .source-card-name {
   font-size: 14px; color: var(--fg); font-weight: 600; letter-spacing: -0.005em;

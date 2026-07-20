@@ -222,6 +222,43 @@ export interface Provider {
   readonly name: string;
   /** Discover units needing (re)indexing, using stored cursors to detect change. */
   discover(ctx: DiscoverContext): IndexUnit[];
-  /** Stream records for one unit resuming from `cursor`; return the new cursor. */
+  /** Yield records for one unit resuming from `cursor`; return the new cursor. */
   parse(unit: IndexUnit, cursor: Cursor): Generator<IndexRecord, Cursor>;
+}
+
+/** Serializable source metadata consumed by settings and renderer surfaces. */
+export interface ProviderDescriptor {
+  readonly id: string;
+  readonly name: string;
+  readonly vendor: string;
+  readonly defaultRoot: string;
+  readonly color: string;
+}
+
+export interface RawLookup {
+  readonly source: string;
+  readonly messageUuid: string;
+  readonly session: Record<string, unknown> | null;
+  readonly agentId: string | null;
+  readonly subagent?: Record<string, unknown> | null;
+  readonly workflowAgent?: Record<string, unknown> | null;
+}
+
+export interface RawRecord {
+  readonly text: string;
+  readonly totalLength?: number;
+  readonly offset?: number;
+  readonly limit?: number;
+  readonly hasMore?: boolean;
+  /** Provider-projected full message body for renderer expansion. */
+  readonly messageText?: string | null;
+}
+
+/** Complete adapter interface used by every indexing and presentation caller. */
+export interface ProviderAdapter extends Provider {
+  readonly descriptor: ProviderDescriptor;
+  /** Optional index semantics marker; absence forces one provider-owned replay. */
+  readonly indexVersionMarker?: string;
+  watchRoots(configuredRoot: string): string[];
+  raw(input: RawLookup): RawRecord | null;
 }

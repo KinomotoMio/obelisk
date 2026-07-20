@@ -74,11 +74,13 @@ function createIndexerService({
     const existingRoots = roots.filter(root => fs.existsSync(root));
     if (!existingRoots.length) return null;
     const watchers: any[] = [];
-    const onFileChange = (filename) => {
-      const name = filename ? String(filename) : '';
-      if (!name || name.endsWith('.jsonl') || name.endsWith('.json')) onChange(name);
-    };
     for (const root of existingRoots) {
+      const onFileChange = (filename) => {
+        const name = filename ? String(filename) : '';
+        if (!name || name.endsWith('.jsonl') || name.endsWith('.json')) {
+          onChange(name && !path.isAbsolute(name) ? path.join(root, name) : name);
+        }
+      };
       const watcher = (chokidar || chokidarModule).watch(root, {
         cwd: root,
         ignoreInitial: true,

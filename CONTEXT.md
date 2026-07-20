@@ -1,7 +1,7 @@
 # Obelisk
 
 Obelisk is explicit memory infrastructure for coding agents: it indexes local
-Claude Code and Codex transcripts into a queryable SQLite evidence layer, and a
+Claude Code, Codex, and Kimi Code sessions into a queryable SQLite evidence layer, and a
 CodeAct runtime lets an agent write a small query, run it, and answer from real
 session history. This glossary pins the terms that are specific to Obelisk; it is
 not a spec.
@@ -29,9 +29,12 @@ promoted to an external tool surface.
 ## Indexing
 
 **Provider adapter**:
-A pure per-source module (claude, codex, later opencode, pi, …) that discovers a
-source's transcript files and parses one into a stream of records. It never opens
-or writes a database; adding a source means adding one adapter. The shared pure
+A pure per-source module (claude, codex, kimi, later pi, …) that owns its
+descriptor, watch roots, discovery, parsing, cursor interpretation, and raw
+record lookup. It discovers `IndexUnit`s rather than assuming one transcript
+file per unit; Kimi uses a session directory containing multiple wire logs. It
+never opens or writes a database; adding a source means adding one adapter and
+registering it. The shared pure
 parse/discover helpers live in `packages/core/src/parsing.ts`, which imports only
 node:fs/path/os — deliberately node:sqlite-free so the compiled providers can be
 consumed by the app (whose Electron runtime has no `node:sqlite`).
@@ -62,10 +65,10 @@ active daemon: the command brings the index up to date, then answers.
 _Avoid_: lazy indexing, on-read indexing
 
 **index_state**:
-The bookkeeping table shared by both indexing modes. It records, per transcript
-path, the last-seen `mtime` and `lines_processed` (enabling resume-from-line
-incremental indexing), plus heartbeat/last-build markers used for daemon
-arbitration.
+The bookkeeping table shared by both indexing modes. It stores the adapter's
+numeric cursor pair in the existing `mtime` and `lines_processed` columns (a
+file adapter can use mtime + line offset; Kimi uses aggregate max-mtime + total
+lines), plus heartbeat/last-build markers used for daemon arbitration.
 
 **Daemon arbitration**:
 The policy by which the passive pull mode detects a fresh daemon from the

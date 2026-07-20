@@ -9,6 +9,8 @@
 // The per-line logic mirrors the original indexCodexJsonl.
 
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
+import { isAbsolute, join, normalize, relative } from 'node:path';
 const require = createRequire(import.meta.url);
 const fs = require('node:fs');
 
@@ -19,14 +21,62 @@ import {
   codexIsGuardianThread, codexAgentNickname, codexAgentRole, codexUsage,
   codexEventText, codexMessagePayloadText, codexVisibleMessageKey,
   codexToolInput, codexToolOutput,
+  readCodexGuardianThreadInfo,
 } from '../parsing.ts';
 
-import type { Cursor, DiscoverContext, IndexRecord, IndexUnit, MessageRecord, Provider } from './types.ts';
+import type {
+  Cursor,
+  DiscoverContext,
+  IndexRecord,
+  IndexUnit,
+  MessageRecord,
+  ProviderAdapter,
+  RawLookup,
+  RawRecord,
+} from './types.ts';
 
 export const name = 'codex';
 
-export function discover(_ctx: DiscoverContext): IndexUnit[] {
-  return discoverCodexJsonlFiles().map((f: any) => ({ key: f.path, sessionId: '', meta: { source: 'codex' } }));
+function discoverAt(rootDir: string, ctx: DiscoverContext): IndexUnit[] {
+  const sessionsDir = join(rootDir, 'sessions');
+  const changedFiles = new Set<string>();
+  for (const changedPath of ctx.changedPaths ?? []) {
+    const absolute = isAbsolute(changedPath)
+      ? normalize(changedPath)
+      : normalize(join(sessionsDir, changedPath));
+    const inside = relative(sessionsDir, absolute);
+    if (!inside || inside.startsWith('..') || isAbsolute(inside)) continue;
+    if (absolute.toLowerCase().endsWith('.jsonl')) changedFiles.add(absolute);
+  }
+  return discoverCodexJsonlFiles(sessionsDir).flatMap((file) => {
+    if (ctx.changedPaths !== undefined && !changedFiles.has(normalize(file.path))) return [];
+    const cursor = ctx.lastCursor(file.path);
+    const guardian = readCodexGuardianThreadInfo(file.path);
+    if (cursor !== null && Number(cursor.split(':')[0]) >= fs.statSync(file.path).mtimeMs && guardian === null) {
+      return [];
+    }
+    let meta: any = null;
+    readLines(file.path, (line: string) => {
+      try {
+        const record = JSON.parse(line);
+        if (record?.type === 'session_meta' && record.payload?.id) {
+          meta = record.payload;
+          return false;
+        }
+      } catch { /* malformed source line */ }
+    });
+    const rawId = meta ? codexRawId(meta.id) : null;
+    const parentId = meta ? codexParentThreadId(meta) : null;
+    return [{
+      key: file.path,
+      sessionId: guardian === null ? codexDbId(parentId || rawId) ?? '' : '',
+      meta: { source: 'codex', guardian: guardian !== null },
+    }];
+  });
+}
+
+export function discover(ctx: DiscoverContext): IndexUnit[] {
+  return discoverAt(join(homedir(), '.codex'), ctx);
 }
 
 export function* parse(unit: IndexUnit, _cursor: Cursor): Generator<IndexRecord, Cursor> {
@@ -217,4 +267,67 @@ export function* parse(unit: IndexUnit, _cursor: Cursor): Generator<IndexRecord,
   return outCursor;
 }
 
-export const codexProvider: Provider = { name, discover, parse };
+function findCodexFile(rootDir: string, rawThreadId: string): string | null {
+  const stack = [join(rootDir, 'sessions')];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (!fs.existsSync(current)) continue;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) stack.push(path);
+      else if (entry.isFile() && entry.name.endsWith(`${rawThreadId}.jsonl`)) return path;
+    }
+  }
+  return null;
+}
+
+function rawCodex(rootDir: string, input: RawLookup): RawRecord | null {
+  const match = /^codex:([^:]+):(\d+)$/.exec(input.messageUuid);
+  if (match === null) return null;
+  const path = input.agentId === null && typeof input.session?.jsonl_path === 'string'
+    ? input.session.jsonl_path
+    : findCodexFile(rootDir, match[1]!);
+  if (path === null || !fs.existsSync(path)) return null;
+  let lineNumber = 0;
+  let found: string | null = null;
+  readLines(path, (line: string) => {
+    lineNumber++;
+    if (lineNumber !== Number(match[2])) return;
+    found = line;
+    return false;
+  });
+  const raw = found as string | null;
+  let messageText: string | null = null;
+  if (raw !== null) {
+    try {
+      const obj = JSON.parse(raw);
+      const payload = obj?.payload ?? {};
+      if (obj?.type === 'event_msg') {
+        messageText = typeof payload.message === 'string'
+          ? payload.message
+          : typeof payload.text === 'string'
+            ? payload.text
+            : null;
+      } else if (obj?.type === 'response_item' && payload.type === 'message' && Array.isArray(payload.content)) {
+        const parts = payload.content.map((part: any) => part?.text).filter((part: unknown) => typeof part === 'string');
+        messageText = parts.length > 0 ? parts.join('\n') : null;
+      }
+    } catch { /* malformed source line */ }
+  }
+  return raw === null
+    ? null
+    : { text: raw, totalLength: raw.length, offset: 0, limit: raw.length, hasMore: false, messageText };
+}
+
+export function createCodexProvider({ rootDir = join(homedir(), '.codex') }: { rootDir?: string } = {}): ProviderAdapter {
+  return {
+    name,
+    descriptor: { id: name, name: 'Codex', vendor: 'OpenAI', defaultRoot: rootDir, color: '#10a37f' },
+    watchRoots: (configuredRoot) => [join(configuredRoot, 'sessions'), join(configuredRoot, 'session_index.jsonl')],
+    discover: (ctx) => discoverAt(rootDir, ctx),
+    parse,
+    raw: (input) => rawCodex(rootDir, input),
+  };
+}
+
+export const codexProvider = createCodexProvider();

@@ -17,6 +17,7 @@ import {
 import { formatProjectLabel } from './utils.js';
 import { buildSidebarProjects } from './sidebar-projects.mjs';
 import { resolveGlobalShortcut } from './keyboard-shortcuts.mjs';
+import { sourceLabel } from './source-catalog.mjs';
 
 const router = useRouter();
 const route = useRoute();
@@ -207,8 +208,9 @@ const showSourcePopover = ref(false);
 async function loadSourceDots() {
   if (!window.obelisk?.getSettings) return;
   const s = await window.obelisk.getSettings();
-  sourceDots.value = (s.sources || []).map(src => ({ id: src.id, status: src.status }));
+  sourceDots.value = (s.sources || []).map(src => ({ id: src.id, status: src.status, color: src.color }));
   sourceDetails.value = s.sources || [];
+  state.sources = s.sources || [];
 }
 loadSourceDots();
 
@@ -223,7 +225,7 @@ const showSourceFilter = ref(false);
 const sourceFilterActive = computed(() => state.sourceFilter !== 'all' && state.sourceFilter !== undefined);
 const sourceFilterLabel = computed(() => {
   if (!state.sourceFilter || state.sourceFilter === 'all') return 'All sources';
-  return state.sourceFilter === 'claude' ? 'Claude Code' : 'Codex';
+  return sourceLabel(state.sourceFilter, state.sources);
 });
 function toggleSourceFilter() { showSourceFilter.value = !showSourceFilter.value; }
 function setSourceFilter(id) {
@@ -271,13 +273,13 @@ provide('recapGenerateOpen', recapGenerateOpen);
           </svg>
           <span class="name">Obelisk</span>
           <button class="source-health" title="Connected sources" @click="showSourcePopover = !showSourcePopover">
-            <span v-for="src in sourceDots" :key="src.id" class="h-dot" :class="src.id + '-' + src.status"></span>
+            <span v-for="src in sourceDots" :key="src.id" class="h-dot" :class="src.status" :style="{ '--source-color': src.color }"></span>
           </button>
           <div class="sources-popover" :class="{ show: showSourcePopover }">
             <div class="sp-head">Connected sources</div>
             <div class="sp-list">
               <button v-for="src in sourceDetails" :key="src.id" class="sp-row" @click="router.push('/settings')">
-                <span class="sp-dot" :class="src.id"></span>
+                <span class="sp-dot" :style="{ '--source-color': src.color }"></span>
                 <div class="sp-body">
                   <div class="sp-name">{{ src.name }} <span class="sp-count" v-if="src.sessionCount">{{ src.sessionCount }} sessions</span></div>
                   <div class="sp-meta" :class="src.status">{{ src.statusText }}</div>
@@ -535,7 +537,7 @@ provide('recapGenerateOpen', recapGenerateOpen);
                 <div class="fd-check">
                   <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6l2.5 2.5 4.5-5"/></svg>
                 </div>
-                <span class="fd-name">{{ src.id === 'claude' ? 'Claude Code' : 'Codex' }}</span>
+                <span class="fd-name">{{ sourceLabel(src.id, sourceDetails) }}</span>
               </div>
               <div class="fd-divider"></div>
               <div class="fd-row" :class="{ checked: state.sourceFilter === 'all' }" @click.stop="setSourceFilter('all')">

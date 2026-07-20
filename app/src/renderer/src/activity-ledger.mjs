@@ -1,13 +1,12 @@
+import { sourceLabel } from './source-catalog.mjs';
+
 export function activitySourceKey(session) {
   const source = typeof session?.source === 'string' ? session.source.trim().toLowerCase() : '';
   return source || 'claude';
 }
 
-export function activitySourceLabel(session) {
-  const source = activitySourceKey(session);
-  if (source === 'codex') return 'Codex';
-  if (source === 'claude') return 'Claude Code';
-  return source.charAt(0).toUpperCase() + source.slice(1);
+export function activitySourceLabel(session, sourceCatalog = []) {
+  return sourceLabel(activitySourceKey(session), sourceCatalog);
 }
 
 export function activityGroupSessions(split) {
@@ -22,9 +21,10 @@ export function activitySessionMetaParts(session, {
   mixedSources = false,
   projectLabel = '',
   includeProject = true,
+  sourceCatalog = [],
 } = {}) {
   const parts = [];
-  if (mixedSources) parts.push({ kind: 'source', text: activitySourceLabel(session) });
+  if (mixedSources) parts.push({ kind: 'source', text: activitySourceLabel(session, sourceCatalog) });
   if (includeProject && projectLabel) parts.push({ kind: 'project', text: projectLabel });
   parts.push({
     kind: 'count',

@@ -17,6 +17,10 @@ const codexSession = {
   project: '-Users-tomiya-Code-quiet-zero',
   message_count: 2052,
 };
+const sourceCatalog = [
+  { id: 'claude', name: 'Claude Code', color: '#d97757' },
+  { id: 'codex', name: 'Codex', color: '#10a37f' },
+];
 
 test('single-source activity groups omit provider provenance', () => {
   const split = { normal: [codexSession], noise: [{ ...codexSession, message_count: 12 }] };
@@ -42,6 +46,7 @@ test('mixed activity groups expose provider before project and count', () => {
     activitySessionMetaParts(claudeSession, {
       mixedSources: true,
       projectLabel: 'quiet-zero',
+      sourceCatalog,
     }),
     [
       { kind: 'source', text: 'Claude Code' },

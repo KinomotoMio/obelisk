@@ -8,6 +8,7 @@ export const state = reactive({
   sessions: [],
   sessionTitleOverrides: shallowReactive(new Map()),
   projects: [],
+  sources: [],
   stats: {},
   view: 'active',          // 'active' | 'archived'
   query: '',

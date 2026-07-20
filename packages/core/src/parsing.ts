@@ -150,13 +150,13 @@ function inferProjectPath(project: string | null | undefined, observedCwds: unkn
   return best?.path || legacyProjectPathFromSlug(project);
 }
 
-function discoverJsonlFiles(): ClaudeJsonlFile[] {
+function discoverJsonlFiles(projectsDir = PROJECTS_DIR): ClaudeJsonlFile[] {
   const files: ClaudeJsonlFile[] = [];
-  if (!fs.existsSync(PROJECTS_DIR)) return files;
+  if (!fs.existsSync(projectsDir)) return files;
   let projects;
-  try { projects = fs.readdirSync(PROJECTS_DIR); } catch (e) { process.stderr.write(`Warning: cannot read projects dir: ${e instanceof Error ? e.message : String(e)}\n`); return files; }
+  try { projects = fs.readdirSync(projectsDir); } catch (e) { process.stderr.write(`Warning: cannot read projects dir: ${e instanceof Error ? e.message : String(e)}\n`); return files; }
   for (const proj of projects) {
-    const projPath = path.join(PROJECTS_DIR, proj);
+    const projPath = path.join(projectsDir, proj);
     if (!isDir(projPath)) continue;
     let entries;
     try { entries = fs.readdirSync(projPath); } catch { continue; }
@@ -192,9 +192,9 @@ function discoverJsonlFiles(): ClaudeJsonlFile[] {
   return files;
 }
 
-function discoverCodexJsonlFiles(): CodexJsonlFile[] {
+function discoverCodexJsonlFiles(sessionsDir = CODEX_SESSIONS_DIR): CodexJsonlFile[] {
   const files: CodexJsonlFile[] = [];
-  if (!fs.existsSync(CODEX_SESSIONS_DIR)) return files;
+  if (!fs.existsSync(sessionsDir)) return files;
   const walk = (dir: string): void => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -207,7 +207,7 @@ function discoverCodexJsonlFiles(): CodexJsonlFile[] {
       }
     }
   };
-  walk(CODEX_SESSIONS_DIR);
+  walk(sessionsDir);
   return files;
 }
 

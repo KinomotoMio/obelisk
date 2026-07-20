@@ -292,8 +292,8 @@ test('indexer service passes changed JSONL paths to the build worker', async () 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].reason, 'watch');
   assert.deepEqual(calls[0].changedPaths, [
-    'project-a/session-1.jsonl',
-    'project-a/session-2.json',
+    join(projectsDir, 'project-a/session-1.jsonl'),
+    join(projectsDir, 'project-a/session-2.json'),
   ]);
 });
 
@@ -342,6 +342,6 @@ test('indexer service watches Claude projects and Codex sessions for app-side in
 
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].changedPaths, [
-    '2026/06/15/rollout-2026-06-15T00-00-00-codex.jsonl',
+    join(codexSessionsDir, '2026/06/15/rollout-2026-06-15T00-00-00-codex.jsonl'),
   ]);
 });

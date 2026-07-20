@@ -434,8 +434,7 @@
   margin-left: 6px;
 }
 .session-eyebrow .via .via-dot { width: 4px; height: 4px; border-radius: 50%; }
-.session-eyebrow .via .via-dot.claude { background: #d97757; box-shadow: 0 0 4px rgba(217,119,87,0.5); }
-.session-eyebrow .via .via-dot.codex { background: #10a37f; box-shadow: 0 0 4px rgba(16,163,127,0.5); }
+.session-eyebrow .via .via-dot { background: var(--source-color); box-shadow: 0 0 4px var(--source-color); }
 .session-title {
   font-size: 22px; font-weight: 600; color: var(--fg);
   line-height: 1.3; margin-bottom: 14px; letter-spacing: -0.01em;

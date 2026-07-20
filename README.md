@@ -9,7 +9,7 @@
 [![version](https://img.shields.io/github/v/tag/tommy0103/obelisk?label=version&style=flat-square)](https://github.com/tommy0103/obelisk/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
-Every past Claude Code and Codex session -- queryable by your agent, browsable by you.
+Past Claude Code, Codex, and Kimi Code sessions -- queryable by your agent, browsable by you.
 
 </div>
 
@@ -25,15 +25,20 @@ The agent writes JS queries, runs them locally, and answers in plain language.
 
 **App side** — an Electron desktop app for humans to browse sessions, manage memories, view usage stats, and see weekly recap cards.
 
-Both read from the same `~/.obelisk/obelisk.sqlite` database. The indexer reads Claude Code transcripts from `~/.claude/projects` and Codex transcripts from `~/.codex/sessions`.
+Both read from the same `~/.obelisk/obelisk.sqlite` database. The indexer reads Claude Code transcripts from `~/.claude/projects`, Codex transcripts from `~/.codex/sessions`, and Kimi Code sessions from `~/.kimi-code/sessions` (or `$KIMI_CODE_HOME/sessions`).
 
-## Codex support
+## Multi-provider support
 
-Obelisk indexes Claude Code and Codex into the same SQLite schema instead of keeping separate databases. Rows carry a `source` value (`claude` or `codex`), and Codex IDs are prefixed with `codex:` so they cannot collide with Claude session IDs.
+Obelisk indexes every provider into the same SQLite schema instead of keeping separate databases. Rows carry a `source` value, and non-Claude IDs are provider-prefixed so they cannot collide.
 
 Codex root threads become normal Obelisk sessions. Codex child threads are attached through the same `subagents` table when parent-thread metadata is available. Codex does not emit Claude-style workflow metadata, so workflow tables may be empty for Codex-only history.
 
-For live app refresh, Obelisk watches `~/.claude/projects` and `~/.codex/sessions`. It does not watch the whole `~/.codex` root. Codex's `session_index.jsonl` is used as lightweight title/update metadata during indexing, not as the message transcript source.
+Kimi session directories become one Obelisk session each. Main and child-agent
+`wire.jsonl` streams are projected into the same messages, tools, summaries and
+subagents tables. Undo/clear is handled as a full session replay, so retracted
+wire records do not remain in the index.
+
+For live app refresh, Obelisk watches the roots declared by every registered provider, including `~/.claude/projects`, `~/.codex/sessions`, and `~/.kimi-code/sessions`. Codex's `session_index.jsonl` is used as lightweight title/update metadata during indexing, not as the message transcript source.
 
 ## Skill: agent-first retrieval
 

@@ -1,5 +1,7 @@
 // Query and attune sandbox helpers for the Core package.
-import { readLines, fs, path } from './db.ts';
+import { fs, path } from './db.ts';
+import { createBuiltinProviderRegistry } from './providers/builtins.ts';
+import type { ProviderRegistry } from './providers/registry.ts';
 import type { SqliteDb, SqliteRow } from './sqlite-types.ts';
 
 type DbRow = SqliteRow;
@@ -100,7 +102,10 @@ function buildSafeFtsQuery(text: unknown): string {
     .join(' ');
 }
 
-function createQueryApi(db: SqliteDb) {
+function createQueryApi(
+  db: SqliteDb,
+  { providerRegistry = createBuiltinProviderRegistry() }: { providerRegistry?: ProviderRegistry } = {},
+) {
   const q = (sql: string, ...p: any[]) => {
     assertReadOnlySql(sql);
     return db.prepare(sql).all(...p);
@@ -450,79 +455,34 @@ function createQueryApi(db: SqliteDb) {
     };
   };
 
-  const resolveJsonlPath = (messageUuid: string): string | null => {
-    const msg = db.prepare('SELECT session_id, agent_id, source FROM messages WHERE uuid=?').get(messageUuid);
-    if (!msg) return null;
-    if (msg.source === 'codex' || String(messageUuid).startsWith('codex:')) {
-      const match = /^codex:([^:]+):(\d+)$/.exec(String(messageUuid));
-      if (!match) return null;
-      const rawThreadId = match[1];
-      if (!msg.agent_id) {
-        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id);
-        if (ses?.jsonl_path) return ses.jsonl_path;
-      }
-      return db.prepare(`
-        SELECT jsonl_path FROM index_state
-        WHERE jsonl_path LIKE ? AND jsonl_path LIKE '%.jsonl'
-        ORDER BY length(jsonl_path) ASC
-        LIMIT 1
-      `).get(`%${rawThreadId}.jsonl`)?.jsonl_path || null;
-    }
-    if (msg.agent_id) {
-      const wa = db.prepare('SELECT agent_id, run_id, session_id FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
-      if (wa) {
-        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(wa.session_id);
-        if (ses) return path.join(path.dirname(ses.jsonl_path), wa.session_id, 'subagents', 'workflows', wa.run_id, wa.agent_id + '.jsonl');
-      }
-      const sa = db.prepare('SELECT agent_id, session_id FROM subagents WHERE agent_id=?').get(msg.agent_id);
-      if (sa) {
-        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(sa.session_id);
-        if (ses) return path.join(path.dirname(ses.jsonl_path), sa.session_id, 'subagents', sa.agent_id + '.jsonl');
-      }
-    } else {
-      const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id);
-      if (ses) return ses.jsonl_path;
-    }
-    return null;
-  };
-
-  const findCodexRawLine = (jsonlPath: string | null, uuid: string): string | null => {
-    const match = /^codex:[^:]+:(\d+)$/.exec(String(uuid));
-    if (!match || !jsonlPath || !fs.existsSync(jsonlPath)) return null;
-    const targetLine = Number(match[1]);
-    let lineNum = 0;
-    let found = null;
-    readLines(jsonlPath, (line) => {
-      lineNum++;
-      if (lineNum !== targetLine) return;
-      found = line;
-      return false;
-    });
-    return found;
-  };
-
-  const findRawLine = (jsonlPath: string | null, uuid: string): string | null => {
-    if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
-    if (String(uuid).startsWith('codex:')) return findCodexRawLine(jsonlPath, uuid);
-    let found = null;
-    readLines(jsonlPath, (line) => {
-      if (!line.includes(uuid)) return;
-      try { const obj = JSON.parse(line); if (obj.uuid === uuid) { found = line; return false; } } catch { /* skip malformed JSONL lines */ }
-    });
-    return found;
-  };
-
   const raw = (messageUuid: string, opts: { offset?: number; limit?: number } = {}) => {
     const { offset = 0, limit = 10000 } = opts;
-    const jsonlPath = resolveJsonlPath(messageUuid);
-    const line = findRawLine(jsonlPath, messageUuid);
-    if (!line) return null;
+    const message = db.prepare('SELECT * FROM messages WHERE uuid=?').get(messageUuid);
+    if (!message) return null;
+    const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(message.session_id) ?? null;
+    const subagent = message.agent_id
+      ? db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(message.agent_id) ?? null
+      : null;
+    const workflowAgent = message.agent_id
+      ? db.prepare('SELECT * FROM workflow_agents WHERE agent_id=?').get(message.agent_id) ?? null
+      : null;
+    const source = message.source || session?.source || 'claude';
+    const record = providerRegistry.raw({
+      source,
+      messageUuid,
+      session,
+      agentId: message.agent_id || null,
+      subagent,
+      workflowAgent,
+    });
+    if (record === null) return null;
+    const totalLength = record.totalLength ?? record.text.length;
     return {
-      text: line.slice(offset, offset + limit),
-      totalLength: line.length,
+      text: record.text.slice(offset, offset + limit),
+      totalLength,
       offset,
       limit,
-      hasMore: offset + limit < line.length,
+      hasMore: offset + limit < totalLength,
     };
   };
 

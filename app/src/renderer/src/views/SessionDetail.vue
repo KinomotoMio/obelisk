@@ -23,6 +23,7 @@ import {
   fmtRelative,
   formatProjectLabel
 } from '../utils.js';
+import { sourceColor, sourceLabel } from '../source-catalog.mjs';
 
 defineOptions({ name: 'SessionDetail' });
 const props = defineProps({ id: String });
@@ -490,8 +491,8 @@ function navigateToSubagent(agentId) {
             <span class="sep">&middot;</span>
             <span class="project-path">{{ session.project_path || '' }}</span>
             <span class="via">
-              <span class="via-dot" :class="session.source || 'claude'"></span>
-              via {{ (session.source || 'claude') === 'codex' ? 'Codex' : 'Claude Code' }}
+              <span class="via-dot" :style="{ '--source-color': sourceColor(session.source, state.sources) }"></span>
+              via {{ sourceLabel(session.source, state.sources) }}
             </span>
           </div>
           <div class="session-title">{{ session.title || '(untitled)' }}</div>

@@ -10,6 +10,12 @@ import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
+import { createBuiltinProviderRegistry } from '../../../packages/core/src/providers/builtins.ts';
+import {
+  buildSourceCatalog,
+  resolveProviderRoots,
+  setPersistedSetting,
+} from './provider-settings.ts';
 import type {
   SessionPatchCursor,
   SessionPatchSnapshot,
@@ -69,18 +75,18 @@ function acquireAppWriterLease(dbPath: string, waitMs = 0) {
   });
 }
 
-function getConfiguredClaudeDir() {
-  const persisted = loadPersistedSettings();
-  return persisted.claudeDir || DEFAULT_CLAUDE_DIR;
-}
-
-function getConfiguredCodexDir() {
-  const persisted = loadPersistedSettings();
-  return persisted.codexDir || DEFAULT_CODEX_DIR;
-}
-
-function getPathsForClaudeDir(claudeDir = getConfiguredClaudeDir(), codexDir = getConfiguredCodexDir()) {
+function getRuntimePaths(persisted = loadPersistedSettings()) {
+  const defaultRegistry = createBuiltinProviderRegistry({
+    claude: DEFAULT_CLAUDE_DIR,
+    codex: DEFAULT_CODEX_DIR,
+  });
+  const providerRoots = resolveProviderRoots(defaultRegistry, persisted);
+  const providerRegistry = createBuiltinProviderRegistry(providerRoots);
+  const claudeDir = providerRoots['claude'] ?? DEFAULT_CLAUDE_DIR;
+  const codexDir = providerRoots['codex'] ?? DEFAULT_CODEX_DIR;
   return {
+    providerRoots,
+    providerRegistry,
     claudeDir,
     codexDir,
     dbPath: path.join(OBELISK_DIR, 'obelisk.sqlite'),
@@ -89,7 +95,7 @@ function getPathsForClaudeDir(claudeDir = getConfiguredClaudeDir(), codexDir = g
 }
 
 function migrateLegacyDbIfNeeded(
-  paths = getPathsForClaudeDir(),
+  paths = getRuntimePaths(),
   { writerLeaseMode = 'acquire' }: { writerLeaseMode?: WriterLeaseMode } = {},
 ) {
   if (fs.existsSync(paths.dbPath)) return;
@@ -191,7 +197,7 @@ function closeDb() {
 }
 
 function openDb(
-  dbPath = getPathsForClaudeDir().dbPath,
+  dbPath = getRuntimePaths().dbPath,
   { writerLeaseMode = 'acquire' }: { writerLeaseMode?: WriterLeaseMode } = {},
 ) {
   closeDb();
@@ -212,7 +218,7 @@ function openDb(
 
 function runAppDbWrite(work: () => void): boolean {
   if (!db) return false;
-  const lease = acquireAppWriterLease(getPathsForClaudeDir().dbPath, 250);
+  const lease = acquireAppWriterLease(getRuntimePaths().dbPath, 250);
   if (!lease) {
     throw new Error('Obelisk index writer is busy; memory change was not applied');
   }
@@ -249,16 +255,16 @@ function appendWhere(sql, params, clause) {
 }
 
 function startIndexerService({ buildOnStart = false } = {}) {
-  const paths = getPathsForClaudeDir();
+  const paths = getRuntimePaths();
   migrateLegacyDbIfNeeded(paths);
-  const codexSessionsDir = path.join(paths.codexDir, 'sessions');
   indexerService = createIndexerService({
     projectsDir: paths.projectsDir,
-    watchDirs: [paths.projectsDir, codexSessionsDir],
+    watchDirs: paths.providerRegistry.watchRoots(paths.providerRoots),
     buildIndex: async ({ reason, changedPaths }) => {
       const result = await indexerWorker.buildIndex({
         reason,
         changedPaths,
+        providerRoots: paths.providerRoots,
         claudeDir: paths.claudeDir,
         codexDir: paths.codexDir,
         projectsDir: paths.projectsDir,
@@ -282,7 +288,7 @@ function startIndexerService({ buildOnStart = false } = {}) {
 
 function startBackgroundResources({ runStartupBuild = false } = {}) {
   if (!indexerWorker) indexerWorker = createWorkerBuildIndex();
-  const paths = getPathsForClaudeDir();
+  const paths = getRuntimePaths();
   migrateLegacyDbIfNeeded(paths);
   openDb(paths.dbPath);
   if (!indexerService) {
@@ -575,87 +581,25 @@ ipcMain.handle('db:getMemories', () => {
 
 ipcMain.handle('db:getMessageFullText', (_, uuid) => {
   if (!db) return null;
-  const msg = db.prepare('SELECT session_id, agent_id, source FROM messages WHERE uuid=?').get(uuid);
+  const msg = db.prepare('SELECT * FROM messages WHERE uuid=?').get(uuid);
   if (!msg) return null;
-
-  if (msg.source === 'codex' || String(uuid).startsWith('codex:')) {
-    const match = /^codex:([^:]+):(\d+)$/.exec(String(uuid));
-    if (!match) return null;
-    const rawThreadId = match[1];
-    const targetLine = Number(match[2]);
-    let jsonlPath: string | null = null;
-    if (!msg.agent_id) {
-      jsonlPath = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id)?.jsonl_path || null;
-    }
-    if (!jsonlPath) {
-      jsonlPath = db.prepare(`
-        SELECT jsonl_path FROM index_state
-        WHERE jsonl_path LIKE ? AND jsonl_path LIKE '%.jsonl'
-        ORDER BY length(jsonl_path) ASC
-        LIMIT 1
-      `).get(`%${rawThreadId}.jsonl`)?.jsonl_path || null;
-    }
-    if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
-    const lines = fs.readFileSync(jsonlPath, 'utf-8').split('\n').filter(Boolean);
-    const line = lines[targetLine - 1];
-    if (!line) return null;
-    try {
-      const obj = JSON.parse(line);
-      const payload = obj.payload || {};
-      if (obj.type === 'event_msg') {
-        if (typeof payload.message === 'string') return payload.message;
-        if (typeof payload.text === 'string') return payload.text;
-      }
-      if (obj.type === 'response_item' && payload.type === 'message' && Array.isArray(payload.content)) {
-        const parts = payload.content.map(b => b.text).filter(Boolean);
-        return parts.join('\n') || null;
-      }
-    } catch {}
-    return null;
-  }
-
-  // Resolve JSONL path
-  let jsonlPath: string | null = null;
-  if (msg.agent_id) {
-    const wa = db.prepare('SELECT agent_id, run_id, session_id FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
-    if (wa) {
-      const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(wa.session_id);
-      if (ses) jsonlPath = path.join(path.dirname(ses.jsonl_path), wa.session_id, 'subagents', 'workflows', wa.run_id, wa.agent_id + '.jsonl');
-    }
-    if (!jsonlPath) {
-      const sa = db.prepare('SELECT agent_id, session_id FROM subagents WHERE agent_id=?').get(msg.agent_id);
-      if (sa) {
-        const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(sa.session_id);
-        if (ses) jsonlPath = path.join(path.dirname(ses.jsonl_path), sa.session_id, 'subagents', sa.agent_id + '.jsonl');
-      }
-    }
-  }
-  if (!jsonlPath) {
-    const ses = db.prepare('SELECT jsonl_path FROM sessions WHERE id=?').get(msg.session_id);
-    if (ses) jsonlPath = ses.jsonl_path;
-  }
-  if (!jsonlPath || !fs.existsSync(jsonlPath)) return null;
-
-  // Scan JSONL for the message UUID and extract full text
-  const data = fs.readFileSync(jsonlPath, 'utf-8');
-  const lines = data.split('\n');
-  for (const line of lines) {
-    if (!line.includes(uuid)) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.uuid !== uuid) continue;
-      const content = obj.message?.content;
-      if (typeof content === 'string') return content;
-      if (!Array.isArray(content)) return null;
-      const parts: string[] = [];
-      for (const b of content) {
-        if (b.type === 'text' && b.text) parts.push(b.text);
-        else if (b.type === 'thinking' && b.thinking) parts.push(b.thinking);
-      }
-      return parts.join('\n') || null;
-    } catch { continue; }
-  }
-  return null;
+  const session = db.prepare('SELECT * FROM sessions WHERE id=?').get(msg.session_id) ?? null;
+  const subagent = msg.agent_id
+    ? db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(msg.agent_id) ?? null
+    : null;
+  const workflowAgent = msg.agent_id
+    ? db.prepare('SELECT * FROM workflow_agents WHERE agent_id=?').get(msg.agent_id) ?? null
+    : null;
+  const paths = getRuntimePaths();
+  const raw = paths.providerRegistry.raw({
+    source: msg.source || session?.source || 'claude',
+    messageUuid: String(uuid),
+    session,
+    agentId: msg.agent_id || null,
+    subagent,
+    workflowAgent,
+  });
+  return raw?.messageText ?? msg.text ?? null;
 });
 
 ipcMain.handle('db:readMemoryFile', (_, filePath) => {
@@ -849,76 +793,59 @@ function savePersistedSettings(settings) {
 
 ipcMain.handle('settings:get', () => {
   const persisted = loadPersistedSettings();
-  const { claudeDir, codexDir, dbPath: dbFile } = getPathsForClaudeDir(
-    persisted.claudeDir || DEFAULT_CLAUDE_DIR,
-    persisted.codexDir || DEFAULT_CODEX_DIR,
-  );
+  const paths = getRuntimePaths(persisted);
+  const { providerRoots, providerRegistry, claudeDir, codexDir, dbPath: dbFile } = paths;
   const recapDir = persisted.recapDir || RECAP_DIR;
-  const claudeExists = fs.existsSync(claudeDir);
-  const codexExists = fs.existsSync(codexDir);
-  let claudeSessionCount = 0;
-  let codexSessionCount = 0;
   let memoryCount = 0;
-  let claudeLastIndexed = '';
-  let codexLastIndexed = '';
+  const sourceStats = new Map<string, { sessionCount: number; lastIndexed: string }>();
 
   if (db) {
     try {
-      claudeSessionCount = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE COALESCE(source, 'claude') = 'claude'").get()?.c || 0;
-      codexSessionCount = db.prepare("SELECT COUNT(*) as c FROM sessions WHERE source = 'codex'").get()?.c || 0;
+      const rows = db.prepare(`
+        SELECT COALESCE(source, 'claude') AS source,
+               COUNT(*) AS session_count,
+               MAX(started_at) AS last_indexed
+        FROM sessions
+        GROUP BY COALESCE(source, 'claude')
+      `).all();
+      for (const row of rows) {
+        sourceStats.set(row.source, {
+          sessionCount: row.session_count || 0,
+          lastIndexed: row.last_indexed || '',
+        });
+      }
       memoryCount = db.prepare('SELECT COUNT(*) as c FROM memories WHERE deleted_at IS NULL').get()?.c || 0;
-      const claudeLatest = db.prepare("SELECT MAX(started_at) as t FROM sessions WHERE COALESCE(source, 'claude') = 'claude'").get();
-      claudeLastIndexed = claudeLatest?.t || '';
-      const codexLatest = db.prepare("SELECT MAX(started_at) as t FROM sessions WHERE source = 'codex'").get();
-      codexLastIndexed = codexLatest?.t || '';
     } catch {}
   }
+  const sources = buildSourceCatalog({
+    registry: providerRegistry,
+    roots: providerRoots,
+    stats: sourceStats,
+    pathExists: fs.existsSync,
+  });
+  const sessionCount = sources.reduce((sum, source) => sum + source.sessionCount, 0);
+  const lastIndexed = sources.map((source) => source.lastIndexed).filter(Boolean).sort().at(-1) || '';
+  const connected = sources.some((source) => source.status !== 'error');
 
   return {
+    providerRoots,
     claudeDir,
     codexDir,
     dbPath: dbFile,
     recapDir,
     autoRefresh: persisted.autoRefresh !== false,
-    sources: [
-      {
-        id: 'claude',
-        name: 'Claude Code',
-        vendor: 'Anthropic',
-        path: claudeDir,
-        exists: claudeExists,
-        sessionCount: claudeSessionCount,
-        lastIndexed: claudeLastIndexed,
-        status: claudeExists ? 'ok' : 'error',
-        statusText: claudeExists ? 'Connected' : 'Folder not found',
-      },
-      {
-        id: 'codex',
-        name: 'Codex',
-        vendor: 'OpenAI',
-        path: codexDir,
-        exists: codexExists,
-        sessionCount: codexSessionCount,
-        lastIndexed: codexLastIndexed,
-        status: codexExists ? (codexSessionCount > 0 ? 'ok' : 'warn') : 'error',
-        statusText: codexExists ? (codexSessionCount > 0 ? 'Connected' : 'No sessions found') : 'Folder not found',
-      },
-    ],
+    sources,
     memoryCount,
-    sessionCount: claudeSessionCount + codexSessionCount,
-    lastIndexed: claudeLastIndexed,
-    status: claudeExists ? 'ok' : 'error',
-    statusText: claudeExists ? 'Connected' : 'Folder not found',
+    sessionCount,
+    lastIndexed,
+    status: connected ? 'ok' : 'error',
+    statusText: connected ? 'Connected' : 'No source folders found',
   };
 });
 
 ipcMain.handle('settings:set', async (_, key, value) => {
   const persisted = loadPersistedSettings();
-  if (value === null) {
-    delete persisted[key];
-  } else {
-    persisted[key] = value;
-  }
+  const providerRootChanged = setPersistedSetting(persisted, key, value);
   savePersistedSettings(persisted);
 
   if (key === 'autoRefresh') {
@@ -930,12 +857,13 @@ ipcMain.handle('settings:set', async (_, key, value) => {
     }
   }
 
-  if (key === 'claudeDir' || key === 'codexDir') {
+  const knownLegacyRootChanged = createBuiltinProviderRegistry({
+    claude: DEFAULT_CLAUDE_DIR,
+    codex: DEFAULT_CODEX_DIR,
+  }).catalog().some((provider) => key === `${provider.id}Dir`);
+  if (providerRootChanged || knownLegacyRootChanged) {
     await stopIndexerServiceAndWait();
-    const paths = getPathsForClaudeDir(
-      persisted.claudeDir || DEFAULT_CLAUDE_DIR,
-      persisted.codexDir || DEFAULT_CODEX_DIR,
-    );
+    const paths = getRuntimePaths(persisted);
     migrateLegacyDbIfNeeded(paths);
     openDb(paths.dbPath);
     if (persisted.autoRefresh !== false) {
@@ -951,7 +879,7 @@ ipcMain.handle('settings:browseFolder', async (event) => {
   if (!win) return null;
   const { filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openDirectory'],
-    title: 'Select Claude Code data folder',
+    title: 'Select session data folder',
   });
   if (filePaths && filePaths[0]) return filePaths[0];
   return null;
@@ -964,10 +892,7 @@ ipcMain.handle('settings:revealPath', (_, p) => {
 ipcMain.handle('settings:rebuildIndex', async () => {
   if (!indexerWorker) return null;
   const persisted = loadPersistedSettings();
-  const paths = getPathsForClaudeDir(
-    persisted.claudeDir || DEFAULT_CLAUDE_DIR,
-    persisted.codexDir || DEFAULT_CODEX_DIR,
-  );
+  const paths = getRuntimePaths(persisted);
   const tempDbPath = rebuildTempDbPath(paths.dbPath);
   const shouldRestartWatcher = persisted.autoRefresh !== false;
   await stopIndexerServiceAndWait({ waitForIdle: false });
@@ -1000,6 +925,7 @@ ipcMain.handle('settings:rebuildIndex', async () => {
     const result = await indexerWorker.buildIndex({
       reason: 'manual-rebuild',
       force: true,
+      providerRoots: paths.providerRoots,
       claudeDir: paths.claudeDir,
       codexDir: paths.codexDir,
       projectsDir: paths.projectsDir,
