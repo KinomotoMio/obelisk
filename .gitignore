@@ -12,3 +12,4 @@ HANDOFF.md
 .obelisk/
 app/build/
 app/scripts/
+app/*.html
