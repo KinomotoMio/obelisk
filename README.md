@@ -291,6 +291,10 @@ not a second executable runtime.
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=tommy0103/obelisk&type=date&legend=top-left)](https://www.star-history.com/#tommy0103/obelisk&type=date&legend=top-left)
+
 ## License
 
 AGPL-3.0 @tommy0103
