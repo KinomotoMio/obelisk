@@ -56,7 +56,7 @@ interface ProjectedSession {
 }
 
 const SOURCE = 'kimi';
-export const KIMI_CANONICAL_TRANSCRIPT_MARKER = '__kimi_canonical_transcript_v2__';
+export const KIMI_CANONICAL_TRANSCRIPT_MARKER = '__kimi_canonical_transcript_v3__';
 
 function defaultKimiRoot(): string {
   return process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
@@ -141,10 +141,24 @@ function contentParts(content: unknown): JsonRecord[] {
     : [];
 }
 
-function partText(part: JsonRecord): string | null {
-  if (part.type === 'text' && typeof part.text === 'string') return trunc(part.text);
-  if (part.type === 'thinking' && typeof part.thinking === 'string') return trunc(part.thinking);
+function rawPartText(part: JsonRecord): string | null {
+  if (part.type === 'text' && typeof part.text === 'string') return part.text;
+  if (part.type === 'think' && typeof part.think === 'string') return part.think;
+  if (part.type === 'thinking' && typeof part.thinking === 'string') return part.thinking;
   return null;
+}
+
+function partText(part: JsonRecord): string | null {
+  const text = rawPartText(part);
+  return text === null ? null : trunc(text);
+}
+
+function partContentType(part: JsonRecord): string {
+  return part.type === 'think' || part.type === 'thinking'
+    ? 'thinking'
+    : typeof part.type === 'string'
+      ? part.type
+      : 'unknown';
 }
 
 function messageText(content: unknown): string | null {
@@ -154,7 +168,7 @@ function messageText(content: unknown): string | null {
 }
 
 function messageContentType(content: unknown): string {
-  const types = new Set(contentParts(content).map((part) => String(part.type ?? 'unknown')));
+  const types = new Set(contentParts(content).map(partContentType));
   return types.size === 1 ? [...types][0]! : 'unknown';
 }
 
@@ -437,6 +451,8 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
       if (event.type === 'content.part' && typeof event.stepUuid === 'string') {
         const part = event.part as JsonRecord | undefined;
         if (part === undefined) continue;
+        const text = partText(part);
+        if (text === null || text.trim().length === 0) continue;
         pushMessage({
           kind: 'message',
           uuid: namespacedEventId(sessionId, wire.agentId, event.uuid, line),
@@ -445,8 +461,8 @@ function projectSession(meta: KimiSessionUnitMeta, sessionId: string, state: Jso
           parent_uuid: previousUuid,
           timestamp,
           role: 'assistant',
-          text: partText(part),
-          content_type: typeof part.type === 'string' ? part.type : 'unknown',
+          text,
+          content_type: partContentType(part),
           is_meta: 0,
           visibility: 'visible',
           model,
@@ -604,17 +620,14 @@ function rawFromWire(path: string, messageUuid: string): RawRecord | null {
         if (slashCommand !== null) projectedText = slashCommand;
         else {
           const parts = contentParts(message.content).map((part) => {
-            if (part.type === 'text' && typeof part.text === 'string') return part.text;
-            if (part.type === 'thinking' && typeof part.thinking === 'string') return part.thinking;
-            return null;
+            return rawPartText(part);
           }).filter((part): part is string => part !== null);
           projectedText = parts.length > 0 ? parts.join('\n') : null;
         }
       }
     } else if (record.type === 'context.append_loop_event') {
       const part = (record.event as JsonRecord | undefined)?.part as JsonRecord | undefined;
-      if (part?.type === 'text' && typeof part.text === 'string') projectedText = part.text;
-      if (part?.type === 'thinking' && typeof part.thinking === 'string') projectedText = part.thinking;
+      if (part !== undefined) projectedText = rawPartText(part);
     }
   } catch { /* malformed torn source line */ }
   return {

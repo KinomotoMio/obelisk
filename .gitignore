@@ -10,3 +10,5 @@ dist/
 app/out/
 HANDOFF.md
 .obelisk/
+app/build/
+app/scripts/

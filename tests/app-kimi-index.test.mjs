@@ -133,7 +133,7 @@ test('Kimi undo and clear replace the indexed session instead of leaving stale r
   db.close();
 });
 
-test('Kimi prompt semantics marker replays unchanged sessions once', () => {
+test('Kimi canonical transcript marker replays unchanged sessions once', () => {
   const home = mkdtempSync(join(tmpdir(), 'obelisk-kimi-prompt-marker-'));
   const claudeDir = join(home, '.claude');
   const codexDir = join(home, '.codex');
@@ -151,7 +151,7 @@ test('Kimi prompt semantics marker replays unchanged sessions once', () => {
   buildIndex(options);
   let db = new TestDatabase(dbPath);
   const marker = createKimiProvider({ rootDir: kimiDir }).indexVersionMarker;
-  assert.equal(typeof marker, 'string');
+  assert.equal(marker, '__kimi_canonical_transcript_v3__');
   db.prepare("UPDATE messages SET text='stale expanded instructions', is_meta=1 WHERE source='kimi'").run();
   db.prepare('DELETE FROM index_state WHERE jsonl_path=?').run(marker);
   db.close();

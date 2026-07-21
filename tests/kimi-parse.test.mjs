@@ -145,6 +145,52 @@ test('kimi provider ignores a torn final wire line until it is completed', () =>
   assert.equal(ret, unit.meta.currentCursor);
 });
 
+test('kimi provider normalizes think parts and drops empty thinking placeholders', () => {
+  const root = mkdtempSync(join(tmpdir(), 'obelisk-kimi-think-'));
+  const sessionDir = join(root, 'sessions', 'workspace-1', 'session-think-1');
+  const mainDir = join(sessionDir, 'agents', 'main');
+  const wirePath = join(mainDir, 'wire.jsonl');
+  mkdirSync(mainDir, { recursive: true });
+  writeFileSync(join(sessionDir, 'state.json'), JSON.stringify({ workDir: '/tmp/think' }));
+  const records = [
+    { type: 'metadata', protocol_version: '1.5', created_at: 1 },
+    { type: 'context.append_loop_event', time: 2, event: { type: 'step.begin', uuid: 'step-1' } },
+    { type: 'context.append_loop_event', time: 3, event: {
+      type: 'content.part', uuid: 'think-1', stepUuid: 'step-1',
+      part: { type: 'think', think: 'private reasoning' },
+    } },
+    { type: 'context.append_loop_event', time: 4, event: {
+      type: 'content.part', uuid: 'think-empty', stepUuid: 'step-1',
+      part: { type: 'think', think: '' },
+    } },
+    { type: 'context.append_loop_event', time: 5, event: {
+      type: 'content.part', uuid: 'answer-1', stepUuid: 'step-1',
+      part: { type: 'text', text: 'visible answer' },
+    } },
+  ];
+  writeFileSync(wirePath, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const provider = createKimiProvider({ rootDir: root });
+  const unit = provider.discover({ lastCursor: () => null })[0];
+
+  const { values } = drain(provider.parse(unit, null));
+  const messages = values.filter(record => record.kind === 'message');
+
+  assert.deepEqual(messages.map(record => ({
+    text: record.text,
+    content_type: record.content_type,
+  })), [
+    { text: 'private reasoning', content_type: 'thinking' },
+    { text: 'visible answer', content_type: 'text' },
+  ]);
+  assert.equal(values.find(record => record.kind === 'session').message_count, 2);
+  assert.equal(provider.raw({
+    source: 'kimi',
+    messageUuid: messages[0].uuid,
+    session: { jsonl_path: wirePath },
+    agentId: null,
+  }).messageText, 'private reasoning');
+});
+
 test('kimi provider replays clear and undo markers with Kimi transcript semantics', () => {
   const root = mkdtempSync(join(tmpdir(), 'obelisk-kimi-undo-'));
   const sessionDir = join(root, 'sessions', 'workspace-1', 'session-undo-1');

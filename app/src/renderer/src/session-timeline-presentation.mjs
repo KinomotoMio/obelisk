@@ -190,7 +190,7 @@ function renderOutput(output, isError) {
   return `<div class="result-chip ${isError ? 'error' : ''}">${escapeHtml(output)}</div>`;
 }
 
-function renderPrettyTool(toolCall) {
+export function renderPrettyTool(toolCall) {
   const args = parseToolInput(toolCall);
   const result = toolCall.result || {};
   const isError = Boolean(result.is_error);
