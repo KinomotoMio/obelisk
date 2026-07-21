@@ -296,12 +296,21 @@ function parseCodexJsonInput(value: JsonValue): JsonValue {
   try { return JSON.parse(value); } catch { return value; }
 }
 
-function codexUsage(payload: JsonRecord) {
+interface CodexUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+
+function codexUsage(payload: JsonRecord): CodexUsage {
   const usage = payload?.info?.last_token_usage || payload?.info?.total_token_usage || payload?.last_token_usage || null;
-  if (!usage) return {};
+  if (!usage) return { inputTokens: null, outputTokens: null };
   return {
-    inputTokens: usage.input_tokens ?? null,
-    outputTokens: usage.output_tokens ?? null,
+    inputTokens: typeof usage.input_tokens === 'number' && Number.isFinite(usage.input_tokens)
+      ? usage.input_tokens
+      : null,
+    outputTokens: typeof usage.output_tokens === 'number' && Number.isFinite(usage.output_tokens)
+      ? usage.output_tokens
+      : null,
   };
 }
 
