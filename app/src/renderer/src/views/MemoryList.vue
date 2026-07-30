@@ -2,8 +2,16 @@
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { state, FOLDER_SVG, setSelection, clearSelection } from '../store.js';
-import { highlightPlain, escapeHTML, formatProjectLabel, fmtListTime, fmtRelative, renderMarkdown } from '../utils.js';
-import { loadMemoryMarkdown, archiveMemory, restoreMemory } from '../data.js';
+import {
+  highlightPlain,
+  escapeHTML,
+  formatProjectLabel,
+  fmtListTime,
+  fmtRelative,
+  markdownSessionReferenceIds,
+  renderMarkdown,
+} from '../utils.js';
+import { loadMemoryMarkdown, loadSessionsByIds, archiveMemory, restoreMemory } from '../data.js';
 import { resolveMemoryShortcut } from '../keyboard-shortcuts.mjs';
 
 defineOptions({ name: 'MemoryList' });
@@ -33,6 +41,7 @@ const showProjectPrefix = computed(() => state.projectFilter === 'all');
 
 const detailMemory = computed(() => props.id ? state.memories.find(memory => memory.id === props.id) : null);
 const detailMarkdown = ref(null);
+const detailSessionReferences = ref(new Map());
 const showSource = ref(false);
 const loadingMarkdown = ref(false);
 
@@ -164,13 +173,19 @@ async function loadDetail(memory) {
   const version = ++detailLoadVersion;
   showSource.value = false;
   detailMarkdown.value = null;
+  detailSessionReferences.value = new Map();
   loadingMarkdown.value = Boolean(memory);
 
   if (memory?.markdown == null && memory.path) {
     memory.markdown = await loadMemoryMarkdown(memory.path);
   }
   if (version !== detailLoadVersion) return;
-  detailMarkdown.value = memory?.markdown ?? null;
+  const markdown = memory?.markdown ?? null;
+  const referenceIds = markdownSessionReferenceIds(markdown);
+  const sessions = await loadSessionsByIds(referenceIds);
+  if (version !== detailLoadVersion) return;
+  detailSessionReferences.value = new Map(sessions.map(session => [session.id, session]));
+  detailMarkdown.value = markdown;
   loadingMarkdown.value = false;
 }
 
@@ -269,8 +284,21 @@ function detailArchiveRestore() {
 const renderedMarkdown = computed(() => {
   if (detailMarkdown.value == null) return null;
   if (showSource.value) return null; // handled by pre block in template
-  return renderMarkdown(detailMarkdown.value, { variant: 'body' });
+  return renderMarkdown(detailMarkdown.value, {
+    variant: 'body',
+    sessionReferences: detailSessionReferences.value,
+  });
 });
+
+function openMarkdownSession(event) {
+  const link = event.target instanceof Element
+    ? event.target.closest('[data-obelisk-session-id]')
+    : null;
+  if (!link) return;
+  event.preventDefault();
+  const sessionId = link.dataset.obeliskSessionId;
+  if (sessionId) router.push({ name: 'SessionDetail', params: { id: sessionId } });
+}
 
 // --- Keyboard handler ---
 
@@ -362,7 +390,7 @@ onUnmounted(() => {
           File not found or empty.
         </div>
         <pre v-else-if="showSource" class="markdown-source">{{ detailMarkdown }}</pre>
-        <div v-else class="markdown-body" v-html="renderedMarkdown"></div>
+        <div v-else class="markdown-body" @click="openMarkdownSession" v-html="renderedMarkdown"></div>
       </div>
 
       <div v-if="detailMemory.anchors?.length" class="detail-section-divider" id="anchors-section">

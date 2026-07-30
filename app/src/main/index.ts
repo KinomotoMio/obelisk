@@ -325,6 +325,12 @@ function createWindow() {
     }
   });
 
+  win.webContents.on('will-navigate', (event, url) => {
+    try {
+      if (new URL(url).protocol === 'obelisk:') event.preventDefault();
+    } catch {}
+  });
+
   if (isDev) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL || process.env.OBELISK_DEV_SERVER_URL || 'http://localhost:5173');
     if (shouldOpenDevTools) {
@@ -474,6 +480,10 @@ function querySessionMetadata(sessionId: string): SessionMetadata | null {
 ipcMain.handle('db:getSessions', (_, opts = {}) => {
   if (!db) return [];
   const { project, limit = 200 } = opts;
+  const sessionIds = Array.isArray(opts.ids)
+    ? [...new Set(opts.ids.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0))].slice(0, 100)
+    : null;
+  if (sessionIds && sessionIds.length === 0) return [];
   let sql = `SELECT ${SESSION_METADATA_COLUMNS} FROM sessions`;
   const params: unknown[] = [];
   const sourceFilter = sourceWhereClause(opts);
@@ -482,8 +492,12 @@ ipcMain.handle('db:getSessions', (_, opts = {}) => {
     params.push(...sourceFilter.params);
   }
   if (project) { sql = appendWhere(sql, params, `project LIKE ?`); params.push(project); }
+  if (sessionIds) {
+    sql = appendWhere(sql, params, `id IN (${sessionIds.map(() => '?').join(',')})`);
+    params.push(...sessionIds);
+  }
   sql += ` ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`;
-  params.push(limit);
+  params.push(sessionIds ? Math.min(limit, sessionIds.length) : limit);
   return db.prepare(sql).all(...params);
 });
 

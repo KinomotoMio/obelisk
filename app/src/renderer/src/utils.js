@@ -2,6 +2,10 @@
 // Pure helpers with no side-effects on global state (except formatProjectLabel which reads store).
 
 import { state } from './store.js';
+import {
+  collectObeliskSessionIds,
+  decorateObeliskSessionLinks,
+} from './memory-session-links.mjs';
 
 // --- Time / formatting ---
 
@@ -102,8 +106,18 @@ export function renderMarkdown(text, opts = {}) {
   const container = document.createElement('div');
   container.className = cls;
   container.innerHTML = html;
+  if (opts.sessionReferences) {
+    decorateObeliskSessionLinks(container, opts.sessionReferences);
+  }
   if (opts.query) highlightTextNodes(container, opts.query.trim());
   return container.outerHTML;
+}
+
+export function markdownSessionReferenceIds(text) {
+  if (text == null) return [];
+  const container = document.createElement('div');
+  container.innerHTML = sanitizeMarkdown(window.marked.parse(text));
+  return collectObeliskSessionIds(container);
 }
 
 // --- Duration / tokens / tooltip ---
