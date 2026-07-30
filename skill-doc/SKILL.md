@@ -296,6 +296,19 @@ briefly and ask before changing memory state.
 **Writing memories:** after a retrieval produces a conclusion worth persisting,
 propose writing a memory file. The user must approve. Flow:
 
+When earlier sessions materially support the Memory and a reader would benefit
+from revisiting them, keep that path open with a standard Markdown link:
+
+```markdown
+[descriptive session label](obelisk://session/codex%3A019f6392-0dba-7f13-be12-541db3645a69)
+```
+
+Use the full canonical `sessions.id` as the URL-encoded path segment and give
+the link a short label that explains why the session matters. Place links near
+the claims they support or in a naturally named source section when that reads
+better. This is an optional provenance aid, not a required section or rigid
+Memory template.
+
 1. Write a markdown file using the `Write` tool (user approves).
 2. Register it via `remember()` in a narrow memory-registration script:
 
