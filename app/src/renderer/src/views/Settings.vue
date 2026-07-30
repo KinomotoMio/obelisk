@@ -7,6 +7,8 @@ const sources = ref([]);
 const dbPath = ref('');
 const recapPath = ref('');
 const autoRefresh = ref(true);
+const editorScheme = ref('vscode');
+const editorSchemes = ['vscode', 'vscode-insiders', 'cursor', 'windsurf', 'zed'];
 const memoryCount = ref(0);
 const rebuilding = ref(false);
 const version = ref('0.1.0');
@@ -22,7 +24,13 @@ async function loadSettings() {
   dbPath.value = s.dbPath || '';
   recapPath.value = s.recapDir || '~/.obelisk/recap';
   autoRefresh.value = s.autoRefresh !== false;
+  editorScheme.value = s.editorScheme || 'vscode';
   memoryCount.value = s.memoryCount || 0;
+}
+
+async function saveEditorScheme(value) {
+  editorScheme.value = value;
+  await saveSetting('editorScheme', value);
 }
 
 async function browseSourcePath(source) {
@@ -166,6 +174,25 @@ function fmtRelative(iso) {
           </span>
           <span class="toggle-text">Watch data sources for changes</span>
         </label>
+      </section>
+
+      <!-- Editor -->
+      <section class="settings-section">
+        <div class="settings-section-head">
+          <h2>Editor</h2>
+          <p>Which editor opens file references found in session transcripts.</p>
+        </div>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Editor URL scheme</div>
+            <div class="form-label-hint">Clicking <code>src/app.ts:42</code> jumps to that line.</div>
+          </div>
+          <div class="form-control">
+            <select class="form-input" :value="editorScheme" @change="saveEditorScheme($event.target.value)">
+              <option v-for="opt in editorSchemes" :key="opt" :value="opt">{{ opt }}</option>
+            </select>
+          </div>
+        </div>
       </section>
 
       <!-- Recap -->
