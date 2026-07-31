@@ -4,8 +4,8 @@
 import { state } from './store.js';
 import { markFileReferences, mayContainFileReference } from './file-references.mjs';
 import {
-  collectObeliskSessionIds,
-  decorateObeliskSessionLinks,
+  collectInlineSessionCandidates,
+  decorateResolvedInlineSessions,
 } from './memory-session-links.mjs';
 
 // --- Time / formatting ---
@@ -108,7 +108,7 @@ export function renderMarkdown(text, opts = {}) {
   container.className = cls;
   container.innerHTML = html;
   if (opts.sessionReferences) {
-    decorateObeliskSessionLinks(container, opts.sessionReferences);
+    decorateResolvedInlineSessions(container, opts.sessionReferences);
   }
   // Without a cwd or session to resolve against, a reference could never be opened — leaving it
   // unmarked keeps it from looking actionable.
@@ -119,11 +119,11 @@ export function renderMarkdown(text, opts = {}) {
   return container.outerHTML;
 }
 
-export function markdownSessionReferenceIds(text) {
+export function markdownSessionCandidates(text) {
   if (text == null) return [];
   const container = document.createElement('div');
   container.innerHTML = sanitizeMarkdown(window.marked.parse(text));
-  return collectObeliskSessionIds(container);
+  return collectInlineSessionCandidates(container);
 }
 
 // --- Duration / tokens / tooltip ---

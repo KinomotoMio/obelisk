@@ -5,20 +5,24 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
-const sessionId = 'codex:019f6392-0dba-7f13-be12-541db3645a69';
+const codexSessionId = 'codex:019f6392-0dba-7f13-be12-541db3645a69';
+const providerNeutralSessionId = 'claude-session-id';
 const missingSessionId = 'codex:00000000-0000-0000-0000-000000000000';
+const fencedOnlySessionId = 'codex:fenced-code-only';
 const memoryId = 'memory-session-links';
 const memoryMarkdown = `# Linked memory
 
-[MR review session](obelisk://session/${encodeURIComponent(sessionId)})
+The implementation came from \`${codexSessionId}\`.
 
-[Missing session](obelisk://session/${encodeURIComponent(missingSessionId)})
+Another provider can work without a renderer format rule: \`${providerNeutralSessionId}\`.
 
-\`${sessionId}\`
+An unknown value stays code: \`${missingSessionId}\`.
 
-\`\`\`markdown
-[Code sample](obelisk://session/${encodeURIComponent(sessionId)})
-\`\`\`
+Ordinary inline code also stays code: \`npm test\`.
+
+~~~text
+${fencedOnlySessionId}
+~~~
 `;
 
 const channels = [
@@ -39,18 +43,32 @@ const channels = [
 ];
 
 let failures = 0;
+let exactLookupIds = [];
 
-const session = {
-  id: sessionId,
-  title: 'MR review session',
-  project: 'tcode',
-  project_path: '/tmp/tcode',
-  source: 'codex',
-  started_at: '2026-07-15T02:19:04.014Z',
-  ended_at: '2026-07-15T03:00:00.000Z',
-  message_count: 1,
-  git_branch: 'main',
-};
+const sessions = [
+  {
+    id: codexSessionId,
+    title: 'MR review session',
+    project: 'tcode',
+    project_path: '/tmp/tcode',
+    source: 'codex',
+    started_at: '2026-07-15T02:19:04.014Z',
+    ended_at: '2026-07-15T03:00:00.000Z',
+    message_count: 1,
+    git_branch: 'main',
+  },
+  {
+    id: providerNeutralSessionId,
+    title: 'Provider-neutral session',
+    project: 'tcode',
+    project_path: '/tmp/tcode',
+    source: 'claude',
+    started_at: '2026-07-14T02:19:04.014Z',
+    ended_at: '2026-07-14T03:00:00.000Z',
+    message_count: 1,
+    git_branch: 'main',
+  },
+];
 
 function assert(condition, message) {
   if (condition) console.log(`PASS: ${message}`);
@@ -71,10 +89,11 @@ async function waitFor(webContents, expression, message, timeoutMs = 8_000) {
 
 function registerHandlers() {
   ipcMain.handle('db:getSessions', (_event, opts = {}) => {
-    if (Array.isArray(opts.ids)) return opts.ids.includes(sessionId) ? [session] : [];
-    return [session];
+    if (!Array.isArray(opts.ids)) return sessions;
+    exactLookupIds = [...opts.ids];
+    return sessions.filter(session => opts.ids.includes(session.id));
   });
-  ipcMain.handle('db:getSessionMessages', () => [{
+  ipcMain.handle('db:getSessionMessages', (_event, sessionId) => [{
     uuid: `${sessionId}:000001`,
     session_id: sessionId,
     type: 'assistant',
@@ -86,20 +105,20 @@ function registerHandlers() {
   }]);
   ipcMain.handle('db:getSessionToolCalls', () => []);
   ipcMain.handle('db:getSessionToolResults', () => []);
-  ipcMain.handle('db:getSessionPatch', () => null);
   ipcMain.handle('db:getSessionSubagents', () => []);
   ipcMain.handle('db:getSessionWorkflows', () => []);
+  ipcMain.handle('db:getSessionPatch', () => null);
   ipcMain.handle('db:getSessionSummaries', () => []);
   ipcMain.handle('db:getMessageFullText', () => null);
   ipcMain.handle('db:getMemories', () => [{
     id: memoryId,
-    session_id: sessionId,
+    session_id: codexSessionId,
     project: 'tcode',
     message_start: null,
     message_end: null,
     path: '/tmp/linked-memory.md',
     anchors: null,
-    summary: 'A Memory with an explicit Obelisk session link.',
+    summary: 'A Memory containing inline-code session IDs.',
     created_at: '2026-07-30T04:55:28.011Z',
     deleted_at: null,
     deleted_reason: null,
@@ -128,34 +147,41 @@ async function run() {
   });
   await waitFor(
     win.webContents,
-    `document.querySelectorAll('.markdown-session-link').length === 1`,
-    'resolved Memory session link',
+    `document.querySelectorAll('.markdown-session-link').length === 2`,
+    'resolved inline-code sessions',
   );
 
   const rendered = await win.webContents.executeJavaScript(`(() => {
-    const link = document.querySelector('.markdown-session-link');
-    const unavailable = document.querySelector('.markdown-session-reference-unavailable');
-    const inlineCodes = [...document.querySelectorAll('.markdown-body code')].map(node => node.textContent);
+    const links = [...document.querySelectorAll('.markdown-session-link')];
+    const inlineCodes = [...document.querySelectorAll('.markdown-body code')]
+      .filter(node => !node.closest('pre'))
+      .map(node => node.textContent.trim());
+    const fencedCodes = [...document.querySelectorAll('.markdown-body pre code')]
+      .map(node => node.textContent.trim());
     return {
-      linkText: link?.textContent.trim(),
-      linkSessionId: link?.dataset.obeliskSessionId,
-      linkHref: link?.getAttribute('href'),
-      hasIcon: Boolean(link?.querySelector('svg')),
-      unavailableText: unavailable?.textContent.trim(),
-      unavailableIsLink: unavailable?.matches('a'),
+      linkIds: links.map(link => link.dataset.sessionId),
+      linkTexts: links.map(link => link.textContent.trim()),
+      linkTags: links.map(link => link.tagName),
+      allReuseSessionStyle: links.every(link => link.classList.contains('session-link')),
+      allHaveIcons: links.every(link => Boolean(link.querySelector('svg'))),
       inlineCodes,
-      renderedLinkCount: document.querySelectorAll('.markdown-body a').length,
+      fencedCodes,
     };
   })()`, true);
 
-  assert(rendered.linkText === 'MR review session', `canonical link keeps its descriptive label (${JSON.stringify(rendered)})`);
-  assert(rendered.linkSessionId === sessionId, 'resolved link carries the canonical session id');
-  assert(rendered.linkHref === `obelisk://session/${encodeURIComponent(sessionId)}`, 'rendered link keeps the canonical Obelisk href');
-  assert(rendered.hasIcon, 'rendered link reuses the session icon language');
-  assert(rendered.unavailableText === 'Missing session' && rendered.unavailableIsLink === false, 'missing target becomes readable non-link text');
-  assert(rendered.inlineCodes.includes(sessionId), 'bare inline session id remains ordinary code');
-  assert(rendered.inlineCodes.some(text => text.includes('Code sample')), 'fenced Markdown sample remains code');
-  assert(rendered.renderedLinkCount === 1, 'fenced and missing references do not become navigable links');
+  assert(
+    JSON.stringify(rendered.linkIds) === JSON.stringify([codexSessionId, providerNeutralSessionId]),
+    `only exact DB matches become links (${JSON.stringify(rendered)})`,
+  );
+  assert(rendered.linkTexts.includes(codexSessionId), 'link keeps the stored Codex session ID visible');
+  assert(rendered.linkTexts.includes(providerNeutralSessionId), 'linking does not assume a provider-specific ID shape');
+  assert(rendered.linkTags.every(tag => tag === 'BUTTON'), 'resolved references use internal navigation buttons');
+  assert(rendered.allReuseSessionStyle && rendered.allHaveIcons, 'links reuse the existing session-link visual language');
+  assert(rendered.inlineCodes.includes(missingSessionId), 'unknown session ID remains ordinary inline code');
+  assert(rendered.inlineCodes.includes('npm test'), 'unrelated inline code remains ordinary code');
+  assert(rendered.fencedCodes.includes(fencedOnlySessionId), 'session ID inside a fenced block remains code');
+  assert(exactLookupIds.includes(missingSessionId) && exactLookupIds.includes('npm test'), 'the DB lookup, not a format regex, decides which candidates resolve');
+  assert(!exactLookupIds.includes(fencedOnlySessionId), 'fenced code is excluded from exact lookup candidates');
 
   await win.webContents.executeJavaScript(
     `document.querySelector('.markdown-session-link').click()`,
@@ -167,7 +193,7 @@ async function run() {
     'internal Session Detail navigation',
   );
   const route = await win.webContents.executeJavaScript('window.location.hash', true);
-  assert(decodeURIComponent(route).includes(sessionId), `click stays inside Obelisk and opens the requested session (${route})`);
+  assert(decodeURIComponent(route).includes(codexSessionId), `click opens the requested session inside Obelisk (${route})`);
 
   win.destroy();
 }

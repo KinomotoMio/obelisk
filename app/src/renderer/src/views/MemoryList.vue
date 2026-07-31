@@ -8,7 +8,7 @@ import {
   formatProjectLabel,
   fmtListTime,
   fmtRelative,
-  markdownSessionReferenceIds,
+  markdownSessionCandidates,
   renderMarkdown,
 } from '../utils.js';
 import { loadMemoryMarkdown, loadSessionsByIds, archiveMemory, restoreMemory } from '../data.js';
@@ -181,7 +181,7 @@ async function loadDetail(memory) {
   }
   if (version !== detailLoadVersion) return;
   const markdown = memory?.markdown ?? null;
-  const referenceIds = markdownSessionReferenceIds(markdown);
+  const referenceIds = markdownSessionCandidates(markdown);
   const sessions = await loadSessionsByIds(referenceIds);
   if (version !== detailLoadVersion) return;
   detailSessionReferences.value = new Map(sessions.map(session => [session.id, session]));
@@ -292,11 +292,11 @@ const renderedMarkdown = computed(() => {
 
 function openMarkdownSession(event) {
   const link = event.target instanceof Element
-    ? event.target.closest('[data-obelisk-session-id]')
+    ? event.target.closest('[data-session-id]')
     : null;
   if (!link) return;
   event.preventDefault();
-  const sessionId = link.dataset.obeliskSessionId;
+  const sessionId = link.dataset.sessionId;
   if (sessionId) router.push({ name: 'SessionDetail', params: { id: sessionId } });
 }
 

@@ -1,59 +1,28 @@
-const OBELISK_PROTOCOL = 'obelisk:';
-const SESSION_HOST = 'session';
+const MAX_SESSION_CANDIDATES = 100;
+const MAX_SESSION_ID_LENGTH = 512;
 
-function isObeliskHref(href) {
-  return typeof href === 'string' && href.trim().toLowerCase().startsWith(OBELISK_PROTOCOL);
+export function inlineCodeSessionCandidate(code) {
+  if (!code || code.closest?.('pre')) return null;
+  const raw = code.textContent;
+  if (typeof raw !== 'string') return null;
+  const candidate = raw.trim();
+  if (!candidate || candidate.length > MAX_SESSION_ID_LENGTH) return null;
+  return candidate;
 }
 
-export function parseObeliskSessionHref(href) {
-  if (typeof href !== 'string' || !href.trim()) return null;
-
-  let url;
-  try {
-    url = new URL(href);
-  } catch {
-    return null;
-  }
-
-  if (
-    url.protocol !== OBELISK_PROTOCOL
-    || url.hostname !== SESSION_HOST
-    || url.username
-    || url.password
-    || url.port
-    || url.search
-    || url.hash
-  ) {
-    return null;
-  }
-
-  const encodedId = url.pathname.slice(1);
-  if (!encodedId || encodedId.includes('/')) return null;
-
-  try {
-    const sessionId = decodeURIComponent(encodedId);
-    if (!sessionId || sessionId.trim() !== sessionId || sessionId.includes('/')) return null;
-    return sessionId;
-  } catch {
-    return null;
-  }
-}
-
-export function collectObeliskSessionIds(root) {
+// Memory agents already expose session IDs as inline code. The renderer does not
+// interpret their shape: it collects bounded candidates and lets an exact DB lookup
+// decide whether any of them are real sessions.
+export function collectInlineSessionCandidates(root) {
   if (!root?.querySelectorAll) return [];
-  const ids = new Set();
-  for (const link of root.querySelectorAll('a[href]')) {
-    const sessionId = parseObeliskSessionHref(link.getAttribute('href'));
-    if (sessionId) ids.add(sessionId);
+  const candidates = new Set();
+  for (const code of root.querySelectorAll('code')) {
+    const candidate = inlineCodeSessionCandidate(code);
+    if (!candidate) continue;
+    candidates.add(candidate);
+    if (candidates.size >= MAX_SESSION_CANDIDATES) break;
   }
-  return [...ids];
-}
-
-function replaceWithReadableText(link) {
-  const replacement = link.ownerDocument.createElement('span');
-  replacement.className = 'markdown-session-reference-unavailable';
-  while (link.firstChild) replacement.append(link.firstChild);
-  link.replaceWith(replacement);
+  return [...candidates];
 }
 
 function sessionIcon(document) {
@@ -75,24 +44,21 @@ function sessionIcon(document) {
   return svg;
 }
 
-export function decorateObeliskSessionLinks(root, sessionsById) {
+export function decorateResolvedInlineSessions(root, sessionsById) {
   if (!root?.querySelectorAll) return;
   const resolved = sessionsById instanceof Map ? sessionsById : new Map();
 
-  for (const link of root.querySelectorAll('a[href]')) {
-    const href = link.getAttribute('href');
-    if (!isObeliskHref(href)) continue;
-
-    const sessionId = parseObeliskSessionHref(href);
+  for (const code of root.querySelectorAll('code')) {
+    const sessionId = inlineCodeSessionCandidate(code);
     const session = sessionId ? resolved.get(sessionId) : null;
-    if (!sessionId || !session) {
-      replaceWithReadableText(link);
-      continue;
-    }
+    if (!sessionId || !session) continue;
 
-    link.classList.add('session-link', 'markdown-session-link');
-    link.dataset.obeliskSessionId = sessionId;
-    link.title = session.title ? `Open session: ${session.title}` : `Open session: ${sessionId}`;
-    link.prepend(sessionIcon(link.ownerDocument));
+    const button = code.ownerDocument.createElement('button');
+    button.type = 'button';
+    button.classList.add('session-link', 'markdown-session-link');
+    button.dataset.sessionId = sessionId;
+    button.title = session.title ? `Open session: ${session.title}` : `Open session: ${sessionId}`;
+    button.append(sessionIcon(code.ownerDocument), code.ownerDocument.createTextNode(sessionId));
+    code.replaceWith(button);
   }
 }
