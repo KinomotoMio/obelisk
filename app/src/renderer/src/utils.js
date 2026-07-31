@@ -3,6 +3,7 @@
 
 import { state } from './store.js';
 import { configureMarkdownImages } from './markdown-image-renderer.js';
+import { markFileReferences, mayContainFileReference } from './file-references.mjs';
 
 // --- Time / formatting ---
 
@@ -104,6 +105,11 @@ export function renderMarkdown(text, opts = {}) {
   const container = document.createElement('div');
   container.className = cls;
   container.innerHTML = html;
+  // Without a cwd or session to resolve against, a reference could never be opened — leaving it
+  // unmarked keeps it from looking actionable.
+  if ((opts.cwd || opts.sessionId) && mayContainFileReference(html)) {
+    markFileReferences(container, { cwd: opts.cwd, sessionId: opts.sessionId });
+  }
   if (opts.query) highlightTextNodes(container, opts.query.trim());
   return container.outerHTML;
 }

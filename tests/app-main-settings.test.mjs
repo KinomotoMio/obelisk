@@ -145,6 +145,8 @@ async function loadMainForWindowFlags(flags) {
       this.devToolsOpened = false;
       this.webContents = {
         on() {},
+        setWindowOpenHandler() {},
+        getURL() { return ''; },
         setZoomLevel() {},
         openDevTools: () => { this.devToolsOpened = true; },
         send() {},
@@ -222,7 +224,7 @@ test('main process watches every root declared by the built-in provider registry
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -295,7 +297,7 @@ test('main process forwards committed IDs without reopening after a deferred bui
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() { notifications += 1; } };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() { notifications += 1; } };
     }
     loadFile() {}
     loadURL() {}
@@ -374,7 +376,7 @@ test('session IPC hides Codex rows by default and supports explicit source opt-i
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -456,7 +458,7 @@ test('usage IPC aggregates normalized tokens across all indexed providers', asyn
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -540,7 +542,7 @@ test('main process migrates an existing app database before source-filtered IPC 
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -606,7 +608,7 @@ test('main process keeps schema and memory mutations behind the writer lease', a
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -676,7 +678,7 @@ test('closing the last macOS window releases background resources until activati
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
       windows.push(this);
     }
     loadFile() {}
@@ -801,7 +803,7 @@ test('settings rebuild reopens the database from the configured Claude path', as
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -929,7 +931,7 @@ test('settings rebuild keeps the existing database after a worker failure', asyn
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}
@@ -1033,7 +1035,7 @@ test('settings rebuild cancels an in-flight background build instead of waiting 
 
   class FakeBrowserWindow {
     constructor() {
-      this.webContents = { on() {}, setZoomLevel() {}, openDevTools() {}, send() {} };
+      this.webContents = { on() {}, setWindowOpenHandler() {}, getURL() { return ''; }, setZoomLevel() {}, openDevTools() {}, send() {} };
     }
     loadFile() {}
     loadURL() {}

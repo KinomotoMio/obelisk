@@ -19,6 +19,8 @@ export interface SessionDetailMessage {
   text: string | null;
   content_type: string | null;
   is_meta: 0 | 1;
+  session_id: string | null;
+  cwd: string | null;
   turn_duration_ms: number | null;
 }
 
@@ -365,6 +367,10 @@ function assembleTranscriptRecords(records: Iterable<TranscriptRecord>): Session
           text: record.text,
           content_type: record.content_type,
           is_meta: record.is_meta,
+          // Both kept per message, not per session: the working directory can change
+          // mid-session, and the session id scopes which roots a file reference may resolve in.
+          session_id: typeof record.session_id === 'string' ? record.session_id : null,
+          cwd: typeof record.cwd === 'string' ? record.cwd : null,
           turn_duration_ms: typeof (record as MessageRecord & { turn_duration_ms?: unknown }).turn_duration_ms === 'number'
             ? (record as MessageRecord & { turn_duration_ms: number }).turn_duration_ms
             : null,

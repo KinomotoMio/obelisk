@@ -22,7 +22,8 @@
     "test:electron": "electron-vite build && electron --no-sandbox tests/electron-concurrency.mjs",
     "test:electron:images": "electron-vite build && electron --no-sandbox tests/electron-session-images.mjs",
     "test:electron:timeline": "electron-vite build && electron --no-sandbox tests/electron-session-virtualization.mjs",
-    "test:electron:reader-state": "electron-vite build && electron --no-sandbox tests/electron-session-reader-state.mjs"
+    "test:electron:reader-state": "electron-vite build && electron --no-sandbox tests/electron-session-reader-state.mjs",
+    "test:electron:file-refs": "electron-vite build && electron --no-sandbox tests/electron-file-references.mjs"
   },
   "build": {
     "appId": "com.obelisk.app",
@@ -71,15 +72,15 @@
     ]
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^13.0.2",
     "chokidar": "^4.0.3"
   },
   "devDependencies": {
     "@tanstack/vue-virtual": "^3.13.32",
     "@types/better-sqlite3": "^7.6.13",
     "@vitejs/plugin-vue": "^5.0.0",
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "vite": "^6.0.0",
     "vue": "^3.4.0",

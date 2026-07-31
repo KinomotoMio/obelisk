@@ -1356,3 +1356,12 @@
   font-variant-numeric: tabular-nums;
 }
 .msg-nav-pos .msg-nav-current { color: var(--fg-2); font-weight: 500; }
+
+.file-ref {
+  color: var(--accent-2); cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--accent-soft);
+  text-underline-offset: 3px; transition: all 0.1s;
+}
+.file-ref:hover { color: var(--accent-2); text-decoration-color: var(--accent-2); }
+code > .file-ref { color: inherit; text-decoration-color: var(--muted-2); }
+code > .file-ref:hover { color: var(--accent-2); text-decoration-color: var(--accent-2); }

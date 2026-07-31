@@ -9,6 +9,7 @@ import { writeHeartbeat } from './indexer.ts';
 import { createIndexerService } from './indexer-service.ts';
 import { createWorkerBuildIndex } from './indexer-worker-client.ts';
 import { buildRecapExportQuery } from './recap-capture-query.ts';
+import { buildEditorUrl, DEFAULT_EDITOR_SCHEME, EDITOR_SCHEMES, resolveFileReference } from './file-reference.ts';
 import { acquireWriterLease, writerLockPathFor } from '../../../packages/core/src/writer-lease.ts';
 import { migrateCoreSchemaColumns } from '../../../packages/core/src/schema-migrations.ts';
 import { createBuiltinProviderRegistry } from '../../../packages/core/src/providers/builtins.ts';
@@ -298,6 +299,30 @@ async function stopBackgroundResources({ stopWorker = false } = {}) {
   closeDb();
 }
 
+function safeProtocol(url: string): string {
+  try { return new URL(url).protocol; } catch { return ''; }
+}
+
+function isSameOrigin(url: string, currentUrl: string): boolean {
+  try {
+    return new URL(url).origin === new URL(currentUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+// Reloads and in-app routing keep the same origin and pathname; anything else is a real
+// navigation away from the renderer document.
+function isSameDocumentNavigation(url: string, currentUrl: string): boolean {
+  try {
+    const target = new URL(url);
+    const current = new URL(currentUrl);
+    return target.origin === current.origin && target.pathname === current.pathname;
+  } catch {
+    return false;
+  }
+}
+
 function createWindow() {
   const isDev = process.argv.includes('--dev') || !!process.env.ELECTRON_RENDERER_URL;
   const shouldOpenDevTools = process.argv.includes('--devtools');
@@ -323,6 +348,25 @@ function createWindow() {
     if ((input.meta || input.control) && ['+', '=', '-', '0'].includes(input.key)) {
       win.webContents.setZoomLevel(0);
     }
+  });
+
+  // Keep the SPA in place: a Markdown link in a transcript must never replace the running
+  // renderer. External http(s) targets are handed to the system browser instead.
+  // Only genuinely external targets go to the browser. A same-origin URL is a local document
+  // reference — in dev that would hand the system browser a Vite-served source file.
+  const releaseNavigation = (url: string) => {
+    if (!/^https?:$/i.test(safeProtocol(url))) return;
+    if (isSameOrigin(url, win.webContents.getURL())) return;
+    shell.openExternal(url).catch(() => {});
+  };
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    releaseNavigation(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isSameDocumentNavigation(url, win.webContents.getURL())) return;
+    event.preventDefault();
+    releaseNavigation(url);
   });
 
   if (isDev) {
@@ -589,6 +633,39 @@ ipcMain.handle('db:readMemoryFile', (_, filePath) => {
   } catch { return null; }
 });
 
+// Every root this session actually worked in. A reference is only opened if it lands inside
+// one of them, so untrusted transcript text cannot reach a file outside the session's own
+// projects. Scoping is deliberately per session, not corpus-wide.
+function querySessionFileRoots(sessionId: unknown): string[] {
+  if (!db || typeof sessionId !== 'string' || !sessionId) return [];
+  const roots: string[] = [];
+  try {
+    const rows = db.prepare(
+      `SELECT DISTINCT cwd FROM messages WHERE session_id = ? AND cwd IS NOT NULL AND cwd != ''`
+    ).all(sessionId);
+    for (const row of rows) roots.push(row.cwd);
+    const session = db.prepare(`SELECT project_path FROM sessions WHERE id = ?`).get(sessionId);
+    if (session?.project_path) roots.push(session.project_path);
+  } catch {}
+  return roots;
+}
+
+ipcMain.handle('file-ref:open', async (_, ref) => {
+  const { sessionId, path: rawPath, cwd, line, column } = ref || {};
+  const roots = querySessionFileRoots(sessionId);
+  // The renderer-supplied cwd only counts if this session actually recorded it.
+  const scopedCwd = typeof cwd === 'string' && roots.includes(cwd) ? cwd : null;
+  const filePath = resolveFileReference({ rawPath, cwd: scopedCwd, roots });
+  if (!filePath) return { opened: false };
+  const { editorScheme } = loadPersistedSettings();
+  try {
+    await shell.openExternal(buildEditorUrl({ scheme: editorScheme, filePath, line, column }));
+    return { opened: true, path: filePath };
+  } catch {
+    return { opened: false, path: filePath };
+  }
+});
+
 ipcMain.handle('db:archiveMemory', (_, id, reason) => {
   return runAppDbWrite(() => {
     db.prepare(`UPDATE memories SET deleted_at = ?, deleted_reason = ? WHERE id = ?`)
@@ -814,6 +891,7 @@ ipcMain.handle('settings:get', () => {
     dbPath: dbFile,
     recapDir,
     autoRefresh: persisted.autoRefresh !== false,
+    editorScheme: persisted.editorScheme || DEFAULT_EDITOR_SCHEME,
     sources,
     memoryCount,
     sessionCount,

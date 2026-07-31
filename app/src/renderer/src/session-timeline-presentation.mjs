@@ -252,6 +252,7 @@ export function buildSessionTimelinePresentation(item, { query = '', expandedTex
   const toolArgPreviews = new Map();
   const toolIcons = new Map();
   const workflowAgentGroups = new Map();
+  const refs = { cwd: message.cwd || null, sessionId: message.session_id || null };
 
   for (const toolCall of toolCalls) {
     const input = parseToolInput(toolCall);
@@ -263,7 +264,7 @@ export function buildSessionTimelinePresentation(item, { query = '', expandedTex
       toolPrettyHtml.set(toolCall.id, renderPrettyTool(toolCall));
     }
     if ((toolCall.name === 'Agent' || toolCall.name === 'Task') && toolCall.result?.content) {
-      toolResultHtml.set(toolCall.id, renderMarkdown(toolCall.result.content, { variant: 'compact' }));
+      toolResultHtml.set(toolCall.id, renderMarkdown(toolCall.result.content, { variant: 'compact', ...refs }));
     }
     if (toolCall.name === 'Workflow') workflowAgentGroups.set(toolCall.id, groupWorkflowAgents(toolCall.workflow));
   }
@@ -271,14 +272,14 @@ export function buildSessionTimelinePresentation(item, { query = '', expandedTex
   const effectiveText = expandedText ?? message.text;
   return {
     messageHtml: message.text
-      ? renderMarkdown(effectiveText, { variant: item?.kind === 'meta' ? 'compact' : 'msg', query })
+      ? renderMarkdown(effectiveText, { variant: item?.kind === 'meta' ? 'compact' : 'msg', query, ...refs })
       : '',
     thinkingHtml: message._thinking
-      ? renderMarkdown(message._thinking, { variant: 'msg', query })
-      : (item?.kind === 'thinking' ? renderMarkdown(message.text, { variant: 'msg', query }) : ''),
-    skillHtml: message._skillMd ? renderMarkdown(message._skillMd, { variant: 'compact' }) : '',
+      ? renderMarkdown(message._thinking, { variant: 'msg', query, ...refs })
+      : (item?.kind === 'thinking' ? renderMarkdown(message.text, { variant: 'msg', query, ...refs }) : ''),
+    skillHtml: message._skillMd ? renderMarkdown(message._skillMd, { variant: 'compact', ...refs }) : '',
     summaryHtml: message.summary?.content
-      ? renderMarkdown(message.summary.content, { variant: 'compact' })
+      ? renderMarkdown(message.summary.content, { variant: 'compact', ...refs })
       : '',
     toolInputs,
     toolInputText,
