@@ -44,6 +44,11 @@ function sessionIcon(document) {
   return svg;
 }
 
+function sessionLabel(session, sessionId) {
+  const title = typeof session?.title === 'string' ? session.title.trim() : '';
+  return title || sessionId;
+}
+
 export function decorateResolvedInlineSessions(root, sessionsById) {
   if (!root?.querySelectorAll) return;
   const resolved = sessionsById instanceof Map ? sessionsById : new Map();
@@ -54,11 +59,13 @@ export function decorateResolvedInlineSessions(root, sessionsById) {
     if (!sessionId || !session) continue;
 
     const button = code.ownerDocument.createElement('button');
+    const label = sessionLabel(session, sessionId);
     button.type = 'button';
     button.classList.add('session-link', 'markdown-session-link');
     button.dataset.sessionId = sessionId;
-    button.title = session.title ? `Open session: ${session.title}` : `Open session: ${sessionId}`;
-    button.append(sessionIcon(code.ownerDocument), code.ownerDocument.createTextNode(sessionId));
+    button.title = `Session ID: ${sessionId}`;
+    button.setAttribute('aria-label', `Open session: ${label}`);
+    button.append(sessionIcon(code.ownerDocument), code.ownerDocument.createTextNode(label));
     code.replaceWith(button);
   }
 }

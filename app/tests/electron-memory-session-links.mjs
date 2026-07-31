@@ -7,6 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
 const codexSessionId = 'codex:019f6392-0dba-7f13-be12-541db3645a69';
 const providerNeutralSessionId = 'claude-session-id';
+const untitledSessionId = 'codex:untitled-session';
 const missingSessionId = 'codex:00000000-0000-0000-0000-000000000000';
 const fencedOnlySessionId = 'codex:fenced-code-only';
 const memoryId = 'memory-session-links';
@@ -15,6 +16,8 @@ const memoryMarkdown = `# Linked memory
 The implementation came from \`${codexSessionId}\`.
 
 Another provider can work without a renderer format rule: \`${providerNeutralSessionId}\`.
+
+An untitled session keeps its exact identity visible: \`${untitledSessionId}\`.
 
 An unknown value stays code: \`${missingSessionId}\`.
 
@@ -65,6 +68,17 @@ const sessions = [
     source: 'claude',
     started_at: '2026-07-14T02:19:04.014Z',
     ended_at: '2026-07-14T03:00:00.000Z',
+    message_count: 1,
+    git_branch: 'main',
+  },
+  {
+    id: untitledSessionId,
+    title: null,
+    project: 'tcode',
+    project_path: '/tmp/tcode',
+    source: 'codex',
+    started_at: '2026-07-13T02:19:04.014Z',
+    ended_at: '2026-07-13T03:00:00.000Z',
     message_count: 1,
     git_branch: 'main',
   },
@@ -147,7 +161,7 @@ async function run() {
   });
   await waitFor(
     win.webContents,
-    `document.querySelectorAll('.markdown-session-link').length === 2`,
+    `document.querySelectorAll('.markdown-session-link').length === 3`,
     'resolved inline-code sessions',
   );
 
@@ -161,20 +175,49 @@ async function run() {
     return {
       linkIds: links.map(link => link.dataset.sessionId),
       linkTexts: links.map(link => link.textContent.trim()),
+      hoverTitles: links.map(link => link.title),
+      ariaLabels: links.map(link => link.getAttribute('aria-label')),
       linkTags: links.map(link => link.tagName),
       allReuseSessionStyle: links.every(link => link.classList.contains('session-link')),
       allHaveIcons: links.every(link => Boolean(link.querySelector('svg'))),
+      headerLink: (() => {
+        const link = document.querySelector('.detail-meta .session-link');
+        return link && {
+          text: link.textContent.trim(),
+          title: link.title,
+          ariaLabel: link.getAttribute('aria-label'),
+        };
+      })(),
       inlineCodes,
       fencedCodes,
     };
   })()`, true);
 
   assert(
-    JSON.stringify(rendered.linkIds) === JSON.stringify([codexSessionId, providerNeutralSessionId]),
+    JSON.stringify(rendered.linkIds) === JSON.stringify([codexSessionId, providerNeutralSessionId, untitledSessionId]),
     `only exact DB matches become links (${JSON.stringify(rendered)})`,
   );
-  assert(rendered.linkTexts.includes(codexSessionId), 'link keeps the stored Codex session ID visible');
-  assert(rendered.linkTexts.includes(providerNeutralSessionId), 'linking does not assume a provider-specific ID shape');
+  assert(rendered.linkTexts.includes('MR review session'), 'resolved link displays the human-readable session title');
+  assert(rendered.linkTexts.includes('Provider-neutral session'), 'linking does not assume a provider-specific ID shape');
+  assert(rendered.linkTexts.includes(untitledSessionId), 'untitled session falls back to its full ID');
+  assert(
+    JSON.stringify(rendered.hoverTitles) === JSON.stringify(rendered.linkIds.map(id => `Session ID: ${id}`)),
+    'native hover text exposes the exact session ID',
+  );
+  assert(
+    JSON.stringify(rendered.ariaLabels) === JSON.stringify([
+      'Open session: MR review session',
+      'Open session: Provider-neutral session',
+      `Open session: ${untitledSessionId}`,
+    ]),
+    'session buttons have meaningful accessible labels',
+  );
+  assert(
+    rendered.headerLink?.text === 'MR review session'
+      && rendered.headerLink?.title === `Session ID: ${codexSessionId}`
+      && rendered.headerLink?.ariaLabel === 'Open session: MR review session',
+    'Memory header and body session links share title-first labels and UUID hover text',
+  );
   assert(rendered.linkTags.every(tag => tag === 'BUTTON'), 'resolved references use internal navigation buttons');
   assert(rendered.allReuseSessionStyle && rendered.allHaveIcons, 'links reuse the existing session-link visual language');
   assert(rendered.inlineCodes.includes(missingSessionId), 'unknown session ID remains ordinary inline code');

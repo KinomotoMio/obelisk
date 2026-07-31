@@ -89,7 +89,7 @@ function summaryHTML(m) {
 function sourceSessionTitle(m) {
   if (!m.session_id) return '';
   const s = state.sessions.find(x => x.id === m.session_id);
-  return s?.title || m.session_id.slice(0, 8);
+  return s?.title?.trim() || m.session_id;
 }
 
 function openSourceSession(m) {
@@ -353,6 +353,8 @@ onUnmounted(() => {
           <button
             v-if="detailMemory.session_id"
             class="session-link"
+            :title="`Session ID: ${detailMemory.session_id}`"
+            :aria-label="`Open session: ${sourceSessionTitle(detailMemory)}`"
             @click="openSourceSession(detailMemory)"
           >
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
