@@ -2,6 +2,7 @@
 // Pure helpers with no side-effects on global state (except formatProjectLabel which reads store).
 
 import { state } from './store.js';
+import { markFileReferences, mayContainFileReference } from './file-references.mjs';
 import {
   collectObeliskSessionIds,
   decorateObeliskSessionLinks,
@@ -108,6 +109,11 @@ export function renderMarkdown(text, opts = {}) {
   container.innerHTML = html;
   if (opts.sessionReferences) {
     decorateObeliskSessionLinks(container, opts.sessionReferences);
+  }
+  // Without a cwd or session to resolve against, a reference could never be opened — leaving it
+  // unmarked keeps it from looking actionable.
+  if ((opts.cwd || opts.sessionId) && mayContainFileReference(html)) {
+    markFileReferences(container, { cwd: opts.cwd, sessionId: opts.sessionId });
   }
   if (opts.query) highlightTextNodes(container, opts.query.trim());
   return container.outerHTML;

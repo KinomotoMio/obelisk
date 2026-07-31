@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('obelisk', {
   getMessageFullText: (uuid: string) => ipcRenderer.invoke('db:getMessageFullText', uuid),
   getMemories: () => ipcRenderer.invoke('db:getMemories'),
   readMemoryFile: (path: string) => ipcRenderer.invoke('db:readMemoryFile', path),
+  openFileReference: (ref: { sessionId?: string | null; path: string; cwd?: string | null; line?: number | null; column?: number | null }) =>
+    ipcRenderer.invoke('file-ref:open', ref),
   archiveMemory: (id: string, reason?: string) => ipcRenderer.invoke('db:archiveMemory', id, reason),
   restoreMemory: (id: string) => ipcRenderer.invoke('db:restoreMemory', id),
   getProjects: () => ipcRenderer.invoke('db:getProjects'),

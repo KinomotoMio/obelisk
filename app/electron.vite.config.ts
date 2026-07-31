@@ -13,6 +13,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
+          'file-reference': resolve('src/main/file-reference.ts'),
           indexer: resolve('src/main/indexer.ts'),
           'indexer-service': resolve('src/main/indexer-service.ts'),
           'indexer-worker': resolve('src/main/indexer-worker.ts'),
