@@ -95,7 +95,7 @@ export function highlightTextNodes(rootEl, query) {
 
 export function renderMarkdown(text, opts = {}) {
   if (text == null) return '';
-  // marked is loaded globally via CDN in index.html
+  // marked is loaded globally via CDN in index.html and configured at startup.
   const html = sanitizeMarkdown(window.marked.parse(text));
   const cls = opts.variant === 'msg' ? 'markdown-msg'
             : opts.variant === 'compact' ? 'markdown-compact'
