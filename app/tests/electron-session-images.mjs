@@ -300,6 +300,16 @@ async function run() {
       const smallImageRect = smallImage.getBoundingClientRect();
       const wideRowRect = wideRow.getBoundingClientRect();
       const nextRowRect = nextRow.getBoundingClientRect();
+      // Row spacing is applied by the virtualizer, not by CSS on the row, so
+      // calibrate against the spacing the rest of this timeline is using rather
+      // than hard-coding the current value.
+      const mountedRows = [...document.querySelectorAll('.virtual-timeline-row')]
+        .map(row => ({ index: Number(row.dataset.index), rect: row.getBoundingClientRect() }))
+        .sort((left, right) => left.index - right.index);
+      const gaps = mountedRows
+        .slice(1)
+        .map((row, offset) => row.rect.top - mountedRows[offset].rect.bottom)
+        .sort((left, right) => left - right);
       return {
         wrapClientWidth: wrap.clientWidth,
         wrapScrollWidth: wrap.scrollWidth,
@@ -312,6 +322,7 @@ async function run() {
         smallNaturalWidth: smallImage.naturalWidth,
         rowHeight: wideRowRect.height,
         rowGap: nextRowRect.top - wideRowRect.bottom,
+        typicalRowGap: gaps[Math.floor(gaps.length / 2)] ?? null,
         brokenText: brokenHost.shadowRoot.querySelector('figcaption')?.textContent || '',
       };
     })()`, true);
@@ -337,7 +348,9 @@ async function run() {
       `small images keep their intrinsic width (${JSON.stringify(layout)})`,
     );
     assert(
-      layout.rowHeight > layout.wideImageHeight && layout.rowGap >= 13,
+      layout.rowHeight > layout.wideImageHeight
+        && layout.typicalRowGap !== null
+        && Math.abs(layout.rowGap - layout.typicalRowGap) <= 1,
       `measured image rows do not overlap the following row (${JSON.stringify(layout)})`,
     );
     assert(
