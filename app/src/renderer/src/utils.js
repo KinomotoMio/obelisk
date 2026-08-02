@@ -2,7 +2,6 @@
 // Pure helpers with no side-effects on global state (except formatProjectLabel which reads store).
 
 import { state } from './store.js';
-import { configureMarkdownImages } from './markdown-image-renderer.js';
 import { markFileReferences, mayContainFileReference } from './file-references.mjs';
 
 // --- Time / formatting ---
@@ -96,8 +95,7 @@ export function highlightTextNodes(rootEl, query) {
 
 export function renderMarkdown(text, opts = {}) {
   if (text == null) return '';
-  // marked is loaded globally via CDN in index.html
-  configureMarkdownImages(window.marked);
+  // marked is loaded globally via CDN in index.html and configured at startup.
   const html = sanitizeMarkdown(window.marked.parse(text));
   const cls = opts.variant === 'msg' ? 'markdown-msg'
             : opts.variant === 'compact' ? 'markdown-compact'
