@@ -1,17 +1,24 @@
 <script setup>
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { SESSION_IMAGE_SETTLED_EVENT } from '../session-image-contract.js';
 
 defineOptions({ name: 'SessionImage' });
 
 const props = defineProps({
-  src: { type: String, required: true },
+  // Absent when the Markdown renderer refused the source. The element still
+  // renders, in its error state, so a blocked source and a source that fails
+  // to load are one piece of UI rather than two.
+  src: { type: String, default: '' },
   alt: { type: String, default: '' },
   title: { type: String, default: '' },
 });
 
-const status = ref('loading');
+const status = ref(props.src ? 'loading' : 'error');
 const accessibleLabel = computed(() => props.alt || props.title || 'Session image');
+
+watch(() => props.src, source => {
+  status.value = source ? 'loading' : 'error';
+});
 
 // Announce synchronously, before the resize observation this growth triggers,
 // so the timeline already knows the row is about to change size for a reason
@@ -57,6 +64,10 @@ function handleError(event) {
 </template>
 
 <style>
+/* Custom properties cross the shadow boundary, so the app's tokens are the
+   single source of truth for these colours. --session-image-max-block lets a
+   host context (a compact Markdown block, say) cap the image lower than the
+   session timeline does. */
 :host {
   display: block;
   max-inline-size: 100%;
@@ -70,9 +81,9 @@ function handleError(event) {
   min-inline-size: 0;
   margin: 0;
   overflow: clip;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--hairline-strong);
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.22);
+  background: var(--session-image-backdrop, rgba(0, 0, 0, 0.22));
 }
 
 img {
@@ -80,9 +91,9 @@ img {
   inline-size: auto;
   max-inline-size: 100%;
   block-size: auto;
-  max-block-size: min(70vh, 720px);
+  max-block-size: var(--session-image-max-block, min(70vh, 720px));
   object-fit: contain;
-  color: rgba(255, 255, 255, 0.48);
+  color: var(--muted);
 }
 
 .is-loading {
@@ -95,8 +106,8 @@ figcaption {
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
-  color: rgba(255, 255, 255, 0.48);
-  font: 12px/1.5 ui-monospace, 'SF Mono', Menlo, monospace;
+  color: var(--muted);
+  font: var(--text-sm, 12px)/1.5 var(--font-mono);
 }
 
 .image-label::before {
