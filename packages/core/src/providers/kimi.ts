@@ -56,7 +56,7 @@ interface ProjectedSession {
 }
 
 const SOURCE = 'kimi';
-export const KIMI_CANONICAL_TRANSCRIPT_MARKER = '__kimi_canonical_transcript_v3__';
+export const KIMI_CANONICAL_TRANSCRIPT_MARKER = '__kimi_canonical_transcript_v4__';
 
 function defaultKimiRoot(): string {
   return process.env['KIMI_CODE_HOME'] ?? join(homedir(), '.kimi-code');
@@ -679,6 +679,12 @@ export function createKimiProvider({ rootDir = defaultKimiRoot() }: { rootDir?: 
       if (before !== after) throw new Error(`Kimi session changed while indexing: ${meta.sessionDir}`);
 
       yield { kind: 'delete-session', sessionId: unit.sessionId };
+      // Kimi persists a titled session before the first prompt; keep it retracted until user evidence exists.
+      const hasLastPrompt = typeof state.lastPrompt === 'string' && state.lastPrompt.length > 0;
+      const hasProjectedUserPrompt = projected.messages.some((message) => (
+        message.agent_id === null && message.role === 'user' && !message.is_meta
+      ));
+      if (state.title === 'New Session' && !hasLastPrompt && !hasProjectedUserPrompt) return after;
       yield {
         kind: 'session',
         id: unit.sessionId,

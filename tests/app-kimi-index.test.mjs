@@ -50,6 +50,43 @@ function writeSession(kimiDir, { userSlash = false } = {}) {
   return { sessionDir, wirePath, records };
 }
 
+function writePlaceholderSession(kimiDir, { userPrompt = false } = {}) {
+  const sessionDir = join(kimiDir, 'sessions', 'workspace-1', 'session-placeholder-1');
+  const mainDir = join(sessionDir, 'agents', 'main');
+  mkdirSync(mainDir, { recursive: true });
+  writeFileSync(join(sessionDir, 'state.json'), JSON.stringify({
+    title: 'New Session',
+    workDir: '/tmp/indexed-kimi',
+    createdAt: '2026-07-20T10:00:00.000Z',
+    updatedAt: '2026-07-20T10:00:00.000Z',
+    agents: { main: { type: 'main' } },
+  }));
+  const records = [
+    { type: 'metadata', protocol_version: '1.5', created_at: 1753005600000 },
+    { type: 'config.update', profileName: 'agent', systemPrompt: 'Kimi Code CLI' },
+    { type: 'tools.set_active_tools', tools: [] },
+    { type: 'config.update', modelAlias: 'kimi-code/kimi-for-coding' },
+  ];
+  if (userPrompt) {
+    records.push({
+      type: 'context.append_message',
+      time: 1753005601000,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'real prompt before metadata catches up' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+    });
+  }
+  const wirePath = join(mainDir, 'wire.jsonl');
+  writeFileSync(
+    wirePath,
+    records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+  );
+  return { sessionDir, wirePath };
+}
+
 test('app build indexes Kimi sessions through the provider registry without changing schema', () => {
   const home = mkdtempSync(join(tmpdir(), 'obelisk-kimi-index-'));
   const claudeDir = join(home, '.claude');
@@ -88,6 +125,85 @@ test('app build indexes Kimi sessions through the provider registry without chan
     DatabaseImpl: TestDatabase,
   });
   assert.deepEqual(second.affectedSessionIds, []);
+});
+
+test('app build excludes never-started Kimi placeholder sessions', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-kimi-placeholder-'));
+  const kimiDir = join(home, '.kimi-code');
+  const dbPath = join(home, '.obelisk', 'obelisk.sqlite');
+  writePlaceholderSession(kimiDir);
+
+  buildIndex({
+    claudeDir: join(home, '.claude'),
+    codexDir: join(home, '.codex'),
+    providerRoots: { kimi: kimiDir },
+    dbPath,
+    DatabaseImpl: TestDatabase,
+  });
+
+  const db = new TestDatabase(dbPath);
+  assert.deepEqual(
+    db.prepare("SELECT id,title,message_count FROM sessions WHERE source='kimi'").all().map((row) => ({ ...row })),
+    [],
+  );
+  db.close();
+});
+
+test('app build keeps a prompted Kimi session while placeholder metadata catches up', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-kimi-prompted-placeholder-'));
+  const kimiDir = join(home, '.kimi-code');
+  const dbPath = join(home, '.obelisk', 'obelisk.sqlite');
+  writePlaceholderSession(kimiDir, { userPrompt: true });
+
+  buildIndex({
+    claudeDir: join(home, '.claude'),
+    codexDir: join(home, '.codex'),
+    providerRoots: { kimi: kimiDir },
+    dbPath,
+    DatabaseImpl: TestDatabase,
+  });
+
+  const db = new TestDatabase(dbPath);
+  assert.deepEqual(
+    db.prepare("SELECT id,title,message_count FROM sessions WHERE source='kimi'").all().map((row) => ({ ...row })),
+    [{ id: 'kimi:session-placeholder-1', title: 'New Session', message_count: 1 }],
+  );
+  db.close();
+});
+
+test('Kimi marker upgrade retracts previously indexed placeholder sessions', () => {
+  const home = mkdtempSync(join(tmpdir(), 'obelisk-kimi-placeholder-replay-'));
+  const kimiDir = join(home, '.kimi-code');
+  const dbPath = join(home, '.obelisk', 'obelisk.sqlite');
+  const { wirePath } = writePlaceholderSession(kimiDir);
+  const options = {
+    claudeDir: join(home, '.claude'),
+    codexDir: join(home, '.codex'),
+    providerRoots: { kimi: kimiDir },
+    dbPath,
+    DatabaseImpl: TestDatabase,
+  };
+
+  buildIndex(options);
+  let db = new TestDatabase(dbPath);
+  const currentMarker = createKimiProvider({ rootDir: kimiDir }).indexVersionMarker;
+  db.prepare('DELETE FROM index_state WHERE jsonl_path=?').run(currentMarker);
+  db.prepare(
+    'INSERT INTO index_state (jsonl_path,mtime,lines_processed) VALUES (?,0,0)',
+  ).run('__kimi_canonical_transcript_v3__');
+  db.prepare(`
+    INSERT INTO sessions (id,title,message_count,jsonl_path,source)
+    VALUES (?,?,?,?,?)
+  `).run('kimi:session-placeholder-1', 'New Session', 0, wirePath, 'kimi');
+  db.close();
+
+  buildIndex(options);
+  db = new TestDatabase(dbPath);
+  assert.deepEqual(
+    db.prepare("SELECT id,title,message_count FROM sessions WHERE source='kimi'").all().map((row) => ({ ...row })),
+    [],
+  );
+  db.close();
 });
 
 test('Kimi undo and clear replace the indexed session instead of leaving stale rows', () => {
@@ -151,7 +267,7 @@ test('Kimi canonical transcript marker replays unchanged sessions once', () => {
   buildIndex(options);
   let db = new TestDatabase(dbPath);
   const marker = createKimiProvider({ rootDir: kimiDir }).indexVersionMarker;
-  assert.equal(marker, '__kimi_canonical_transcript_v3__');
+  assert.equal(marker, '__kimi_canonical_transcript_v4__');
   db.prepare("UPDATE messages SET text='stale expanded instructions', is_meta=1 WHERE source='kimi'").run();
   db.prepare('DELETE FROM index_state WHERE jsonl_path=?').run(marker);
   db.close();
