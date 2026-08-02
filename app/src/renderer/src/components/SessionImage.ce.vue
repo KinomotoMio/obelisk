@@ -1,6 +1,9 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
-import { SESSION_IMAGE_SETTLED_EVENT } from '../session-image-contract.js';
+import { computed, onMounted, ref, watch } from 'vue';
+import {
+  SESSION_IMAGE_PENDING_EVENT,
+  SESSION_IMAGE_SETTLED_EVENT,
+} from '../session-image-contract.js';
 
 defineOptions({ name: 'SessionImage' });
 
@@ -13,36 +16,43 @@ const props = defineProps({
   title: { type: String, default: '' },
 });
 
+const figure = ref(null);
 const status = ref(props.src ? 'loading' : 'error');
 const accessibleLabel = computed(() => props.alt || props.title || 'Session image');
 
-watch(() => props.src, source => {
-  status.value = source ? 'loading' : 'error';
+// The events are composed so they leave the shadow root, and dispatched
+// synchronously so the timeline knows the row's size is about to change for a
+// reason the reader did not cause -- before the resize observation lands.
+function announce(target, type) {
+  target?.dispatchEvent(new CustomEvent(type, { bubbles: true, composed: true }));
+}
+
+// Announced from mount rather than from load: the row grows as soon as the
+// decoder knows the intrinsic size, which for anything bigger than a trivial
+// image is long before loading finishes.
+onMounted(() => {
+  if (props.src) announce(figure.value, SESSION_IMAGE_PENDING_EVENT);
 });
 
-// Announce synchronously, before the resize observation this growth triggers,
-// so the timeline already knows the row is about to change size for a reason
-// the reader did not cause.
-function announceSettled(event) {
-  event.target?.dispatchEvent(new CustomEvent(SESSION_IMAGE_SETTLED_EVENT, {
-    bubbles: true,
-    composed: true,
-  }));
-}
+watch(() => props.src, source => {
+  status.value = source ? 'loading' : 'error';
+  if (source) announce(figure.value, SESSION_IMAGE_PENDING_EVENT);
+});
 
 function handleLoad(event) {
   status.value = 'loaded';
-  announceSettled(event);
+  announce(event.target, SESSION_IMAGE_SETTLED_EVENT);
 }
 
 function handleError(event) {
   status.value = 'error';
-  announceSettled(event);
+  announce(event.target, SESSION_IMAGE_SETTLED_EVENT);
 }
 </script>
 
 <template>
   <figure
+    ref="figure"
     class="session-image"
     :class="`is-${status}`"
     :aria-busy="status === 'loading' ? 'true' : undefined"

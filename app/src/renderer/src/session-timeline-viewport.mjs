@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onScopeDispose, ref } from 'vue';
 import {
   defaultRangeExtractor,
   elementScroll,
@@ -6,10 +6,14 @@ import {
   useVirtualizer,
 } from '@tanstack/vue-virtual';
 import { createSessionTimelineScrollPolicy } from './session-timeline-scroll-policy.mjs';
-import { SESSION_IMAGE_SETTLED_EVENT } from './session-image-contract.js';
+import {
+  SESSION_IMAGE_PENDING_EVENT,
+  SESSION_IMAGE_SETTLED_EVENT,
+} from './session-image-contract.js';
 
 // How long after an image settles its row still counts as "grew because media
-// finished" rather than "grew because the estimate was wrong".
+// finished" rather than "grew because the estimate was wrong". Covers the
+// remeasurement that follows the final state change.
 const MEDIA_SETTLE_WINDOW_MS = 1_000;
 
 function estimatedTextHeight(text = '') {
@@ -134,24 +138,50 @@ export function useSessionTimelineViewport({
   // virtual-core deliberately skips scroll compensation when an already-measured
   // row above the viewport is re-measured during an upward scroll, because that
   // is normally an estimate correction and compensating it makes rows jump while
-  // the reader scrolls back. An image finishing is not an estimate correction:
-  // the row really did get taller, so leaving it uncompensated pushes everything
-  // the reader is looking at down the screen. Track which rows just settled
-  // media and compensate only those.
+  // the reader scrolls back. Media growth is not an estimate correction: the row
+  // really did get taller, so leaving it uncompensated pushes everything the
+  // reader is looking at down the screen.
+  //
+  // A row counts as settling from the moment an image mounts until loading
+  // finishes, because a decoder grows the row from the image header long before
+  // the load event -- keying off load alone would miss the first and largest
+  // growth. Counted, not flagged, so a message with several images stays marked
+  // until the last of them is done.
+  const mediaPending = new Map();
   const mediaSettledAt = new Map();
 
-  function noteMediaSettled(event) {
+  function rowKeyFor(event) {
     const row = event.target?.closest?.('.virtual-timeline-row');
-    const index = Number(row?.dataset?.index);
-    if (!Number.isInteger(index)) return;
+    if (!row) return null;
+    const timeline = timelineElement?.value;
+    if (timeline && !timeline.contains(row)) return null;
+    const index = Number(row.dataset?.index);
+    if (!Number.isInteger(index)) return null;
+    return items.value[index]?.key ?? index;
+  }
+
+  function noteMediaPending(event) {
+    const key = rowKeyFor(event);
+    if (key === null) return;
+    mediaPending.set(key, (mediaPending.get(key) ?? 0) + 1);
+    mediaSettledAt.delete(key);
+  }
+
+  function noteMediaSettled(event) {
+    const key = rowKeyFor(event);
+    if (key === null) return;
+    const outstanding = (mediaPending.get(key) ?? 0) - 1;
+    if (outstanding > 0) mediaPending.set(key, outstanding);
+    else mediaPending.delete(key);
     const now = performance.now();
-    for (const [key, at] of mediaSettledAt) {
-      if (now - at > MEDIA_SETTLE_WINDOW_MS) mediaSettledAt.delete(key);
+    for (const [settledKey, at] of mediaSettledAt) {
+      if (now - at > MEDIA_SETTLE_WINDOW_MS) mediaSettledAt.delete(settledKey);
     }
-    mediaSettledAt.set(items.value[index]?.key ?? index, now);
+    mediaSettledAt.set(key, now);
   }
 
   function isMediaSettling(key) {
+    if (mediaPending.has(key)) return true;
     const at = mediaSettledAt.get(key);
     if (at === undefined) return false;
     if (performance.now() - at > MEDIA_SETTLE_WINDOW_MS) {
@@ -161,14 +191,16 @@ export function useSessionTimelineViewport({
     return true;
   }
 
-  watch(
-    () => timelineElement?.value,
-    (element, previous) => {
-      previous?.removeEventListener(SESSION_IMAGE_SETTLED_EVENT, noteMediaSettled);
-      element?.addEventListener(SESSION_IMAGE_SETTLED_EVENT, noteMediaSettled);
-    },
-    { immediate: true },
-  );
+  // Bound to the document rather than to the timeline element, because rows
+  // announce their images while mounting -- before a ref-driven listener would
+  // be in place to hear the first one.
+  const eventTarget = globalThis.document ?? null;
+  eventTarget?.addEventListener(SESSION_IMAGE_PENDING_EVENT, noteMediaPending);
+  eventTarget?.addEventListener(SESSION_IMAGE_SETTLED_EVENT, noteMediaSettled);
+  onScopeDispose(() => {
+    eventTarget?.removeEventListener(SESSION_IMAGE_PENDING_EVENT, noteMediaPending);
+    eventTarget?.removeEventListener(SESSION_IMAGE_SETTLED_EVENT, noteMediaSettled);
+  });
 
   virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (item.start >= instance.getScrollOffset() + instance.scrollAdjustments) return false;

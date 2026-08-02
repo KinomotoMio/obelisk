@@ -3,6 +3,45 @@ import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { deflateSync } from 'node:zlib';
+
+// A real PNG. The fixture writes it in full and then holds the response open,
+// so Blink sizes and lays the image out from the buffered bytes while the load
+// event waits for the response to complete. An SVG served in one shot lays out
+// and fires load together, which hides that gap entirely.
+function crc32(buffer) {
+  let crc = ~0;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return ~crc >>> 0;
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, checksum]);
+}
+
+function buildPng(width, height) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8; // bit depth
+  header[9] = 0; // greyscale
+  const scanlines = Buffer.alloc(height * (width + 1), 0x40);
+  for (let row = 0; row < height; row++) scanlines[row * (width + 1)] = 0; // filter: none
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(scanlines)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
@@ -68,6 +107,10 @@ function startImageServer() {
   const heldPaths = ['/held-rest.svg', '/held-scroll.svg'];
   const heldResponses = new Map(heldPaths.map(path => [path, []]));
   const releasedPaths = new Set();
+  // The bytes go out in one write and the response stays open, so the row grows
+  // from the decoded header while the load event waits for completion.
+  const progressivePng = buildPng(900, 1200);
+  let progressiveResponses = [];
   const sendSvg = (response, svg) => {
     response.writeHead(200, {
       'Content-Type': 'image/svg+xml',
@@ -76,6 +119,14 @@ function startImageServer() {
     response.end(svg);
   };
   const server = createServer((request, response) => {
+    if (request.url === '/held-progressive.png') {
+      response.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'no-store',
+      });
+      progressiveResponses.push(response);
+      return;
+    }
     if (heldResponses.has(request.url)) {
       if (releasedPaths.has(request.url)) sendSvg(response, heldSvg);
       else heldResponses.get(request.url).push(response);
@@ -106,6 +157,18 @@ function startImageServer() {
           const pending = heldResponses.get(path) ?? [];
           heldResponses.set(path, []);
           for (const response of pending) sendSvg(response, heldSvg);
+        },
+        progressiveRequestCount: () => progressiveResponses.length,
+        // Delivers the whole image now and completes the response completeMs
+        // later, reproducing the gap a real image opens between the row growing
+        // and the load event firing.
+        releaseProgressiveImage(completeMs) {
+          const pending = progressiveResponses;
+          progressiveResponses = [];
+          for (const response of pending) {
+            response.write(progressivePng);
+            setTimeout(() => response.end(), completeMs);
+          }
         },
       });
     });
@@ -141,7 +204,10 @@ function registerHandlers() {
 }
 
 async function run() {
-  const { server, baseUrl, heldRequestCount, releaseHeldImage } = await startImageServer();
+  const {
+    server, baseUrl, heldRequestCount, releaseHeldImage,
+    progressiveRequestCount, releaseProgressiveImage,
+  } = await startImageServer();
   let win = null;
   try {
     messages = [
@@ -201,8 +267,16 @@ async function run() {
         content_type: 'text',
         is_meta: 0,
       },
+      {
+        uuid: 'message-7',
+        type: 'assistant',
+        timestamp: '2026-07-30T00:07:00.000Z',
+        text: `Progressive image\n\n![Progressive fixture](${baseUrl}/held-progressive.png)`,
+        content_type: 'text',
+        is_meta: 0,
+      },
       ...Array.from({ length: FILLER_COUNT }, (_, offset) => ({
-        uuid: `message-${7 + offset}`,
+        uuid: `message-${8 + offset}`,
         type: offset % 2 === 0 ? 'user' : 'assistant',
         timestamp: new Date(Date.UTC(2026, 6, 30, 1, offset)).toISOString(),
         text: `Filler ${offset}. ${'Timeline body copy that gives the row a realistic height. '.repeat(6)}`,
@@ -368,14 +442,60 @@ async function run() {
         + ` (${heldRequestCount('/held-rest.svg')}, ${heldRequestCount('/held-scroll.svg')})`,
     );
 
-    const parkAbove = distance => win.webContents.executeJavaScript(`(() => {
+    const parkAbove = (uuid, distance) => win.webContents.executeJavaScript(`(() => {
       const wrap = document.querySelector('.detail-wrap');
       const wrapRect = wrap.getBoundingClientRect();
-      const row = document.querySelector('[data-uuid="message-6"]').closest('.virtual-timeline-row');
+      const row = document.querySelector('[data-uuid="${uuid}"]').closest('.virtual-timeline-row');
       const rowRect = row.getBoundingClientRect();
       wrap.scrollTop += (rowRect.bottom - wrapRect.top) + ${distance};
       return wrap.scrollTop;
     })()`, true);
+
+    // Scrolls backward and reports the largest movement of a visible row that
+    // scroll input does not account for. A row growing above the viewport
+    // without compensation shows up here as a residual the size of the growth;
+    // a compensated one leaves the residual at zero.
+    const backwardScrollProbe = ({ durationMs = 1_500, stepPx = 12 } = {}) =>
+      win.webContents.executeJavaScript(`new Promise(resolve => {
+      const wrap = document.querySelector('.detail-wrap');
+      const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
+      wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
+      wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -70, bubbles: true }));
+      let previous = null;
+      let maxResidual = 0;
+      let example = null;
+      const startedAt = performance.now();
+      function frame(now) {
+        wrap.scrollTop -= ${stepPx};
+        const wrapRect = wrap.getBoundingClientRect();
+        const scrollTop = wrap.scrollTop;
+        const rows = new Map([...document.querySelectorAll('.virtual-timeline-row')]
+          .map(row => [
+            row.querySelector('[data-uuid]')?.getAttribute('data-uuid'),
+            row.getBoundingClientRect().top - wrapRect.top,
+          ])
+          .filter(([uuid, top]) => uuid && top > -200 && top < wrapRect.height));
+        if (previous) {
+          for (const [uuid, top] of rows) {
+            if (!previous.rows.has(uuid)) continue;
+            const residual = (top - previous.rows.get(uuid)) + (scrollTop - previous.scrollTop);
+            if (Math.abs(residual) > Math.abs(maxResidual)) {
+              maxResidual = residual;
+              example = { uuid, residual, scrollTop };
+            }
+          }
+        }
+        previous = { rows, scrollTop };
+        if (now - startedAt < ${durationMs}) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
+        wrap.dispatchEvent(new Event('scrollend'));
+        resolve({ maxResidual, example });
+      }
+      requestAnimationFrame(frame);
+    })`, true);
 
     const captureGeometry = () => win.webContents.executeJavaScript(`(() => {
       const wrap = document.querySelector('.detail-wrap');
@@ -394,7 +514,7 @@ async function run() {
       };
     })()`, true);
 
-    await parkAbove(420);
+    await parkAbove('message-6', 420);
     // Longer than isScrollingResetDelay so the virtualizer is genuinely at rest.
     await delay(700);
     await waitFor(
@@ -423,53 +543,14 @@ async function run() {
 
     // Same guarantee mid-gesture: scrolling back through history is when rows
     // above the viewport are most likely to still be settling their media.
-    await parkAbove(2_000);
+    await parkAbove('message-6', 2_000);
     await delay(700);
     await waitFor(
       win.webContents,
       `document.querySelector('[data-uuid="message-6"] obelisk-session-image')?.shadowRoot?.querySelector('.is-loading')`,
       'held scroll image still pending above the viewport',
     );
-    const scrollProbe = win.webContents.executeJavaScript(`new Promise(resolve => {
-      const wrap = document.querySelector('.detail-wrap');
-      const blockAutomaticScrollEnd = event => event.stopImmediatePropagation();
-      wrap.addEventListener('scrollend', blockAutomaticScrollEnd, true);
-      wrap.dispatchEvent(new WheelEvent('wheel', { deltaY: -70, bubbles: true }));
-      let previous = null;
-      let maxResidual = 0;
-      let example = null;
-      const startedAt = performance.now();
-      function frame(now) {
-        wrap.scrollTop -= 12;
-        const wrapRect = wrap.getBoundingClientRect();
-        const scrollTop = wrap.scrollTop;
-        const rows = new Map([...document.querySelectorAll('.virtual-timeline-row')]
-          .map(row => [
-            row.querySelector('[data-uuid]')?.getAttribute('data-uuid'),
-            row.getBoundingClientRect().top - wrapRect.top,
-          ])
-          .filter(([uuid, top]) => uuid && top > -200 && top < wrapRect.height));
-        if (previous) {
-          for (const [uuid, top] of rows) {
-            if (!previous.rows.has(uuid)) continue;
-            const residual = (top - previous.rows.get(uuid)) + (scrollTop - previous.scrollTop);
-            if (Math.abs(residual) > Math.abs(maxResidual)) {
-              maxResidual = residual;
-              example = { uuid, residual, scrollTop };
-            }
-          }
-        }
-        previous = { rows, scrollTop };
-        if (now - startedAt < 1500) {
-          requestAnimationFrame(frame);
-          return;
-        }
-        wrap.removeEventListener('scrollend', blockAutomaticScrollEnd, true);
-        wrap.dispatchEvent(new Event('scrollend'));
-        resolve({ maxResidual, example });
-      }
-      requestAnimationFrame(frame);
-    })`, true);
+    const scrollProbe = backwardScrollProbe();
     await delay(500);
     releaseHeldImage('/held-scroll.svg');
     const scrolling = await withDeadline(scrollProbe, 'backward scroll residual probe');
@@ -477,6 +558,62 @@ async function run() {
       Math.abs(scrolling.maxResidual) <= 2,
       'an image loading above the viewport does not move visible rows mid-scroll'
         + ` (${JSON.stringify(scrolling)})`,
+    );
+
+    // A progressively decoded image lays out from its header, so the row grows
+    // long before the load event. Waiting for load to mark the row would leave
+    // that first, largest growth uncompensated.
+    await parkAbove('message-7', 2_000);
+    await delay(700);
+    assert(
+      progressiveRequestCount() > 0,
+      `the progressive fixture was requested (${progressiveRequestCount()})`,
+    );
+    await win.webContents.executeJavaScript(`(() => {
+      const host = document.querySelector('[data-uuid="message-7"] obelisk-session-image');
+      const row = host.closest('.virtual-timeline-row');
+      const image = host.shadowRoot.querySelector('img');
+      const timing = {
+        start: performance.now(),
+        placeholderHeight: row.getBoundingClientRect().height,
+        grewAt: null,
+        loadedAt: null,
+        height: 0,
+      };
+      // ResizeObserver reports the current size straight away; only a later,
+      // larger measurement is the image arriving.
+      timing.height = timing.placeholderHeight;
+      const since = () => Math.round(performance.now() - timing.start);
+      new ResizeObserver(entries => {
+        for (const entry of entries) {
+          if (entry.contentRect.height <= timing.height + 100) continue;
+          timing.height = entry.contentRect.height;
+          if (timing.grewAt === null) timing.grewAt = since();
+        }
+      }).observe(row);
+      image.addEventListener('load', () => { timing.loadedAt = since(); }, { once: true });
+      window.__progressiveTiming = timing;
+    })()`, true);
+    const progressiveProbe = backwardScrollProbe({ durationMs: 3_400, stepPx: 6 });
+    await delay(400);
+    // Blink holds partial image data back for about a second before flushing it
+    // to the decoder, so the response has to stay open well past that for the
+    // row to grow before the load event.
+    releaseProgressiveImage(2_000);
+    const progressive = await withDeadline(
+      progressiveProbe,
+      'progressive scroll residual probe',
+      15_000,
+    );
+    const timing = await win.webContents.executeJavaScript('window.__progressiveTiming', true);
+    assert(
+      timing.grewAt !== null && timing.loadedAt !== null && timing.grewAt < timing.loadedAt - 100,
+      `the fixture grows its row before the load event, as a chunked image does (${JSON.stringify(timing)})`,
+    );
+    assert(
+      Math.abs(progressive.maxResidual) <= 2,
+      'a progressively decoded image does not move visible rows before it finishes'
+        + ` (${JSON.stringify(progressive)})`,
     );
   } finally {
     win?.destroy();
