@@ -1,4 +1,4 @@
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import {
   defaultRangeExtractor,
   elementScroll,
@@ -6,6 +6,11 @@ import {
   useVirtualizer,
 } from '@tanstack/vue-virtual';
 import { createSessionTimelineScrollPolicy } from './session-timeline-scroll-policy.mjs';
+import { SESSION_IMAGE_SETTLED_EVENT } from './session-image-contract.js';
+
+// How long after an image settles its row still counts as "grew because media
+// finished" rather than "grew because the estimate was wrong".
+const MEDIA_SETTLE_WINDOW_MS = 1_000;
 
 function estimatedTextHeight(text = '') {
   return Math.min(560, Math.ceil(String(text).length / 72) * 20);
@@ -125,6 +130,54 @@ export function useSessionTimelineViewport({
 
   const virtualRows = computed(() => virtualizer.value.getVirtualItems());
   const totalSize = computed(() => virtualizer.value.getTotalSize());
+
+  // virtual-core deliberately skips scroll compensation when an already-measured
+  // row above the viewport is re-measured during an upward scroll, because that
+  // is normally an estimate correction and compensating it makes rows jump while
+  // the reader scrolls back. An image finishing is not an estimate correction:
+  // the row really did get taller, so leaving it uncompensated pushes everything
+  // the reader is looking at down the screen. Track which rows just settled
+  // media and compensate only those.
+  const mediaSettledAt = new Map();
+
+  function noteMediaSettled(event) {
+    const row = event.target?.closest?.('.virtual-timeline-row');
+    const index = Number(row?.dataset?.index);
+    if (!Number.isInteger(index)) return;
+    const now = performance.now();
+    for (const [key, at] of mediaSettledAt) {
+      if (now - at > MEDIA_SETTLE_WINDOW_MS) mediaSettledAt.delete(key);
+    }
+    mediaSettledAt.set(items.value[index]?.key ?? index, now);
+  }
+
+  function isMediaSettling(key) {
+    const at = mediaSettledAt.get(key);
+    if (at === undefined) return false;
+    if (performance.now() - at > MEDIA_SETTLE_WINDOW_MS) {
+      mediaSettledAt.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  watch(
+    () => timelineElement?.value,
+    (element, previous) => {
+      previous?.removeEventListener(SESSION_IMAGE_SETTLED_EVENT, noteMediaSettled);
+      element?.addEventListener(SESSION_IMAGE_SETTLED_EVENT, noteMediaSettled);
+    },
+    { immediate: true },
+  );
+
+  virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+    if (item.start >= instance.getScrollOffset() + instance.scrollAdjustments) return false;
+    // Never measured before: the estimate is what placed the reader, so the
+    // estimate-to-actual difference always has to be taken out.
+    if (!instance.itemSizeCache.has(item.key)) return true;
+    if (isMediaSettling(item.key)) return true;
+    return instance.scrollDirection !== 'backward';
+  };
 
   function resolveTimelineElement(instance = virtualizer?.value) {
     return timelineElement?.value

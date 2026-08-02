@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
+import { SESSION_IMAGE_SETTLED_EVENT } from '../session-image-contract.js';
 
 defineOptions({ name: 'SessionImage' });
 
@@ -12,12 +13,24 @@ const props = defineProps({
 const status = ref('loading');
 const accessibleLabel = computed(() => props.alt || props.title || 'Session image');
 
-function handleLoad() {
-  status.value = 'loaded';
+// Announce synchronously, before the resize observation this growth triggers,
+// so the timeline already knows the row is about to change size for a reason
+// the reader did not cause.
+function announceSettled(event) {
+  event.target?.dispatchEvent(new CustomEvent(SESSION_IMAGE_SETTLED_EVENT, {
+    bubbles: true,
+    composed: true,
+  }));
 }
 
-function handleError() {
+function handleLoad(event) {
+  status.value = 'loaded';
+  announceSettled(event);
+}
+
+function handleError(event) {
   status.value = 'error';
+  announceSettled(event);
 }
 </script>
 
@@ -32,7 +45,6 @@ function handleError() {
       :src="src"
       :alt="alt"
       :title="title || undefined"
-      loading="lazy"
       decoding="async"
       @load="handleLoad"
       @error="handleError"
