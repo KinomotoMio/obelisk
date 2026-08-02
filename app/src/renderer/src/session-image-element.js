@@ -1,7 +1,6 @@
 import { defineCustomElement } from 'vue';
 import SessionImage from './components/SessionImage.ce.vue';
-
-export const SESSION_IMAGE_TAG = 'obelisk-session-image';
+import { SESSION_IMAGE_TAG } from './session-image-contract.js';
 
 export function registerSessionImageElement() {
   if (customElements.get(SESSION_IMAGE_TAG)) return;

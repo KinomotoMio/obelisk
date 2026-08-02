@@ -1,4 +1,4 @@
-import { SESSION_IMAGE_TAG } from './session-image-element.js';
+import { SESSION_IMAGE_TAG } from './session-image-contract.js';
 
 const SAFE_IMAGE_PROTOCOLS = new Set(['blob:', 'file:', 'http:', 'https:']);
 let configuredMarked = null;
@@ -26,10 +26,25 @@ function imageFallback(alt) {
   return fallback.outerHTML;
 }
 
-export function renderSessionMarkdownImage(href, title, text) {
-  const source = decodeMarkedAttribute(href).trim();
-  const alt = decodeMarkedAttribute(text);
-  const accessibleTitle = decodeMarkedAttribute(title);
+// marked <= 14 calls renderer.image(href, title, text); marked >= 15 passes the
+// image token instead. Accepting both keeps an upgrade from silently turning
+// every session image into fallback text.
+export function normalizeMarkdownImageToken(hrefOrToken, title, text) {
+  if (hrefOrToken && typeof hrefOrToken === 'object') {
+    return {
+      href: hrefOrToken.href ?? '',
+      title: hrefOrToken.title ?? '',
+      text: hrefOrToken.text ?? '',
+    };
+  }
+  return { href: hrefOrToken ?? '', title: title ?? '', text: text ?? '' };
+}
+
+export function renderSessionMarkdownImage(hrefOrToken, title, text) {
+  const token = normalizeMarkdownImageToken(hrefOrToken, title, text);
+  const source = decodeMarkedAttribute(token.href).trim();
+  const alt = decodeMarkedAttribute(token.text);
+  const accessibleTitle = decodeMarkedAttribute(token.title);
   if (!source || !isSafeImageSource(source)) return imageFallback(alt);
 
   const image = document.createElement(SESSION_IMAGE_TAG);
