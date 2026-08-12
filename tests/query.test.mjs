@@ -544,6 +544,53 @@ test('attune api exposes only memory mutation helpers', () => {
   db.close();
 });
 
+test('remember regenerates the id on a primary-key collision instead of overwriting', () => {
+  const memoryDir = makeTempDir('obelisk-remember-collision-');
+  const memoryPath = join(memoryDir, 'memory.md');
+  writeFileSync(memoryPath, '# Memory\n');
+
+  const inserted = [];
+  const attempted = [];
+  let failFirstInsert = true;
+  const fakeDb = {
+    prepare(sql) {
+      if (sql.startsWith('INSERT INTO memories')) {
+        return {
+          run: (...args) => {
+            attempted.push(args[0]);
+            if (failFirstInsert) {
+              failFirstInsert = false;
+              const error = new Error('UNIQUE constraint failed: memories.id');
+              error.errcode = 1555; // SQLITE_CONSTRAINT_PRIMARYKEY
+              throw error;
+            }
+            inserted.push(args);
+          },
+        };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+    exec() {},
+    close() {},
+  };
+
+  const result = createAttuneApi(fakeDb).remember({
+    path: memoryPath,
+    project: 'collision-test',
+    summary: 'Decision: memory ids regenerate on collision instead of overwriting.',
+  });
+
+  // The first attempt collided; the persisted row must carry a REGENERATED
+  // id (a retry of the same id would satisfy inserted[0][0] === result.id),
+  // and the existing row was never replaced (plain INSERT, not OR REPLACE).
+  assert.equal(attempted.length, 2);
+  assert.notEqual(attempted[0], attempted[1]);
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0][0], result.id);
+  assert.equal(attempted[1], result.id);
+  assert.match(result.id, /^mem-[0-9a-f-]{36}$/);
+});
+
 test('remember stores absolute project-relative memory path', () => {
   const projectDir = makeTempDir('obelisk-memory-project-');
   const memoryDir = join(projectDir, '.obelisk', 'memories');

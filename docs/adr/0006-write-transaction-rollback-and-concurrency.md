@@ -109,3 +109,32 @@ carve-out never does is initialize or migrate a missing/legacy schema.
 Every other CLI write path keeps the original rule: the regular pre-query
 refresh, `attune`, migrations, schema setup, and checkpoints all remain
 read-only under a fresh heartbeat.
+
+**Amendment (2026-08-11, later the same day): memory-mutation carve-out.** The
+blanket rule above listed `attune` among the paths that stay read-only under a
+fresh heartbeat. That was over-broad: `remember()`/`forget()` write only the
+`memories` table (plus its FTS triggers), which index builds — force rebuilds
+included — never delete from, and a memory mutation carries no multi-transaction
+state for the writer lease to protect. Blocking memory writes while the app ran
+made the CLI memory flow unusable in exactly the configuration where it is most
+used. This paragraph supersedes the "attune remains read-only" rule above.
+
+`executeAttune` therefore no longer reads provider settings, builds the index,
+checks daemon ownership, or acquires the writer lease. This supersedes two more
+remnants of the original decision: the lease bullet that lists attune among its
+participants, and — for this path only — the "BEGIN contention is deferred to
+the build scheduler" policy. Attune has no scheduler; its mutations instead run
+on a connection with the ADR-standard 250 ms busy timeout so a contended BEGIN
+fails fast, and the retry layer owns the waiting (`retryOnBeginBusy`, 5 s
+budget). Builds keep the original defer-to-scheduler policy; the coordinator's
+BEGIN-retry stays opt-in. Attune opens the existing database through
+`openAttuneDb()`, which never creates, migrates, or configures the index and
+fails honestly when the memory layer (`memories`, `memories_fts`, or their
+maintenance triggers) is absent or incomplete. Each mutation runs as one short
+`runRetryableWriteTransaction`. Concurrent mutations need no mutex:
+`remember()` generates unique ids, `forget()` is idempotent and reads, decides,
+and updates in a single transaction, and WAL serializes writers — contention
+surfaces as a bounded busy retry, never as a logical conflict. Index builds and
+memory mutations can still interleave at the SQLite level; both orders are
+consistent because `memories_fts` is maintained either by its triggers (attune
+inserts) or rebuilt from `memories` (index finalize).

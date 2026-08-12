@@ -13,8 +13,8 @@
 
 import { createContext, runInNewContext } from 'node:vm';
 
-import { DB_PATH, openDb, openReadDb, openWriterLeaseDb } from './db.ts';
-import { buildIndex, ensureReadableSchema, shouldSkipBuild } from './indexer.ts';
+import { DB_PATH, openAttuneDb, openReadDb, probeAttuneMemoryLayer } from './db.ts';
+import { buildIndex, ensureReadableSchema } from './indexer.ts';
 import { coreSchemaNeedsMigration } from './schema-migrations.ts';
 import {
   createConfiguredBuiltinProviderRuntime,
@@ -23,7 +23,8 @@ import {
 import type { ProviderRegistry } from './providers/registry.ts';
 import { createQueryApi, createAttuneApi } from './query.ts';
 import type { SqliteDb } from './sqlite-types.ts';
-import { acquireWriterLease, writerLockPathFor } from './writer-lease.ts';
+import { nodeSqliteTransactionAdapter } from './tx.ts';
+import { runRetryableWriteTransaction } from './write-coordinator.ts';
 
 export { buildIndex, DB_PATH };
 
@@ -329,42 +330,33 @@ export async function executeQuery(scriptContent: string, invocation?: Invocatio
 }
 
 // Execute a memory-mutation CodeAct script (remember/forget only).
+// Memory writes are independent of index writes by design: no settings read,
+// no pre-write index build, no daemon-ownership check, no writer lease. The
+// memories table is untouched by index builds (force rebuilds included), each
+// mutation is a single short retryable write transaction, and concurrent
+// attunes cannot collide logically — remember() generates unique ids and
+// forget() is idempotent (ADR 0006 amendment).
 export async function executeAttune(scriptContent: string): Promise<unknown> {
-  const settings = readPersistedProviderSettings();
-  if (!settings.ok) throw new Error(`${settings.error}; attune was not applied`);
-  const providerRegistry = createConfiguredBuiltinProviderRuntime(settings.settings).registry;
-  const build = buildIndex({ providerRegistry }) as { reason?: string } | undefined;
-  reportIncompleteInventory(build);
-  if (build?.reason === 'daemon_active') {
-    throw new Error('Obelisk daemon owns index writes; attune is read-only until the daemon stops');
-  }
-  if (build?.reason === 'writer_busy' || build?.reason === 'database_busy') {
-    throw new Error('Obelisk index writer is busy; attune was not applied');
-  }
-  const lease = acquireWriterLease({
-    lockPath: writerLockPathFor(DB_PATH),
-    openDb: openWriterLeaseDb,
-    waitMs: 1000,
-  });
-  if (!lease) throw new Error('Obelisk index writer is busy; attune was not applied');
+  const db = openAttuneDb();
   try {
-    // Close the heartbeat TOCTOU window after acquiring the hard lease.
-    const ownershipDb = openReadDb();
-    try {
-      const ownership = shouldSkipBuild(ownershipDb, { ignoreRecentBuild: true });
-      if (ownership.reason === 'daemon_active') {
-        throw new Error('Obelisk daemon owns index writes; attune is read-only until the daemon stops');
-      }
-    } finally {
-      ownershipDb.close();
-    }
-    const db = openDb();
-    try {
-      return await runInSandbox(createAttuneApi(db), scriptContent);
-    } finally {
-      db.close();
-    }
+    const txDb = nodeSqliteTransactionAdapter(db);
+    const runMutation = <T>(work: () => T): T => runRetryableWriteTransaction(
+      txDb,
+      work,
+      { label: 'attune' },
+      // The connection's busy_timeout is short (250 ms, per ADR 0006), so a
+      // contended BEGIN fails fast and this layer owns the waiting. The 5 s
+      // budget is the real bound; maxAttempts just has to be large enough not
+      // to cap it first (each cycle costs ~250 ms timeout + growing backoff).
+      { retryOnBeginBusy: true, budgetMs: 5000, retryDelayMs: 100, maxAttempts: 10 },
+    );
+    // Verify the recall half of the memory layer (FTS + triggers) actually
+    // works before accepting mutations. The probe runs inside the same
+    // retryable transaction wrapper, so lock contention is waited out by the
+    // same budget instead of failing the open with a misleading error.
+    runMutation(() => probeAttuneMemoryLayer(db));
+    return await runInSandbox(createAttuneApi(db, runMutation), scriptContent);
   } finally {
-    lease.release();
+    db.close();
   }
 }

@@ -3,6 +3,7 @@
 
 // Query and attune sandbox helpers for the Core package.
 import { statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { isAbsolute, normalize, resolve, sep } from 'node:path';
 import { storedSessionCursor } from './provider-indexing.ts';
 import { createBuiltinProviderRegistry } from './providers/builtins.ts';
@@ -10,6 +11,9 @@ import type { ProviderRegistry } from './providers/registry.ts';
 import type { SqliteDb, SqliteRow } from './sqlite-types.ts';
 
 type DbRow = SqliteRow;
+
+// SQLite extended result code for a primary-key uniqueness violation.
+const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
 
 interface QueryOptions extends Record<string, any> {
   limit?: number;
@@ -681,7 +685,7 @@ function createQueryApi(
   return { sql: q, search, context, trace, thread, subagents, workflows, workflowTree, fileHistory, failures, sessions, recent, summaries, raw, memories, overview };
 }
 
-function createAttuneApi(db: SqliteDb) {
+function createAttuneApi(db: SqliteDb, runMutation: <T>(work: () => T) => T = (work) => work()) {
   const resolveMemoryPath = (memoryPath: string, sessionId?: string): string => {
     let base = null;
     if (sessionId) {
@@ -726,25 +730,47 @@ function createAttuneApi(db: SqliteDb) {
     assertEnglishMemoryText(summary, 'remember() summary');
     const normalizedPath = resolveMemoryPath(memoryPath, session_id);
     const normalizedAnchors = normalizeAnchors(anchors);
-    const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const proj = project || db.prepare('SELECT project FROM sessions WHERE id=?').get(session_id)?.project || null;
     const created_at = new Date().toISOString();
-    db.prepare('INSERT OR REPLACE INTO memories (id, session_id, project, message_start, message_end, path, anchors, summary, created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(
-      id, session_id || null, proj, message_start || null, message_end || null, normalizedPath, normalizedAnchors, summary, created_at);
+    // Plain INSERT, never OR REPLACE: a memory id must not silently overwrite
+    // an existing memory. Collisions regenerate instead of losing data.
+    let id = `mem-${randomUUID()}`;
+    runMutation(() => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          db.prepare('INSERT INTO memories (id, session_id, project, message_start, message_end, path, anchors, summary, created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(
+            id, session_id || null, proj, message_start || null, message_end || null, normalizedPath, normalizedAnchors, summary, created_at);
+          return;
+        } catch (error) {
+          // Primary-key collision: regenerate the id and retry. Any other
+          // constraint or error propagates unchanged.
+          const errcode = (error as { errcode?: unknown })?.errcode;
+          if (attempt < 2 && errcode === SQLITE_CONSTRAINT_PRIMARYKEY) {
+            id = `mem-${randomUUID()}`;
+            continue;
+          }
+          throw error;
+        }
+      }
+    });
     return { id, path: normalizedPath, project: proj, anchors: normalizedAnchors, created_at };
   };
 
   const forget = ({ id, reason }: ForgetInput) => {
     const deletionReason = String(reason || '').trim();
     if (!id || !deletionReason) throw new Error('forget() requires id and reason');
-    const row = db.prepare('SELECT id, deleted_at, deleted_reason FROM memories WHERE id=?').get(id);
-    if (!row) throw new Error(`forget() memory not found: ${id}`);
-    if (row.deleted_at) {
-      return { id, deleted_at: row.deleted_at, deleted_reason: row.deleted_reason, already_deleted: true };
-    }
-    const deleted_at = new Date().toISOString();
-    db.prepare('UPDATE memories SET deleted_at=?, deleted_reason=? WHERE id=?').run(deleted_at, deletionReason, id);
-    return { id, deleted_at, deleted_reason: deletionReason };
+    // Read, decide, and update in one write transaction: a concurrent forget
+    // must observe the deleted state, not overwrite another forget's reason.
+    return runMutation(() => {
+      const row = db.prepare('SELECT id, deleted_at, deleted_reason FROM memories WHERE id=?').get(id);
+      if (!row) throw new Error(`forget() memory not found: ${id}`);
+      if (row.deleted_at) {
+        return { id, deleted_at: row.deleted_at, deleted_reason: row.deleted_reason, already_deleted: true };
+      }
+      const deleted_at = new Date().toISOString();
+      db.prepare('UPDATE memories SET deleted_at=?, deleted_reason=? WHERE id=?').run(deleted_at, deletionReason, id);
+      return { id, deleted_at, deleted_reason: deletionReason };
+    });
   };
 
   return { remember, forget };
