@@ -45,6 +45,26 @@ value, capped). The tool deliberately exposes no index internals, no cursors,
 and no mutation surface: memory writes and archives keep their human-approved
 flow in the obelisk skill.
 
+## Frontend presentation (browser half)
+
+The package is dual-face (`dsh.client`, platform `web`): the host serves its
+`lib/client.js` to the browser, which registers a distinct card for
+first-party `obelisk_query` calls — monolith glyph, "Obelisk" label, bounded
+query summary, and expandable QUERY/RESULT sections, themed through DSW alias
+tokens. The browser half is presentation only:
+
+- The model-facing surface is untouched: same tool schema, same result text.
+- The durable session record is untouched: calls stay ordinary
+  `obelisk_query` events; no presentation metadata is written back.
+- Only the `obelisk_query` wire name is claimed, so no other tool's rendering
+  changes.
+
+Skill-driven invocations through the shell tool (`obelisk --query ...` as a
+Bash call) keep the standard Bash row for now: keyed toolview slots are
+all-or-nothing per wire name, and the bundle purity gate forbids reusing the
+shipped Bash row. A generic conditional-claim extension in DeepSeek Harness
+would enable that recognition later (see ADR-0009).
+
 ## Limitations
 
 - **Batch freshness.** Obelisk is a snapshot archive; just-finished sessions
@@ -54,7 +74,7 @@ flow in the obelisk skill.
   write lease, a query may fail with a readonly-database error.
 - **Serial execution.** The tool does not declare itself concurrency-safe, so
   the harness executes it exclusively.
-- **Version alignment.** Developed against `@deepseek-ai/dsh-tools` `0.0.1-rc.1`
+- **Version alignment.** Developed against `@deepseek-ai/dsh-tools` `0.1.0-rc.6`
   and `@deepseek-ai/cordis` `^4.0.1`; keep the host's copies aligned when
   upgrading.
 
@@ -64,5 +84,5 @@ flow in the obelisk skill.
 npm install
 npm run typecheck --workspace @obelisk/dsh-plugin
 npm run build --workspace @obelisk/dsh-plugin
-node --experimental-test-module-mocks --test tests/dsh-plugin.test.mjs
+node --experimental-test-module-mocks --test tests/dsh-plugin.test.mjs tests/dsh-plugin-client-model.test.mjs
 ```
