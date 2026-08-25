@@ -45,6 +45,7 @@ interface Watcher {
 interface IndexerBuildResult {
   deferred?: boolean;
   complete?: boolean;
+  affectedSessionIds?: string[];
   /** Recently written transcripts, most recent first — seeded into the
    * watcher's hot set (ADR-0009). */
   watchHints?: string[];
@@ -58,6 +59,7 @@ interface IndexerBuildResult {
 type IndexerBuild = (args: {
   reason?: string;
   changedPaths?: string[];
+  retrySessionIds?: string[];
 }) => IndexerBuildResult | void | Promise<IndexerBuildResult | void>;
 
 interface IndexerServiceOptions {
@@ -156,6 +158,7 @@ function createIndexerService({
   let pending = false;
   let lastReason: string | null = null;
   let changedPaths = new Set<string>();
+  const deferredSessionIds = new Set<string>();
   let fullInventoryPending = false;
   let nextInventoryRetryMs = heartbeatMs;
   let idlePromise = Promise.resolve();
@@ -226,8 +229,20 @@ function createIndexerService({
     pending = false;
     const buildChangedPaths = batch.kind === 'full' ? undefined : batch.paths;
     idlePromise = (async () => {
-      const result = await buildIndex({ reason, changedPaths: buildChangedPaths });
+      const retrySessionIds = [...deferredSessionIds];
+      const result = await buildIndex({
+        reason,
+        changedPaths: buildChangedPaths,
+        ...(retrySessionIds.length ? { retrySessionIds } : {}),
+      });
       promoteWatchHints(result?.watchHints);
+      if (result?.deferred) {
+        for (const sessionId of result.affectedSessionIds ?? []) {
+          deferredSessionIds.add(sessionId);
+        }
+      } else {
+        deferredSessionIds.clear();
+      }
       if (result?.complete === false) {
         for (const issue of result.inventoryIssues ?? []) {
           logger.warn?.(
