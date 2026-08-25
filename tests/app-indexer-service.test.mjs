@@ -32,6 +32,18 @@ function manualTimers() {
   };
 }
 
+// Polls with real timers — subscribing a root is async (the adapter probes
+// existence via fs.promises before subscribing), so tests cannot assert
+// subscription state synchronously after start().
+async function until(cond, ms = 2000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return cond();
+}
+
 test('indexer service debounces repeated build requests', async () => {
   const timers = manualTimers();
   const calls = [];
@@ -389,33 +401,29 @@ test('indexer service publishes daemon ownership as soon as it starts', () => {
   service.stop();
 });
 
-test('indexer service watches Claude JSON files through chokidar', async () => {
-  const projectsDir = makeTempDir('obelisk-chokidar-projects-');
+test('indexer service watches Claude JSON files through a recursive @parcel/watcher subscription', async () => {
+  const projectsDir = makeTempDir('obelisk-parcel-projects-');
   const timers = manualTimers();
   const calls = [];
   let watchArgs = null;
-  const handlers = {};
-  const watcher = {
-    on(event, handler) {
-      handlers[event] = handler;
-      return watcher;
-    },
-    closeCalled: false,
-    close() {
-      watcher.closeCalled = true;
+  let emit = null;
+  const subscription = {
+    unsubscribeCalled: false,
+    unsubscribe() {
+      subscription.unsubscribeCalled = true;
+      return Promise.resolve();
     },
   };
-  const chokidar = {
-    watch(paths, options) {
-      watchArgs = { paths, options };
-      return watcher;
-    },
+  const subscribe = (root, callback) => {
+    watchArgs = root;
+    emit = callback;
+    return Promise.resolve(subscription);
   };
 
   const service = createIndexerService({
     projectsDir,
     buildIndex: async ({ reason }) => calls.push(reason),
-    chokidar,
+    subscribe,
     writeHeartbeat: () => {},
     timers,
     stabilityMs: 0,
@@ -424,12 +432,10 @@ test('indexer service watches Claude JSON files through chokidar', async () => {
 
   try {
     service.start({ buildOnStart: false });
-    assert.equal(watchArgs.paths, projectsDir);
-    assert.equal(watchArgs.options.cwd, projectsDir);
-    assert.equal(watchArgs.options.ignoreInitial, true);
-    assert.ok(watchArgs.options.awaitWriteFinish);
+    assert.ok(await until(() => watchArgs !== null), 'the root is subscribed');
+    assert.equal(watchArgs, projectsDir);
 
-    handlers.change('session.jsonl');
+    emit(null, [{ type: 'update', path: join(projectsDir, 'session.jsonl') }]);
     timers.flush();
     await service.idle();
     assert.deepEqual(calls, ['watch']);
@@ -437,31 +443,23 @@ test('indexer service watches Claude JSON files through chokidar', async () => {
     service.stop();
   }
 
-  assert.equal(watcher.closeCalled, true);
+  assert.ok(await until(() => subscription.unsubscribeCalled), 'the subscription is released on stop');
 });
 
 test('indexer service passes changed JSONL paths to the build worker', async () => {
   const projectsDir = makeTempDir('obelisk-changed-paths-');
   const timers = manualTimers();
   const calls = [];
-  const handlers = {};
-  const watcher = {
-    on(event, handler) {
-      handlers[event] = handler;
-      return watcher;
-    },
-    close() {},
-  };
-  const chokidar = {
-    watch() {
-      return watcher;
-    },
+  let emit = null;
+  const subscribe = (_root, callback) => {
+    emit = callback;
+    return Promise.resolve({ unsubscribe: () => Promise.resolve() });
   };
 
   const service = createIndexerService({
     projectsDir,
     buildIndex: async (args) => calls.push(args),
-    chokidar,
+    subscribe,
     writeHeartbeat: () => {},
     timers,
     stabilityMs: 0,
@@ -469,8 +467,9 @@ test('indexer service passes changed JSONL paths to the build worker', async () 
   });
 
   service.start({ buildOnStart: false });
-  handlers.change('project-a/session-1.jsonl');
-  handlers.add('project-a/session-2.json');
+  assert.ok(await until(() => emit !== null), 'the root is subscribed');
+  emit(null, [{ type: 'update', path: join(projectsDir, 'project-a/session-1.jsonl') }]);
+  emit(null, [{ type: 'create', path: join(projectsDir, 'project-a/session-2.json') }]);
   timers.flush();
   await service.idle();
 
@@ -487,30 +486,19 @@ test('indexer service watches Claude projects and Codex sessions for app-side in
   const codexSessionsDir = makeTempDir('obelisk-watch-codex-sessions-');
   const timers = manualTimers();
   const calls = [];
-  const watchers = [];
+  const emitters = [];
   const watchArgs = [];
-  const chokidar = {
-    watch(paths, options) {
-      const handlers = {};
-      const watcher = {
-        handlers,
-        on(event, handler) {
-          handlers[event] = handler;
-          return watcher;
-        },
-        close() {},
-      };
-      watchers.push(watcher);
-      watchArgs.push({ paths, options });
-      return watcher;
-    },
+  const subscribe = (root, callback) => {
+    watchArgs.push(root);
+    emitters.push(callback);
+    return Promise.resolve({ unsubscribe: () => Promise.resolve() });
   };
 
   const service = createIndexerService({
     projectsDir: claudeProjectsDir,
     watchDirs: [claudeProjectsDir, codexSessionsDir],
     buildIndex: async (args) => calls.push(args),
-    chokidar,
+    subscribe,
     writeHeartbeat: () => {},
     timers,
     stabilityMs: 0,
@@ -518,10 +506,15 @@ test('indexer service watches Claude projects and Codex sessions for app-side in
   });
 
   service.start({ buildOnStart: false });
-  assert.deepEqual(watchArgs.map(arg => arg.paths), [claudeProjectsDir, codexSessionsDir]);
-  assert.deepEqual(watchArgs.map(arg => arg.options.cwd), [claudeProjectsDir, codexSessionsDir]);
+  assert.ok(await until(() => watchArgs.length === 2), 'both roots are subscribed');
+  // Subscription order is nondeterministic — the async existence probes
+  // complete in threadpool order. The requirement is coverage, not order.
+  assert.deepEqual([...watchArgs].sort(), [claudeProjectsDir, codexSessionsDir].sort());
 
-  watchers[1].handlers.change('2026/06/15/rollout-2026-06-15T00-00-00-codex.jsonl');
+  emitters[1](null, [{
+    type: 'update',
+    path: join(codexSessionsDir, '2026/06/15/rollout-2026-06-15T00-00-00-codex.jsonl'),
+  }]);
   timers.flush();
   await service.idle();
 
@@ -538,22 +531,14 @@ test('indexer service starts watching a configured root that appears after start
   const timers = manualTimers();
   const calls = [];
   const watchArgs = [];
-  const chokidar = {
-    watch(root) {
-      watchArgs.push(root);
-      const watcher = {
-        on() {
-          return watcher;
-        },
-        close() {},
-      };
-      return watcher;
-    },
+  const subscribe = (root) => {
+    watchArgs.push(root);
+    return Promise.resolve({ unsubscribe: () => Promise.resolve() });
   };
   const service = createIndexerService({
     watchDirs: [existingRoot, lateRoot],
     buildIndex: async (args) => calls.push(args),
-    chokidar,
+    subscribe,
     writeHeartbeat: () => {},
     timers,
     stabilityMs: 0,
@@ -563,11 +548,13 @@ test('indexer service starts watching a configured root that appears after start
 
   try {
     service.start({ buildOnStart: false });
+    assert.ok(await until(() => watchArgs.length === 1), 'the existing root is subscribed');
     assert.deepEqual(watchArgs, [existingRoot]);
 
     mkdirSync(lateRoot, { recursive: true });
     writeFileSync(join(lateRoot, 'pre-existing.jsonl'), '{}\n');
     timers.flush();
+    assert.ok(await until(() => watchArgs.length === 2), 'the late root is picked up by the retry');
     assert.deepEqual(watchArgs, [existingRoot, lateRoot]);
 
     timers.flush();
