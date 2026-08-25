@@ -13,6 +13,10 @@
 //   mis-cover them. Exact files are also the only way to reliably observe a
 //   writer that appends through a long-lived file descriptor: FSEvents
 //   delivers no event for such appends until the descriptor closes.
+// - A bounded LRU hot set extends the poller to recently active transcripts
+//   (promoted from native events via `shouldPromote`, seeded by
+//   `initialHotFiles` or `promote()` from caller build hints). macOS only by
+//   default; eviction degrades to the caller's periodic reconcile.
 // - Reliability lives inside the package: async existence probes, error
 //   classification (ENOENT/ENOTDIR is a quiet steady state, everything else
 //   warns once per root-and-failure), and a self-rescheduling retry loop.
@@ -34,6 +38,10 @@ export type WatchInvalidation =
   | { type: 'rescan'; roots: string[]; reason: string };
 
 export interface AdaptiveWatcher {
+  /** Move a path into the bounded hot set (LRU-refreshed if already hot).
+   * No-op when the hot overlay is disabled, the path is a pinned `file`
+   * target, or the watcher is closed. */
+  promote(path: string): void;
   close(): Promise<unknown>;
 }
 
@@ -42,7 +50,17 @@ export type ParcelSubscribe = (
   callback: (err: Error | null, events: Array<{ type: string; path: string }>) => void,
 ) => Promise<{ unsubscribe(): Promise<void> }>;
 
-export type FileSignature = { dev: number; ino: number; size: number; mtimeMs: number };
+export type FileSignature = { dev: number; ino: number; size: number; mtimeMs: number; isDirectory?: boolean };
+
+/** Real fs.Stats exposes isDirectory() as a method; test fakes may use a
+ * plain boolean. Both are accepted. */
+export type StatProbeResult = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  isDirectory?: boolean | (() => boolean);
+};
 
 export interface AdaptiveWatcherTimers {
   // `any` handles: whatever the injected setTimeout returns is only ever
@@ -58,18 +76,36 @@ export interface AdaptiveWatcherOptions {
   pollIntervalMs?: number;
   /** Delay before re-probing a missing or lost tree root. Default 5000 ms. */
   retryDelayMs?: number;
+  /**
+   * Enable the bounded hot-file overlay: promoted paths are polled like
+   * pinned `file` targets. Closes the macOS gap where FSEvents delivers no
+   * event for appends through a long-lived descriptor. Defaults to
+   * `process.platform === 'darwin'` (ADR-0009 platform policy: macOS first,
+   * other platforms only after their long-lived-writer matrix proves a need).
+   */
+  hotPolling?: boolean;
+  /** Hard cap on hot (non-pinned) polled files. Default 64. */
+  maxHotFiles?: number;
+  /** Seeds the hot set at creation — covers transcripts already open before
+   * the watcher started. */
+  initialHotFiles?: string[];
+  /** Decides whether a native tree event path enters the hot set (the
+   * package has no domain knowledge — the caller knows its transcripts).
+   * Promotion happens before the path invalidation is delivered. */
+  shouldPromote?: (path: string) => boolean;
   /** Injection point for @parcel/watcher.subscribe (tests). */
   subscribe?: ParcelSubscribe;
   /** Injection point for the root existence probe (tests). */
   access?: (path: string) => Promise<unknown>;
   /** Injection point for the file metadata probe (tests). */
-  stat?: (path: string) => Promise<FileSignature>;
+  stat?: (path: string) => Promise<StatProbeResult>;
   timers?: AdaptiveWatcherTimers;
   logger?: { warn?: (msg: string) => void };
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 const DEFAULT_RETRY_DELAY_MS = 5000;
+const DEFAULT_MAX_HOT_FILES = 64;
 
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException)?.code;
@@ -84,6 +120,10 @@ export function createAdaptiveWatcher({
   onInvalidate,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  hotPolling,
+  maxHotFiles = DEFAULT_MAX_HOT_FILES,
+  initialHotFiles = [],
+  shouldPromote,
   subscribe = parcelWatcher.subscribe as ParcelSubscribe,
   access = fs.promises.access,
   stat = fs.promises.stat,
@@ -97,6 +137,14 @@ export function createAdaptiveWatcher({
   // A file covered by a tree target stays in the poller: polling is not
   // there to extend directory coverage but to close the update-latency gap.
   const fileTargets = [...new Set(targets.filter((t) => t.kind === 'file').map((t) => t.path))];
+  const pinnedFiles = new Set(fileTargets);
+  const hotEnabled = hotPolling ?? process.platform === 'darwin';
+  // Insertion-ordered LRU of hot (non-pinned) polled paths. Values unused.
+  const hotFiles = new Map<string, null>();
+  // Hot paths promoted by a native event baseline silently on first
+  // observation — the event itself already delivered the change. Hint-seeded
+  // paths (public promote) must report their first observation instead.
+  const silentFirstBaseline = new Set<string>();
 
   let closed = false;
 
@@ -161,7 +209,20 @@ export function createAdaptiveWatcher({
           return;
         }
         const paths = (events ?? []).map((event) => event?.path).filter(Boolean);
-        if (paths.length) onInvalidate({ type: 'paths', paths });
+        if (paths.length) {
+          // Promotion precedes delivery: the caller's catch-up build reads
+          // content written before promotion, polling covers later appends.
+          // Deletes never promote — a removed transcript would hold a hot
+          // slot while permanently missing and evict live files.
+          if (hotEnabled && shouldPromote) {
+            for (const event of events ?? []) {
+              if (event?.path && event.type !== 'delete' && shouldPromote(event.path)) {
+                promoteHot(event.path, { silent: true });
+              }
+            }
+          }
+          onInvalidate({ type: 'paths', paths });
+        }
       });
     } catch (error) {
       pending.delete(root);
@@ -233,7 +294,15 @@ export function createAdaptiveWatcher({
   const statFile = async (file: string): Promise<FileSignature | null> => {
     try {
       const stats = await stat(file);
-      return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs };
+      return {
+        dev: stats.dev,
+        ino: stats.ino,
+        size: stats.size,
+        mtimeMs: stats.mtimeMs,
+        isDirectory: typeof stats.isDirectory === 'function'
+          ? stats.isDirectory()
+          : stats.isDirectory === true,
+      };
     } catch (error) {
       const code = errorCode(error);
       if (code === 'ENOENT' || code === 'ENOTDIR') return null;
@@ -253,18 +322,55 @@ export function createAdaptiveWatcher({
     polling = true;
     try {
       const changed: string[] = [];
-      for (const file of fileTargets) {
+      // Pinned first (never evicted), then hot files in LRU order.
+      const observed: Array<readonly [string, boolean]> = [
+        ...fileTargets.map((file) => [file, false] as const),
+        ...[...hotFiles.keys()].map((file) => [file, true] as const),
+      ];
+      for (const [file, isHot] of observed) {
         const prev = baselines.get(file);
         const next = await statFile(file);
+        // Evicted while its stat was in flight: stay evicted — do not
+        // re-insert a baseline or report (the hard cap must hold).
+        if (isHot && !hotFiles.has(file)) continue;
+        // Unit keys are not always files (Kimi's key is the session
+        // directory); polling a directory cannot see appends to the wire
+        // file inside it, and the tree watch already covers it.
+        if (isHot && next !== null && next.isDirectory) {
+          hotFiles.delete(file);
+          baselines.delete(file);
+          silentFirstBaseline.delete(file);
+          continue;
+        }
         if (prev === undefined) {
           baselines.set(file, next);
-          if (next !== null) changed.push(file);
+          // Pinned targets and hint-promoted hot files report their first
+          // observation of an existing file as an appearance (a redundant
+          // incremental build beats a missed event); event-promoted hot
+          // files baseline silently because the event already delivered
+          // the change.
+          const silent = isHot && silentFirstBaseline.delete(file);
+          if (next !== null && !silent) changed.push(file);
           continue;
         }
         if (signatureChanged(prev ?? null, next)) {
           baselines.set(file, next);
           if (next !== null) lastWarned.delete(file);
           changed.push(file);
+          if (isHot) {
+            if (next === null) {
+              // A hot file that disappeared reports once and releases its
+              // slot — recreation is a directory-level event and will
+              // re-promote it; otherwise deleted transcripts would fill the
+              // hot set over the app's lifetime.
+              hotFiles.delete(file);
+              baselines.delete(file);
+              silentFirstBaseline.delete(file);
+            } else {
+              hotFiles.delete(file);
+              hotFiles.set(file, null);
+            }
+          }
         }
       }
       if (changed.length && !closed) onInvalidate({ type: 'paths', paths: changed });
@@ -274,15 +380,43 @@ export function createAdaptiveWatcher({
     }
   };
 
+  const promoteHot = (path: string, { silent }: { silent: boolean }) => {
+    if (!hotEnabled || closed || pinnedFiles.has(path)) return;
+    if (hotFiles.has(path)) {
+      // LRU refresh; the baseline survives.
+      hotFiles.delete(path);
+      hotFiles.set(path, null);
+      return;
+    }
+    while (hotFiles.size >= maxHotFiles) {
+      const oldest = hotFiles.keys().next().value;
+      if (oldest === undefined) break;
+      hotFiles.delete(oldest);
+      baselines.delete(oldest);
+      silentFirstBaseline.delete(oldest);
+    }
+    hotFiles.set(path, null);
+    baselines.set(path, undefined);
+    if (silent) silentFirstBaseline.add(path);
+  };
+
+  // The build-hint channel: a hint means "the build saw this as recently
+  // active", but appends after the build finished are covered by no
+  // delivered signal — the first observation must report, never baseline
+  // silently.
+  const promote = (path: string) => promoteHot(path, { silent: false });
+
   // ------------------------------------------------------------- lifecycle
 
   refreshTrees();
-  if (fileTargets.length) {
+  for (const file of initialHotFiles) promote(file);
+  if (fileTargets.length || hotEnabled) {
     for (const file of fileTargets) baselines.set(file, undefined);
     pollTimer = timers.setTimeout(pollTick, pollIntervalMs);
   }
 
   return {
+    promote,
     close() {
       closed = true;
       if (retryTimer !== null) timers.clearTimeout(retryTimer);
