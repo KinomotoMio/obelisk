@@ -99,6 +99,15 @@ function withVisibility(row: DbRow): DbRow {
   return { ...row, visibility: normalizedVisibility(row.visibility) };
 }
 
+// Subagent total tokens (ADR-0010): a provider-stored value wins; when the
+// provider did not store one (deepseek's incremental adapter cannot), derive
+// it from the sidechain messages' usage as a presentation-layer null-fill.
+function deriveSubagentTokens(db: SqliteDb, agentId: unknown): number | null {
+  // Null only means "no usage-bearing messages"; a legitimate 0 stays 0.
+  const row = db.prepare('SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) AS t, COUNT(*) AS n FROM messages WHERE agent_id=? AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)').get(agentId);
+  return row && typeof row.n === 'number' && row.n > 0 && typeof row.t === 'number' ? row.t : null;
+}
+
 function isQueryableMessage(
   row: DbRow | undefined,
   includeInactive = false,
@@ -369,6 +378,7 @@ function createQueryApi(
       if (isQueryableMessage(cur, includeInactive)) chain.unshift(withVisibility(cur));
     }
     const subagent = msg.agent_id ? db.prepare('SELECT * FROM subagents WHERE agent_id=?').get(msg.agent_id) : null;
+    if (subagent) subagent.total_tokens = subagent.total_tokens ?? deriveSubagentTokens(db, msg.agent_id);
     let workflow = null;
     if (msg.agent_id) {
       const wa = db.prepare('SELECT * FROM workflow_agents WHERE agent_id=?').get(msg.agent_id);
@@ -417,7 +427,7 @@ function createQueryApi(
     const join = needsJoin ? 'LEFT JOIN sessions s ON s.id=sa.session_id' : '';
     return db.prepare(`SELECT sa.* FROM subagents sa ${join} WHERE ${where} LIMIT ?`).all(...params).map((r: DbRow) => {
       const c = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id=?').get(r.agent_id);
-      return { ...r, messageCount: c?.c || 0 };
+      return { ...r, messageCount: c?.c || 0, total_tokens: r.total_tokens ?? deriveSubagentTokens(db, r.agent_id) };
     });
   };
 

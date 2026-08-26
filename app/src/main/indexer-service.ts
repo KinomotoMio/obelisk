@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import os from 'node:os';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   createAdaptiveWatcher,
@@ -91,6 +92,12 @@ interface IndexerServiceOptions {
   logger?: { warn?: (msg: string) => void };
 }
 
+const TRANSCRIPT_SUFFIXES = ['.jsonl.zstd', '.jsonl', '.json'] as const;
+
+function isTranscriptPath(targetPath: string): boolean {
+  return TRANSCRIPT_SUFFIXES.some((suffix) => targetPath.endsWith(suffix));
+}
+
 function createIndexerService({
   projectsDir = DEFAULT_PROJECTS_DIR,
   watchTargets,
@@ -129,7 +136,7 @@ function createIndexerService({
       pollIntervalMs: watchPollMs,
       // The caller knows its transcripts; the package does not. Native events
       // for transcripts promote the path into the hot set before delivery.
-      shouldPromote: (targetPath) => targetPath.endsWith('.jsonl') || targetPath.endsWith('.json'),
+      shouldPromote: (targetPath) => isTranscriptPath(targetPath),
       onInvalidate: (invalidation) => {
         // A rescan means anything under the root may have changed — full
         // inventory. Path invalidations filter to transcripts here, at the
@@ -139,7 +146,19 @@ function createIndexerService({
           return;
         }
         for (const changedPath of invalidation.paths) {
-          if (changedPath.endsWith('.jsonl') || changedPath.endsWith('.json')) onChange(changedPath);
+          // Transcripts forward immediately. Anything else may be a directory
+          // event (a rename arrives as the bare path; the old side no longer
+          // exists) — resolve it ASYNC (no sync IO in the main process,
+          // CONTRIBUTING): existing non-directories (stray files) are dropped,
+          // directories and missing paths are forwarded for the providers to
+          // route or reconcile.
+          if (isTranscriptPath(changedPath)) {
+            onChange(changedPath);
+            continue;
+          }
+          void stat(changedPath)
+            .then((st) => { if (st.isDirectory()) onChange(changedPath); })
+            .catch(() => onChange(changedPath));
         }
       },
     });
