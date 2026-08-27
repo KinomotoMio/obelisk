@@ -1,17 +1,10 @@
-# Opt-in Obelisk retrieval channel for DeepSeek Harness (ADR-0009).
+# Opt-in canonical Obelisk skill for DeepSeek Harness (ADR-0009).
 #
 # Prerequisites:
 #   npm install --global @obelisk-apps/cli
-#   obelisk install --global
 #
 # Then run, for example:
-#   dsh web --patch packages/dsh-plugin/obelisk.cordis.yml
-#
-# Optional bounds:
-#   config:
-#     cliPath: obelisk
-#     timeoutMs: 30000
-#     maxResultChars: 24000
+#   dsh --profile web --patch "$PWD/packages/dsh-plugin/obelisk.cordis.yml" web
 - insert:
     - id: obelisk
-      name: '@obelisk/dsh-plugin'
+      name: '@obelisk/dsh-obelisk-plugin'

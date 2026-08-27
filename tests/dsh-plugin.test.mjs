@@ -3,87 +3,81 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fileURLToPath } from 'node:url'
+import { existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-import { apply } from '../packages/dsh-plugin/src/index.ts'
+import * as ObeliskPlugin from '../packages/dsh-plugin/src/index.ts'
 
-const fakeCli = fileURLToPath(new URL('./fixtures/fake-obelisk.mjs', import.meta.url))
+const { apply, inject } = ObeliskPlugin
 
-function boot(config = {}) {
-  let registered = null
-  let section = null
-  const ctx = {
-    tools: { register: definition => { registered = definition } },
-    systemPrompt: { section: value => { section = value } },
-  }
-  apply(ctx, { cliPath: fakeCli, ...config })
-  return { registered, section }
+const repoRoot = resolve(import.meta.dirname, '..')
+const canonicalRoot = join(repoRoot, 'skill-doc')
+const canonicalSkill = readFileSync(join(canonicalRoot, 'SKILL.md'), 'utf8')
+
+function bodyOf(raw) {
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(raw)
+  assert.ok(match, 'canonical skill must have frontmatter')
+  return raw.slice(match[0].length).trim()
 }
 
-const sampleQuery = 'return overview({ limit: 2 })'
+function boot() {
+  let provider = null
+  const ctx = {
+    skills: {
+      registerProvider(factory) {
+        provider = factory({ signal: new AbortController().signal, invalidate() {} })
+        return () => { provider = null }
+      },
+    },
+  }
+  apply(ctx)
+  assert.ok(provider)
+  return provider
+}
 
-test('registers the obelisk_query tool and a guidance section', () => {
-  const { registered, section } = boot({ timeoutMs: 1234 })
-  assert.ok(registered)
-  assert.equal(registered.name, 'obelisk_query')
-  assert.equal(registered.timeoutMs, 1234)
-  assert.equal(registered.parameters.type, 'object')
-  assert.equal(registered.parameters.properties.query.type, 'string')
-  assert.deepEqual(registered.parameters.required, ['query'])
-  assert.equal(section.name, 'tool:obelisk-query')
-  assert.equal(section.order, 114)
-  assert.match(section.text, /obelisk_query/)
+test('depends only on the standard DSH skill registry', () => {
+  assert.deepEqual(inject, ['skills'])
+  boot()
 })
 
-test('executes a query through the CLI and returns JSON text', async () => {
-  const { registered } = boot()
-  const result = await registered.execute({ query: sampleQuery }, {})
-  const value = JSON.parse(result)
-  assert.equal(value.ok, true)
-  assert.equal(value.mode, 'ok')
-  assert.equal(value.sawQuery, sampleQuery.length)
+test('registers the canonical Obelisk skill as a bundled provider', async () => {
+  const provider = boot()
+  const candidates = await provider.list()
+  assert.equal(candidates.length, 1)
+  assert.equal(candidates[0].name, 'obelisk')
+  assert.equal(candidates[0].provider, '@obelisk/dsh-obelisk-plugin')
+  assert.equal(candidates[0].source, 'bundled')
+  assert.deepEqual(candidates[0].invocation, { modelInvocable: true, userInvocable: true })
+  assert.match(candidates[0].description, /Search and query past Claude Code, Codex, Kimi Code, and Pi session history/)
+
+  const loaded = await provider.get(candidates[0])
+  assert.equal(loaded.content, bodyOf(canonicalSkill))
+  assert.equal(loaded.resourceBase.kind, 'directory')
+  assert.equal(resolve(loaded.resourceBase.path), canonicalRoot)
 })
 
-test('surfaces CLI failures with exit code and stderr', async () => {
-  const { registered } = boot()
-  process.env.FAKE_OBELISK_MODE = 'fail'
-  try {
-    const result = await registered.execute({ query: sampleQuery }, {})
-    assert.match(result, /Obelisk query failed \(exit 2\)/)
-    assert.match(result, /fake obelisk failure/)
-  } finally {
-    delete process.env.FAKE_OBELISK_MODE
+test('exposes every resource referenced by the canonical skill', async () => {
+  const loaded = await boot().get()
+  const references = [...loaded.content.matchAll(/`(references\/[^`]+\.md)`/g)].map(match => match[1])
+  assert.ok(references.length > 0)
+  for (const relative of new Set(references)) {
+    assert.equal(existsSync(join(loaded.resourceBase.path, relative)), true, relative)
   }
 })
 
-test('passes through non-JSON stdout instead of throwing', async () => {
-  const { registered } = boot()
-  process.env.FAKE_OBELISK_MODE = 'garbage'
-  try {
-    const result = await registered.execute({ query: sampleQuery }, {})
-    assert.match(result, /not-json/)
-  } finally {
-    delete process.env.FAKE_OBELISK_MODE
-  }
-})
+test('loads and unloads through the real DSH skill registry', async () => {
+  const packageRequire = createRequire(new URL('../packages/dsh-plugin/package.json', import.meta.url))
+  const { Context } = await import(pathToFileURL(packageRequire.resolve('@deepseek-ai/cordis')).href)
+  const { default: SkillRegistry } = await import(pathToFileURL(packageRequire.resolve('@deepseek-ai/dsh-skill')).href)
+  const ctx = new Context()
+  await ctx.plugin(SkillRegistry)
+  const fiber = await ctx.plugin(ObeliskPlugin)
 
-test('caps oversized output at maxResultChars with a truncation note', async () => {
-  const max = 1000
-  const { registered } = boot({ maxResultChars: max })
-  process.env.FAKE_OBELISK_MODE = 'large'
-  try {
-    const result = await registered.execute({ query: sampleQuery }, {})
-    const full = JSON.stringify({ ok: true, mode: 'large', padding: 'x'.repeat(50_000) })
-    const expected = `${full.slice(0, max)}\n... [output truncated: ${full.length - max} characters omitted]`
-    assert.equal(result, expected)
-  } finally {
-    delete process.env.FAKE_OBELISK_MODE
-  }
-})
+  assert.deepEqual((await ctx.skills.list()).map(skill => skill.name), ['obelisk'])
+  assert.equal((await ctx.skills.get('obelisk'))?.content, bodyOf(canonicalSkill))
 
-test('reports spawn failures as a readable error', async () => {
-  const { registered } = boot({ cliPath: '/definitely/not/a/real/obelisk-binary' })
-  const result = await registered.execute({ query: sampleQuery }, {})
-  assert.match(result, /Obelisk query could not run/)
-  assert.match(result, /cliPath/)
+  await fiber.dispose()
+  assert.deepEqual(await ctx.skills.list(), [])
 })
