@@ -8,7 +8,7 @@ The integration intentionally adds no dedicated model tool, system-prompt
 section, frontend tool card, or DSH source change. Once the model loads the
 skill through DSH's existing `skill` tool, it follows the same
 `obelisk --query ...` Bash workflow used in every other supported agent
-harness. See [ADR-0009](../../docs/adr/0009-obelisk-as-dsh-optional-retrieval-plugin.md).
+harness. See [ADR-0012](../../docs/adr/0012-obelisk-as-dsh-optional-retrieval-plugin.md).
 
 ## Prerequisite
 

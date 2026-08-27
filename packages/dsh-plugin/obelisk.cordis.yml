@@ -1,4 +1,4 @@
-# Opt-in canonical Obelisk skill for DeepSeek Harness (ADR-0009).
+# Opt-in canonical Obelisk skill for DeepSeek Harness (ADR-0012).
 #
 # Prerequisites:
 #   npm install --global @obelisk-apps/cli
