@@ -1,10 +1,9 @@
-# Opt-in canonical Obelisk skill for DeepSeek Harness (ADR-0012).
+# Opt-in Obelisk skill integration for DeepSeek Harness (ADR-0012).
 #
 # Prerequisites:
 #   npm install --global @obelisk-apps/cli
 #
-# Then run, for example:
-#   dsh --profile web --patch "$PWD/packages/dsh-plugin/obelisk.cordis.yml" web
+# This patch is applied automatically through package.json's dsh.bundle entry.
 - insert:
     - id: obelisk
       name: '@obelisk/dsh-obelisk-plugin'

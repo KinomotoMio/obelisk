@@ -3,17 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Optional DeepSeek Harness provider for the canonical Obelisk agent skill.",
+  "description": "Optional DeepSeek Harness provider for its plugin-owned Obelisk agent skill.",
   "license": "AGPL-3.0-only",
   "exports": {
     ".": "./dist/index.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "obelisk.cordis.yml"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./obelisk.cordis.yml"
+    }
+  },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R ../../skill-doc dist/skill",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R ./skill dist/skill",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

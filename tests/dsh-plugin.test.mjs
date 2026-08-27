@@ -13,28 +13,29 @@ import * as ObeliskPlugin from '../packages/dsh-plugin/src/index.ts'
 const { apply, inject } = ObeliskPlugin
 
 const repoRoot = resolve(import.meta.dirname, '..')
-const canonicalRoot = join(repoRoot, 'skill-doc')
-const canonicalSkill = readFileSync(join(canonicalRoot, 'SKILL.md'), 'utf8')
+const pluginRoot = join(repoRoot, 'packages', 'dsh-plugin')
+const pluginSkillRoot = join(pluginRoot, 'skill')
+const pluginSkill = readFileSync(join(pluginSkillRoot, 'SKILL.md'), 'utf8')
 
 function bodyOf(raw) {
   const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(raw)
-  assert.ok(match, 'canonical skill must have frontmatter')
+  assert.ok(match, 'skill must have frontmatter')
   return raw.slice(match[0].length).trim()
 }
 
 function boot() {
-  let provider = null
+  let definition = null
   const ctx = {
     skills: {
-      registerProvider(factory) {
-        provider = factory({ signal: new AbortController().signal, invalidate() {} })
-        return () => { provider = null }
+      register(skill) {
+        definition = skill
+        return () => { definition = null }
       },
     },
   }
   apply(ctx)
-  assert.ok(provider)
-  return provider
+  assert.ok(definition)
+  return definition
 }
 
 test('depends only on the standard DSH skill registry', () => {
@@ -42,24 +43,20 @@ test('depends only on the standard DSH skill registry', () => {
   boot()
 })
 
-test('registers the canonical Obelisk skill as a bundled provider', async () => {
-  const provider = boot()
-  const candidates = await provider.list()
-  assert.equal(candidates.length, 1)
-  assert.equal(candidates[0].name, 'obelisk')
-  assert.equal(candidates[0].provider, '@obelisk/dsh-obelisk-plugin')
-  assert.equal(candidates[0].source, 'bundled')
-  assert.deepEqual(candidates[0].invocation, { modelInvocable: true, userInvocable: true })
-  assert.match(candidates[0].description, /Search and query past Claude Code, Codex, Kimi Code, and Pi session history/)
-
-  const loaded = await provider.get(candidates[0])
-  assert.equal(loaded.content, bodyOf(canonicalSkill))
+test('registers the plugin-owned Obelisk skill as a runtime contribution', () => {
+  const loaded = boot()
+  assert.equal(loaded.name, 'obelisk')
+  assert.equal(loaded.provider, '@obelisk/dsh-obelisk-plugin')
+  assert.equal(loaded.source, 'runtime')
+  assert.deepEqual(loaded.invocation, { modelInvocable: true, userInvocable: true })
+  assert.match(loaded.description, /Search and query past Claude Code, Codex, Kimi Code, and Pi session history/)
+  assert.equal(loaded.content, bodyOf(pluginSkill))
   assert.equal(loaded.resourceBase.kind, 'directory')
-  assert.equal(resolve(loaded.resourceBase.path), canonicalRoot)
+  assert.equal(resolve(loaded.resourceBase.path), pluginSkillRoot)
 })
 
-test('exposes every resource referenced by the canonical skill', async () => {
-  const loaded = await boot().get()
+test('exposes every resource referenced by the plugin-owned skill', () => {
+  const loaded = boot()
   const references = [...loaded.content.matchAll(/`(references\/[^`]+\.md)`/g)].map(match => match[1])
   assert.ok(references.length > 0)
   for (const relative of new Set(references)) {
@@ -76,8 +73,54 @@ test('loads and unloads through the real DSH skill registry', async () => {
   const fiber = await ctx.plugin(ObeliskPlugin)
 
   assert.deepEqual((await ctx.skills.list()).map(skill => skill.name), ['obelisk'])
-  assert.equal((await ctx.skills.get('obelisk'))?.content, bodyOf(canonicalSkill))
+  assert.equal((await ctx.skills.get('obelisk'))?.content, bodyOf(pluginSkill))
 
   await fiber.dispose()
   assert.deepEqual(await ctx.skills.list(), [])
+})
+
+test('shadows a user-global Obelisk skill while preserving project override precedence', async () => {
+  const packageRequire = createRequire(new URL('../packages/dsh-plugin/package.json', import.meta.url))
+  const { Context } = await import(pathToFileURL(packageRequire.resolve('@deepseek-ai/cordis')).href)
+  const { default: SkillRegistry } = await import(pathToFileURL(packageRequire.resolve('@deepseek-ai/dsh-skill')).href)
+
+  async function winnerFor(rank, source) {
+    const ctx = new Context()
+    await ctx.plugin(SkillRegistry)
+    ctx.skills.registerProvider(() => ({
+      name: `competing-${source}`,
+      list: () => Promise.resolve([{
+        name: 'obelisk',
+        description: `Competing ${source} skill`,
+        invocation: { modelInvocable: true, userInvocable: true },
+        provider: `competing-${source}`,
+        source,
+        rank,
+        locator: source,
+      }]),
+      get: candidate => Promise.resolve({
+        name: candidate.name,
+        description: candidate.description,
+        invocation: candidate.invocation,
+        provider: candidate.provider,
+        source: candidate.source,
+        content: `Content from ${source}`,
+      }),
+    }))
+    await ctx.plugin(ObeliskPlugin)
+    return ctx.skills.get('obelisk')
+  }
+
+  assert.equal((await winnerFor(500, 'user-agents'))?.provider, '@obelisk/dsh-obelisk-plugin')
+  assert.equal((await winnerFor(100, 'project-dsh'))?.provider, 'competing-project-dsh')
+})
+
+test('declares an installable local DSH bundle', () => {
+  const manifest = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
+  assert.deepEqual(manifest.dsh, { bundle: { patch: './obelisk.cordis.yml' } })
+  assert.ok(manifest.files.includes('obelisk.cordis.yml'))
+
+  const patch = readFileSync(join(pluginRoot, 'obelisk.cordis.yml'), 'utf8')
+  assert.match(patch, /id: obelisk/)
+  assert.match(patch, /name: '@obelisk\/dsh-obelisk-plugin'/)
 })

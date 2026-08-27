@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 /**
- * DeepSeek Harness provider for the canonical Obelisk agent skill.
+ * DeepSeek Harness provider for the plugin-owned Obelisk agent skill.
  *
  * The plugin adds no model tool and no prompt fragment of its own. DSH exposes
  * this packaged skill through its standard catalog and `skill` tool; after the
@@ -10,17 +10,11 @@
  * every other supported agent harness.
  */
 
-import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import type { Context } from '@deepseek-ai/cordis'
-import {
-  BUNDLED_SKILL_RANK,
-  type SkillCandidate,
-  type SkillDefinition,
-  type SkillProvider,
-} from '@deepseek-ai/dsh-skill'
+import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 import { parse as parseYaml } from 'yaml'
 
 /** Cordis plugin name used by Loader diagnostics. */
@@ -31,7 +25,7 @@ export const inject = ['skills']
 
 const PROVIDER_NAME = '@obelisk/dsh-obelisk-plugin'
 const PACKAGED_SKILL_ROOT = new URL('./skill/', import.meta.url)
-const SOURCE_SKILL_ROOT = new URL('../../../skill-doc/', import.meta.url)
+const SOURCE_SKILL_ROOT = new URL('../skill/', import.meta.url)
 
 interface ParsedSkill {
   readonly name: string
@@ -73,7 +67,7 @@ function parseSkill(raw: string): ParsedSkill {
   const skillName = Reflect.get(data, 'name')
   const description = Reflect.get(data, 'description')
   if (skillName !== 'obelisk' || typeof description !== 'string' || description.trim() === '') {
-    throw new Error('bundled Obelisk skill frontmatter must define the canonical name and description')
+    throw new Error('bundled Obelisk skill frontmatter must define the obelisk name and description')
   }
   return { name: skillName, description, content: raw.slice(bodyStart).trim() }
 }
@@ -81,43 +75,21 @@ function parseSkill(raw: string): ParsedSkill {
 const root = skillRoot()
 const bodyUrl = new URL('SKILL.md', root)
 const resourceBase = { kind: 'directory', path: fileURLToPath(root) } as const
-let loaded: Promise<ParsedSkill> | undefined
 
-function loadSkill(): Promise<ParsedSkill> {
-  loaded ??= readFile(bodyUrl, 'utf8').then(parseSkill)
-  return loaded
-}
-
-const provider: SkillProvider = {
-  name: PROVIDER_NAME,
-  async list(): Promise<SkillCandidate[]> {
-    const skill = await loadSkill()
-    return [{
-      name: skill.name,
-      description: skill.description,
-      invocation: { modelInvocable: true, userInvocable: true },
-      provider: PROVIDER_NAME,
-      source: 'bundled',
-      resourceBase,
-      rank: BUNDLED_SKILL_RANK,
-      locator: bodyUrl,
-    }]
-  },
-  async get(): Promise<SkillDefinition> {
-    const skill = await loadSkill()
-    return {
-      name: skill.name,
-      description: skill.description,
-      invocation: { modelInvocable: true, userInvocable: true },
-      provider: PROVIDER_NAME,
-      source: 'bundled',
-      resourceBase,
-      content: skill.content,
-    }
-  },
-}
-
-/** Register the packaged Obelisk skill without changing DSH itself. */
+/**
+ * Register the plugin-owned skill as a runtime contribution. DSH's standard
+ * precedence keeps project skills above it and user-global skills below it.
+ */
 export function apply(ctx: Context): void {
-  ctx.skills.registerProvider(() => provider)
+  const skill = parseSkill(readFileSync(bodyUrl, 'utf8'))
+  const registration: SkillRegistration = {
+    name: skill.name,
+    description: skill.description,
+    invocation: { modelInvocable: true, userInvocable: true },
+    provider: PROVIDER_NAME,
+    source: 'runtime',
+    resourceBase,
+    content: skill.content,
+  }
+  ctx.skills.register(registration)
 }
