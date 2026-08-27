@@ -34,8 +34,13 @@ interface ParsedSkill {
 }
 
 function skillRoot(): URL {
-  const packagedBody = fileURLToPath(new URL('SKILL.md', PACKAGED_SKILL_ROOT))
-  return existsSync(packagedBody) ? PACKAGED_SKILL_ROOT : SOURCE_SKILL_ROOT
+  for (const candidate of [PACKAGED_SKILL_ROOT, SOURCE_SKILL_ROOT]) {
+    if (existsSync(fileURLToPath(new URL('SKILL.md', candidate)))) return candidate
+  }
+  const expected = [PACKAGED_SKILL_ROOT, SOURCE_SKILL_ROOT]
+    .map(candidate => fileURLToPath(new URL('SKILL.md', candidate)))
+    .join(' or ')
+  throw new Error(`Obelisk DSH plugin skill bundle is missing; expected SKILL.md at ${expected}`)
 }
 
 function parseSkill(raw: string): ParsedSkill {
@@ -72,15 +77,14 @@ function parseSkill(raw: string): ParsedSkill {
   return { name: skillName, description, content: raw.slice(bodyStart).trim() }
 }
 
-const root = skillRoot()
-const bodyUrl = new URL('SKILL.md', root)
-const resourceBase = { kind: 'directory', path: fileURLToPath(root) } as const
-
 /**
  * Register the plugin-owned skill as a runtime contribution. DSH's standard
  * precedence keeps project skills above it and user-global skills below it.
  */
 export function apply(ctx: Context): void {
+  const root = skillRoot()
+  const bodyUrl = new URL('SKILL.md', root)
+  const resourceBase = { kind: 'directory', path: fileURLToPath(root) } as const
   const skill = parseSkill(readFileSync(bodyUrl, 'utf8'))
   const registration: SkillRegistration = {
     name: skill.name,

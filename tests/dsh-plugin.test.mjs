@@ -3,14 +3,14 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import * as ObeliskPlugin from '../packages/dsh-plugin/src/index.ts'
 
-const { apply, inject } = ObeliskPlugin
+const { inject } = ObeliskPlugin
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const pluginRoot = join(repoRoot, 'packages', 'dsh-plugin')
@@ -23,7 +23,7 @@ function bodyOf(raw) {
   return raw.slice(match[0].length).trim()
 }
 
-function boot() {
+function boot(plugin = ObeliskPlugin) {
   let definition = null
   const ctx = {
     skills: {
@@ -33,7 +33,7 @@ function boot() {
       },
     },
   }
-  apply(ctx)
+  plugin.apply(ctx)
   assert.ok(definition)
   return definition
 }
@@ -61,6 +61,37 @@ test('exposes every resource referenced by the plugin-owned skill', () => {
   assert.ok(references.length > 0)
   for (const relative of new Set(references)) {
     assert.equal(existsSync(join(loaded.resourceBase.path, relative)), true, relative)
+  }
+})
+
+test('loads the built package from dist/skill', async () => {
+  const distIndex = join(pluginRoot, 'dist', 'index.js')
+  const distSkillRoot = join(pluginRoot, 'dist', 'skill')
+  assert.equal(existsSync(distIndex), true, 'build the DSH plugin before running its tests')
+
+  const distPlugin = await import(pathToFileURL(distIndex).href)
+  const loaded = boot(distPlugin)
+  assert.equal(resolve(loaded.resourceBase.path), distSkillRoot)
+  assert.equal(loaded.content, bodyOf(pluginSkill))
+  const references = [...loaded.content.matchAll(/`(references\/[^`]+\.md)`/g)].map(match => match[1])
+  for (const relative of new Set(references)) {
+    assert.equal(existsSync(join(loaded.resourceBase.path, relative)), true, relative)
+  }
+})
+
+test('fails clearly when a packaged skill tree is missing', async () => {
+  const fixtureRoot = mkdtempSync(join(pluginRoot, '.missing-skill-'))
+  const fixtureDist = join(fixtureRoot, 'dist')
+  mkdirSync(fixtureDist)
+  copyFileSync(join(pluginRoot, 'dist', 'index.js'), join(fixtureDist, 'index.js'))
+  try {
+    const missingPlugin = await import(`${pathToFileURL(join(fixtureDist, 'index.js')).href}?missing-skill`)
+    assert.throws(
+      () => boot(missingPlugin),
+      /Obelisk DSH plugin skill bundle is missing; expected SKILL\.md at/,
+    )
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true })
   }
 })
 
