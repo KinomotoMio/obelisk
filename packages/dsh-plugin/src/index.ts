@@ -23,7 +23,6 @@ export const name = '@obelisk/dsh-obelisk-plugin'
 /** The standard DSH skill registry is the plugin's only dependency. */
 export const inject = ['skills']
 
-const PROVIDER_NAME = '@obelisk/dsh-obelisk-plugin'
 const PACKAGED_SKILL_ROOT = new URL('./skill/', import.meta.url)
 const SOURCE_SKILL_ROOT = new URL('../skill/', import.meta.url)
 
@@ -90,7 +89,7 @@ export function apply(ctx: Context): void {
     name: skill.name,
     description: skill.description,
     invocation: { modelInvocable: true, userInvocable: true },
-    provider: PROVIDER_NAME,
+    provider: name,
     source: 'runtime',
     resourceBase,
     content: skill.content,

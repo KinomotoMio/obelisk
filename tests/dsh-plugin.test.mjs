@@ -17,6 +17,16 @@ const pluginRoot = join(repoRoot, 'packages', 'dsh-plugin')
 const pluginSkillRoot = join(pluginRoot, 'skill')
 const pluginSkill = readFileSync(join(pluginSkillRoot, 'SKILL.md'), 'utf8')
 
+// @deepseek-ai/dsh-skill-filesystem 0.0.1-rc.1 assigns these ranks. They are
+// kept explicit because the public registry exports only its bundled rank;
+// lower ranks win and runtime registrations occupy rank 250.
+const DSH_FILESYSTEM_RANKS = {
+  projectDsh: 100,
+  projectAgents: 200,
+  userDsh: 400,
+  userAgents: 500,
+}
+
 function bodyOf(raw) {
   const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(raw)
   assert.ok(match, 'skill must have frontmatter')
@@ -142,8 +152,10 @@ test('shadows a user-global Obelisk skill while preserving project override prec
     return ctx.skills.get('obelisk')
   }
 
-  assert.equal((await winnerFor(500, 'user-agents'))?.provider, '@obelisk/dsh-obelisk-plugin')
-  assert.equal((await winnerFor(100, 'project-dsh'))?.provider, 'competing-project-dsh')
+  assert.equal((await winnerFor(DSH_FILESYSTEM_RANKS.userDsh, 'user-dsh'))?.provider, '@obelisk/dsh-obelisk-plugin')
+  assert.equal((await winnerFor(DSH_FILESYSTEM_RANKS.userAgents, 'user-agents'))?.provider, '@obelisk/dsh-obelisk-plugin')
+  assert.equal((await winnerFor(DSH_FILESYSTEM_RANKS.projectDsh, 'project-dsh'))?.provider, 'competing-project-dsh')
+  assert.equal((await winnerFor(DSH_FILESYSTEM_RANKS.projectAgents, 'project-agents'))?.provider, 'competing-project-agents')
 })
 
 test('declares an installable local DSH bundle', () => {
